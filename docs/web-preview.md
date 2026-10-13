@@ -4,6 +4,8 @@ This bounded web client shares the Rust first-slice API and TypeScript contracts
 
 The visual redesign uses neutral surfaces, a simple wordmark, readable metadata, restrained title typography and original textured SVG artwork. It removes promotional slogans and repeated badges. The artwork is decorative demo illustration; it does not depict the generated test-pattern video itself. Native clients, server APIs and the progress model are unchanged. Browser QA covers desktop and 390px library/detail/player layouts, visible keyboard focus and actual silent playback; a normal pause/seek does not display a canceled-play warning over the video.
 
+Featured titles wrap safely and are visually bounded to two lines. The heading retains its full accessible text and hover title, while the details page displays the complete title without clamping. Browser regression fixtures exercise the contract's 200-character limit with both unbroken filename-style and spaced titles at 1280px and 390px, checking banner geometry, controls, horizontal overflow and full detail title access.
+
 ## Run the generated demo
 
 Use Node 24.14.0, Rust 1.94.0 and a recognized FFmpeg executable in PATH. From the repository root:

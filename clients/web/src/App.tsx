@@ -123,7 +123,7 @@ export default function App(){
       </section></div></main> : <main>
       <div className="page-title"><h1>Library</h1><p>{demo?'Generated clips with original demo artwork.':'Browse your saved titles.'}</p></div>
       {featured && <section className="feature" aria-label="Featured title"><Artwork kind={Math.max(0,artwork(featured))} wide/><div className="feature-shade"/>
-        <div className="feature-copy"><p className="feature-label">Featured</p><h2>{title(featured)}</h2><p className="feature-meta">{demo?'Generated sample · 1 min':'Direct playback'}</p><button className="primary" onClick={()=>showDetail(featured,items.indexOf(featured))}>View details <span aria-hidden="true">&rarr;</span></button></div>
+        <div className="feature-copy"><p className="feature-label">Featured</p><h2 title={title(featured)}>{title(featured)}</h2><p className="feature-meta">{demo?'Generated sample · 1 min':'Direct playback'}</p><button className="primary" onClick={()=>showDetail(featured,items.indexOf(featured))}>View details <span aria-hidden="true">&rarr;</span></button></div>
       </section>}
       <section className="library-section"><div className="section-heading"><h2>All titles <span className="title-count">{items.length}</span></h2><div className="connection">{loading?<span>Connecting...</span>:error?<span>{cache.current.catalog?'Cached library':'Offline'}</span>:null}<button className="text-button" onClick={()=>{void refresh();}} disabled={loading}>{loading?'Refreshing...':'Refresh'}</button></div></div>
         {error && <div className="notice" role="status">{error} <button className="text-button" onClick={()=>{void refresh();}}>Retry connection</button></div>}

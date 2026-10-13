@@ -42,6 +42,26 @@ try{
  await expect(page.getByLabel('Loading library')).toBeVisible();await screenshot(page,'loading');
  await expect(page.getByRole('button',{name:'Open Orbit',exact:true})).toBeVisible();results.catalogToVisibleMs=Math.round(performance.now()-start);
  results.checks.push('Actual catalog, deliberate loading state and library render');await screenshot(page,'library-desktop');
+ const longTitles=['Orbit'+'x'.repeat(195),('Orbit '+('long spaced catalog title '.repeat(9))).slice(0,200)];
+ const titleContext=await browser.newContext({viewport:{width:1280,height:900},reducedMotion:'reduce'});let testTitle=longTitles[0];
+ const titleItem=fixtureCatalog.items.find(item=>item.title==='Generated Orbit');
+ await titleContext.route('**/api/catalog',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({apiVersion:1,items:[{...titleItem,title:testTitle}]})}));
+ const titlePage=await titleContext.newPage();results.longTitleChecks=[];
+ for(const width of [1280,390])for(const value of longTitles){
+  testTitle=value;await titlePage.setViewportSize({width,height:900});await titlePage.goto('http://127.0.0.1:5173');await expect(titlePage.locator('.feature h2')).toHaveText(value);await expect(titlePage.getByRole('button',{name:'View details',exact:false})).toBeVisible();
+  const geometry=await titlePage.locator('.feature').evaluate(node=>{const heading=node.querySelector('h2');const copy=node.querySelector('.feature-copy');const button=node.querySelector('button');const frame=node.getBoundingClientRect();const text=heading.getBoundingClientRect();const controls=copy.getBoundingClientRect();const action=button.getBoundingClientRect();return {frameTop:frame.top,frameBottom:frame.bottom,copyTop:controls.top,copyBottom:controls.bottom,titleWidth:heading.clientWidth,titleScrollWidth:heading.scrollWidth,titleHeight:heading.clientHeight,lineHeight:parseFloat(getComputedStyle(heading).lineHeight),actionBottom:action.bottom,textLeft:text.left,textRight:text.right,frameLeft:frame.left,frameRight:frame.right};});
+  results.longTitleChecks.push({width,kind:value.includes(' ')?'spaced':'unbroken',...geometry});
+  await writeFile(join(local,'redesign-long-title-evidence.json'),JSON.stringify(results.longTitleChecks,null,2),'utf8');
+  await screenshot(titlePage,'long-title-'+width+'-'+(value.includes(' ')?'spaced':'unbroken'));
+  assert(await titlePage.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
+  await titlePage.getByRole('button',{name:'View details',exact:false}).click();await expect(titlePage.getByRole('heading',{level:1,name:value,exact:true})).toBeVisible();
+  assert(await titlePage.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
+ }
+ await titleContext.close();
+ assert(results.longTitleChecks.every(value=>value.titleScrollWidth<=value.titleWidth+1),'Featured title must not overflow horizontally');
+ assert(results.longTitleChecks.every(value=>value.copyTop>=value.frameTop && value.copyBottom<=value.frameBottom),'Featured text and controls must stay inside the banner');
+ assert(results.longTitleChecks.every(value=>value.titleHeight<=value.lineHeight*2+1),'Featured title must be bounded to two lines');
+ results.checks.push('200-character unbroken/spaced catalog titles stay bounded in the featured banner at 1280px/390px; full title remains available in details without horizontal overflow');
  const orbit=page.getByRole('button',{name:'Open Orbit',exact:true});await orbit.focus();await orbit.press('ArrowRight');await expect(page.getByRole('button',{name:'Open Pulse',exact:true})).toBeFocused();
  await page.keyboard.press('ArrowLeft');await expect(orbit).toBeFocused();const scroll=await page.evaluate(()=>window.scrollY);
  await page.keyboard.press('Enter');await expect(page.getByRole('heading',{name:'Orbit',exact:true})).toBeVisible();await screenshot(page,'detail-desktop');
