@@ -1,0 +1,54 @@
+name: First slice checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  server-and-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.14.0'
+          cache: npm
+          cache-dependency-path: clients/native/package-lock.json
+      - run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt,clippy
+      - run: cargo +1.94.0 fmt --all --check
+      - run: cargo +1.94.0 clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo +1.94.0 test --workspace --locked
+      - run: cargo +1.94.0 build --workspace --locked
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: clients/native
+      - run: npm test && npm run typecheck
+      - run: node scripts/host-smoke.mjs
+  android-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.14.0'
+          cache: npm
+          cache-dependency-path: clients/native/package-lock.json
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: microsoft
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+        with:
+          gradle-version: '9.4.1'
+      - run: sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;27.1.12297006' 'cmake;3.30.5'
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: clients/native
+      - run: gradle --no-daemon :app:assembleRelease
+        working-directory: clients/native/android
+        env:
+          CI: 'true'

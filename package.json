@@ -1,0 +1,11 @@
+{
+  "name": "shinema",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "npm --prefix clients/native test",
+    "typecheck": "npm --prefix clients/native run typecheck"
+  },
+  "license": "MIT",
+  "type": "module"
+}

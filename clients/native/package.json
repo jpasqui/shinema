@@ -1,0 +1,33 @@
+{
+  "name": "shinema-native",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "19.2.3",
+    "react-native": "npm:react-native-tvos@0.87.1-1",
+    "react-native-video": "6.19.3"
+  },
+  "overrides": {
+    "react-native": "$react-native"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.2",
+    "@babel/runtime": "^7.25.0",
+    "@react-native-community/cli": "20.2.0",
+    "@react-native-community/cli-platform-android": "20.2.0",
+    "@react-native/babel-preset": "0.87.1",
+    "@react-native/metro-config": "0.87.1",
+    "@react-native/typescript-config": "0.87.1",
+    "@types/react": "^19.2.0",
+    "typescript": "6.0.3"
+  },
+  "engines": {
+    "node": "^22.13.0 || ^24.3.0 || >=26.0.0"
+  },
+  "license": "MIT",
+  "type": "module"
+}
