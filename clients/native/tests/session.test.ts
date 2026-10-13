@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {fresh} from '../src/domain.ts';
+import {fresh,recover} from '../src/domain.ts';
 import type {Stored} from '../src/domain.ts';
 import {SessionGuard,StorageQueue,ProgressQueue,connectValidated,persistThenSync,syncProgress,resolveResume,backDestination} from '../src/session.ts';
 
@@ -14,10 +14,12 @@ function deferred<T>() {
 function fixture() {
   let current:Stored={...fresh(),origin:first,catalog,progress:{[id]:progress},pending:{[id]:progress}};
   const disk:string[]=[];
+  const staged:string[]=[];
   const queue=new StorageQueue();
   const writeDisk=async(next:Stored)=>{disk.push(JSON.stringify(next));};
-  const io={read:()=>current,write:(next:Stored)=>{current=next;},queue,writeDisk,persist:()=>queue.run(()=>io.writeDisk(current))};
-  return {io,disk};
+  const stageDisk=async(candidate:Stored)=>{staged.push(JSON.stringify(candidate));};
+  const io={read:()=>current,write:(next:Stored)=>{current=next;},queue,stageDisk,writeDisk,persist:()=>queue.run(()=>io.writeDisk(current))};
+  return {io,disk,staged};
 }
 
 test('failed and malformed server trials preserve the working cache and queued progress, including Back persistence',async()=>{
@@ -129,15 +131,16 @@ test('navigation during a rejected delayed connection write cannot activate the 
   assert.equal(io.read().origin,first);assert.deepEqual(io.read().pending[id],progress);assert.equal(disk.at(-1),original);
 });
 
-test('canceled successful write restores A before a queued newer activation, never after it',async()=>{
-  const {io,disk}=fixture();const guard=new SessionGuard();const slow=deferred<void>();const began=deferred<void>();const normalWrite=io.writeDisk;
-  io.writeDisk=async value=>{if(value.origin===second){began.resolve();await slow.promise;}await normalWrite(value);};
+test('canceled candidate stage cannot replace A or overwrite a queued newer activation',async()=>{
+  const {io,disk,staged}=fixture();const guard=new SessionGuard();const slow=deferred<void>();const began=deferred<void>();const normalStage=io.stageDisk;
+  io.stageDisk=async value=>{if(value.origin===second){began.resolve();await slow.promise;}await normalStage(value);};
   const old=connectValidated(guard,guard.beginConnection(),second,async()=>catalog,io);await began.promise;
   assert.equal(io.read().origin,first);guard.cancelConnection();
   const third='https://third.example';const next=connectValidated(guard,guard.beginConnection(),third,async()=>catalog,io);
   slow.resolve();assert.equal(await old,null);assert((await next)?.switched);
   assert.equal(io.read().origin,third);assert.equal(JSON.parse(disk.at(-1)!).origin,third);
-  assert.deepEqual(disk.map(value=>JSON.parse(value).origin),[second,first,third]);
+  assert.deepEqual(disk.map(value=>JSON.parse(value).origin),[third]);
+  assert.deepEqual(staged.map(value=>JSON.parse(value).origin),[second,third]);
 });
 
 test('overlapping rejected activations cannot restore another uncommitted candidate instead of A',async()=>{
@@ -186,5 +189,46 @@ test('playback also supersedes a startup refresh already waiting on cache persis
   await began.promise;const ticket=guard.beginPlayback(first);
   assert(await resolveResume(guard,ticket,id,io.read,async()=>progress));route='player';slow.resolve();
   assert.equal(await startup,null);assert.equal(route,'player');assert(guard.currentPlayback(ticket,first));
-  assert.equal(io.read().catalog?.items[0].title,'Generated sample');assert.equal(JSON.parse(disk.at(-1)!).catalog.items[0].title,'Generated sample');
+  assert.equal(io.read().catalog?.items[0].title,'Generated sample');assert.equal(JSON.parse(disk.at(-1)!).origin,first);
+});
+
+test('canceled B stage plus failed rollback writes still reopens confirmed A with queued progress',async()=>{
+  const {io,disk,staged}=fixture();const original=JSON.stringify(io.read());const guard=new SessionGuard();const slow=deferred<void>();const began=deferred<void>();const normalStage=io.stageDisk;let attemptedConfirmedWrites=0;
+  io.stageDisk=async value=>{began.resolve();await slow.promise;await normalStage(value);};
+  // Reproduce the prior failure condition: any attempted rollback/confirmed
+  // write after staging would reject. The new model needs neither on cancel.
+  io.writeDisk=async()=>{++attemptedConfirmedWrites;throw new Error('rollback write failed');};
+  const connecting=connectValidated(guard,guard.beginConnection(),second,async()=>catalog,io);await began.promise;
+  guard.cancelConnection();slow.resolve();assert.equal(await connecting,null);
+  assert.equal(attemptedConfirmedWrites,0);assert.equal(JSON.parse(staged.at(-1)!).origin,second);
+  const reopened=recover(disk.at(-1)??original);
+  assert.equal(reopened.origin,first);assert.deepEqual(reopened.pending[id],progress);assert.deepEqual(reopened.catalog,catalog);
+});
+
+test('rejected final confirmation commit reopens A even though candidate B is already staged',async()=>{
+  const {io,disk,staged}=fixture();const original=JSON.stringify(io.read());const guard=new SessionGuard();const stamp=guard.capture(first);
+  io.writeDisk=async()=>{throw new Error('atomic confirmation rejected');};
+  await assert.rejects(connectValidated(guard,guard.beginConnection(),second,async()=>catalog,io));
+  assert(guard.current(stamp,first));assert(!guard.isSwitchCommitting());assert.equal(io.read().origin,first);
+  assert.equal(JSON.parse(staged.at(-1)!).origin,second);assert.deepEqual(recover(disk.at(-1)??original).pending[id],progress);
+});
+
+test('once final switch commit begins, navigation cannot reinterpret a successful commit as unconfirmed',async()=>{
+  const {io,disk}=fixture();const guard=new SessionGuard();const slow=deferred<void>();const began=deferred<void>();const normalWrite=io.writeDisk;
+  io.writeDisk=async value=>{began.resolve();await slow.promise;await normalWrite(value);};
+  const connecting=connectValidated(guard,guard.beginConnection(),second,async()=>catalog,io);await began.promise;
+  assert(guard.isSwitchCommitting());assert.throws(()=>guard.beginPlayback(first));guard.cancelConnection();
+  slow.resolve();assert.equal(await connecting,null);assert(!guard.isSwitchCommitting());
+  assert.equal(io.read().origin,second);assert.equal(recover(disk.at(-1)!).origin,second);
+});
+
+test('a failed confirmation releases the commit guard and queue for navigation, playback and a later switch',async()=>{
+  const {io,disk}=fixture();const guard=new SessionGuard();const normalWrite=io.writeDisk;let fail=true;
+  io.writeDisk=async value=>{if(fail && value.origin===second)throw new Error('sync failure');await normalWrite(value);};
+  await assert.rejects(connectValidated(guard,guard.beginConnection(),second,async()=>catalog,io));
+  assert(!guard.isSwitchCommitting());assert.equal(backDestination('setup',true),'library');
+  const ticket=guard.beginPlayback(first);assert(await resolveResume(guard,ticket,id,io.read,async()=>progress));
+  await io.persist();assert.equal(recover(disk.at(-1)!).origin,first);
+  fail=false;assert((await connectValidated(guard,guard.beginConnection(),second,async()=>catalog,io))?.switched);
+  assert(!guard.isSwitchCommitting());assert.equal(recover(disk.at(-1)!).origin,second);
 });

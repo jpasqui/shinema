@@ -9,7 +9,7 @@ import type {Stored} from './domain.ts';
 import {SessionGuard,StorageQueue,ProgressQueue,connectValidated,persistThenSync,syncProgress,resolveResume,backDestination} from './session.ts';
 import type {ConnectionStamp} from './session.ts';
 
-const Host=NativeModules.ShinemaHost as {readState:()=>Promise<string>;writeState:(value:string)=>Promise<void>;finish:()=>void};
+const Host=NativeModules.ShinemaHost as {readState:()=>Promise<string>;stageState:(value:string)=>Promise<void>;writeState:(value:string)=>Promise<void>;finish:()=>void};
 type Route='setup'|'library'|'detail'|'player';
 type Key={code:number;action:number;repeat:number};
 
@@ -76,6 +76,7 @@ export default function App(){
     try{
       const result=await connectValidated(session.current,attempt,origin,value=>request(value,'/api/catalog'),{
         read:()=>store.current,write:acceptCatalog,persist,queue:persistQueue.current,
+        stageDisk:value=>Host.stageState(JSON.stringify(value)),
         writeDisk:value=>Host.writeState(JSON.stringify(value)),
       });
       if(!result)return;
@@ -91,6 +92,7 @@ export default function App(){
 
   async function play(){
     if(!selected || busy)return;
+    if(session.current.isSwitchCommitting()){setMessage('Finishing server switch. Try Play again in a moment.');return;}
     const item=selected;const ticket=session.current.beginPlayback(store.current.origin);
     setBusy(true);setMessage('Checking resume position...');
     const result=await resolveResume(session.current,ticket,item.id,()=>store.current,(origin,id)=>request(origin,`/api/media/${id}/progress`));

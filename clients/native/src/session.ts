@@ -11,6 +11,7 @@ export class SessionGuard {
   private attempt = 0;
   private generation = 0;
   private playback = 0;
+  private switchingCommit = false;
 
   beginConnection(): number {
     this.invalidatePlayback();
@@ -31,7 +32,15 @@ export class SessionGuard {
     return stamp.origin === origin && stamp.generation === this.generation;
   }
   invalidatePlayback(): void { ++this.playback; }
+  startCommit(attempt: number, switching: boolean): boolean {
+    if (!this.currentAttempt(attempt)) return false;
+    this.switchingCommit = switching;
+    return true;
+  }
+  finishCommit(): void { this.switchingCommit = false; }
+  isSwitchCommitting(): boolean { return this.switchingCommit; }
   beginPlayback(origin: string): PlaybackTicket {
+    if (this.switchingCommit) throw new Error('Server switch commit is finishing');
     // Explicit playback from cache supersedes an unfinished startup refresh.
     // Its late response must not confirm a session or replace the player route.
     this.cancelConnection();
@@ -60,6 +69,7 @@ export class StorageQueue {
 
 type ConnectionIO = StateIO & {
   queue: StorageQueue;
+  stageDisk: (candidate: Stored) => Promise<void>;
   writeDisk: (next: Stored) => Promise<void>;
 };
 
@@ -77,20 +87,22 @@ export async function connectValidated(
     const current = state.read();
     const switched = current.origin !== origin;
     const candidate = switched ? {...fresh(), origin, catalog} : {...current, catalog};
-    // Atomic native writes reject without replacing the live cache. Until this
-    // succeeds, memory, the confirmed generation and all queued progress stay A.
-    await state.writeDisk(candidate);
-    if (!guard.currentAttempt(attempt)) {
-      // Navigation can cancel while storage is in flight. Restore the latest
-      // working state in this same queue slot, before any newer activation or
-      // ordinary cache write can run. A stale candidate never becomes active.
-      await state.writeDisk(state.read());
-      return null;
-    }
-    const stamp = guard.confirm(origin);
-    // A same-origin refresh must not discard progress added during disk I/O.
-    state.write(switched ? candidate : {...state.read(), catalog});
-    return {catalog, switched, stamp};
+    // This separate file is never read as the confirmed cache, including after
+    // restart. Cancellation requires no rollback or cleanup write to protect A.
+    await state.stageDisk(candidate);
+    if (!guard.startCommit(attempt, switched)) return null;
+    try {
+      const confirmed = switched ? candidate : {...state.read(), catalog};
+      // The explicit atomic confirmation commit is the point after which a
+      // switch cannot be canceled. Navigation may continue, but playback waits
+      // for this short phase; an I/O rejection still leaves confirmed A intact.
+      await state.writeDisk(confirmed);
+      if (!switched && !guard.currentAttempt(attempt)) return null;
+      const stamp = switched ? guard.confirm(origin) : guard.capture(origin);
+      state.write(switched ? confirmed : {...state.read(), catalog});
+      if (!guard.currentAttempt(attempt)) return null;
+      return {catalog, switched, stamp};
+    } finally { guard.finishCommit(); }
   });
 }
 

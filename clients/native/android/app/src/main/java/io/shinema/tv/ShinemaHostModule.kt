@@ -25,11 +25,15 @@ class ShinemaHostModule(private val context:ReactApplicationContext):ReactContex
     try{val file=AtomicFile(File(context.filesDir,"client-state.json"));promise.resolve(if(file.baseFile.exists())file.readFully().toString(Charsets.UTF_8)else "")}
     catch(error:Exception){promise.resolve("")}
   }
-  @ReactMethod fun writeState(value:String,promise:Promise){
+  // Only the confirmed file is read on startup. A canceled/failed candidate
+  // may remain in its separate private slot but cannot replace confirmed data.
+  @ReactMethod fun stageState(value:String,promise:Promise){writeCache("candidate-state.json",value,promise)}
+  @ReactMethod fun writeState(value:String,promise:Promise){writeCache("client-state.json",value,promise)}
+  private fun writeCache(name:String,value:String,promise:Promise){
     val bytes=value.toByteArray(Charsets.UTF_8)
     if(bytes.size>1048576){promise.reject("STATE_TOO_LARGE","Client state exceeds limit");return}
-    val file=AtomicFile(File(context.filesDir,"client-state.json"));var output:java.io.FileOutputStream?=null
-    try{output=file.startWrite();output.write(bytes);file.finishWrite(output);promise.resolve(null)}
+    val file=AtomicFile(File(context.filesDir,name));var output:java.io.FileOutputStream?=null
+    try{output=file.startWrite();output.write(bytes);output.fd.sync();file.finishWrite(output);promise.resolve(null)}
     catch(error:Exception){if(output!=null)file.failWrite(output);promise.reject("STATE_WRITE_FAILED","Could not save client state")}
   }
   @ReactMethod fun finish(){context.currentActivity?.runOnUiThread{context.currentActivity?.finish()}}
