@@ -42,6 +42,26 @@ try{
  await expect(page.getByLabel('Loading library')).toBeVisible();await screenshot(page,'loading');
  await expect(page.getByRole('button',{name:'Open Orbit',exact:true})).toBeVisible();results.catalogToVisibleMs=Math.round(performance.now()-start);
  results.checks.push('Actual catalog, deliberate loading state and library render');await screenshot(page,'library-desktop');
+ const longTitles=['Orbit'+'x'.repeat(195),('Orbit '+('long spaced catalog title '.repeat(9))).slice(0,200)];
+ const titleContext=await browser.newContext({viewport:{width:1280,height:900},reducedMotion:'reduce'});let testTitle=longTitles[0];
+ const titleItem=fixtureCatalog.items.find(item=>item.title==='Generated Orbit');
+ await titleContext.route('**/api/catalog',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({apiVersion:1,items:[{...titleItem,title:testTitle}]})}));
+ const titlePage=await titleContext.newPage();results.longTitleChecks=[];
+ for(const width of [1280,390])for(const value of longTitles){
+  testTitle=value;await titlePage.setViewportSize({width,height:900});await titlePage.goto('http://127.0.0.1:5173');await expect(titlePage.locator('.feature h2')).toHaveText(value);await expect(titlePage.getByRole('button',{name:'View details',exact:false})).toBeVisible();
+  const geometry=await titlePage.locator('.feature').evaluate(node=>{const heading=node.querySelector('h2');const copy=node.querySelector('.feature-copy');const button=node.querySelector('button');const frame=node.getBoundingClientRect();const text=heading.getBoundingClientRect();const controls=copy.getBoundingClientRect();const action=button.getBoundingClientRect();return {frameTop:frame.top,frameBottom:frame.bottom,copyTop:controls.top,copyBottom:controls.bottom,titleWidth:heading.clientWidth,titleScrollWidth:heading.scrollWidth,titleHeight:heading.clientHeight,lineHeight:parseFloat(getComputedStyle(heading).lineHeight),actionBottom:action.bottom,textLeft:text.left,textRight:text.right,frameLeft:frame.left,frameRight:frame.right};});
+  results.longTitleChecks.push({width,kind:value.includes(' ')?'spaced':'unbroken',...geometry});
+  await writeFile(join(local,'redesign-long-title-evidence.json'),JSON.stringify(results.longTitleChecks,null,2),'utf8');
+  await screenshot(titlePage,'long-title-'+width+'-'+(value.includes(' ')?'spaced':'unbroken'));
+  assert(await titlePage.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
+  await titlePage.getByRole('button',{name:'View details',exact:false}).click();await expect(titlePage.getByRole('heading',{level:1,name:value,exact:true})).toBeVisible();
+  assert(await titlePage.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
+ }
+ await titleContext.close();
+ assert(results.longTitleChecks.every(value=>value.titleScrollWidth<=value.titleWidth+1),'Featured title must not overflow horizontally');
+ assert(results.longTitleChecks.every(value=>value.copyTop>=value.frameTop && value.copyBottom<=value.frameBottom),'Featured text and controls must stay inside the banner');
+ assert(results.longTitleChecks.every(value=>value.titleHeight<=value.lineHeight*2+1),'Featured title must be bounded to two lines');
+ results.checks.push('200-character unbroken/spaced catalog titles stay bounded in the featured banner at 1280px/390px; full title remains available in details without horizontal overflow');
  const orbit=page.getByRole('button',{name:'Open Orbit',exact:true});await orbit.focus();await orbit.press('ArrowRight');await expect(page.getByRole('button',{name:'Open Pulse',exact:true})).toBeFocused();
  await page.keyboard.press('ArrowLeft');await expect(orbit).toBeFocused();const scroll=await page.evaluate(()=>window.scrollY);
  await page.keyboard.press('Enter');await expect(page.getByRole('heading',{name:'Orbit',exact:true})).toBeVisible();await screenshot(page,'detail-desktop');
@@ -61,7 +81,7 @@ try{
  await page.getByRole('button',{name:'Pause video',exact:true}).click();await expect(video).toHaveJSProperty('paused',true);
  const paused=await video.evaluate(node=>node.currentTime);await page.waitForTimeout(300);assert(Math.abs((await video.evaluate(node=>node.currentTime))-paused)<.05);
  await page.getByRole('button',{name:'Forward ten seconds'}).click();await expect.poll(()=>video.evaluate(node=>node.currentTime)).toBeGreaterThan(paused+9.5);
- const seeked=await video.evaluate(node=>node.currentTime);await expect(video).toHaveJSProperty('seeking',false);await expect.poll(()=>page.getByLabel('Playback position').inputValue().then(Number)).toBeGreaterThan(seeked-.5);await screenshot(page,'player-desktop');
+ const seeked=await video.evaluate(node=>node.currentTime);await expect(video).toHaveJSProperty('seeking',false);await expect.poll(()=>page.getByLabel('Playback position').inputValue().then(Number)).toBeGreaterThan(seeked-.5);await expect(page.getByRole('alert')).toHaveCount(0);await screenshot(page,'player-desktop');
  const catalog=await (await fetch('http://127.0.0.1:8787/api/catalog')).json();const item=catalog.items.find(item=>item.title==='Generated Orbit');
  await expect.poll(async()=>{const progress=await(await fetch(`http://127.0.0.1:8787/api/media/${item.id}/progress`)).json();return progress?.positionSeconds??0;}).toBeGreaterThan(seeked-.5);
  await page.getByRole('button',{name:'Back to details',exact:false}).click();await page.getByRole('button',{name:'Resume',exact:false}).click();
@@ -75,8 +95,10 @@ try{
  results.checks.push('Actual 1280x720 video decode, advancing playback, pause, seek, server progress PUT, resume and browser reload persistence; every observed media event muted, source-loaded/play events at volume zero');
  await page.setViewportSize({width:390,height:844});await orbit.focus();await orbit.press('ArrowDown');await expect(page.getByRole('button',{name:'Open Pulse',exact:true})).toBeFocused();await page.keyboard.press('ArrowUp');await expect(page.getByRole('button',{name:'Open Horizon',exact:true})).toBeFocused();await screenshot(page,'library-mobile');
  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));await orbit.click();await screenshot(page,'detail-mobile');
- assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));await page.getByRole('button',{name:'Back to library',exact:false}).click();
- results.checks.push('390px responsive library/details render without horizontal overflow, vertical keyboard navigation follows the responsive grid');
+ assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));await page.getByRole('button',{name:'Resume',exact:false}).click();await expect(page.locator('video')).toHaveJSProperty('paused',false);await page.getByRole('button',{name:'Pause video',exact:true}).click();
+ await page.getByRole('button',{name:'Forward ten seconds'}).click();await expect(page.locator('video')).toHaveJSProperty('seeking',false);await expect(page.getByRole('alert')).toHaveCount(0);assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));await screenshot(page,'player-mobile');
+ await page.getByRole('button',{name:'Back to details',exact:false}).click();await page.getByRole('button',{name:'Back to library',exact:false}).click();
+ results.checks.push('390px responsive library/details/player render without horizontal overflow, phone-sized playback/pause/seek work, vertical keyboard navigation follows the responsive grid');
  await page.setViewportSize({width:1280,height:900});
  // Vite must not expose repository state or private development files.
  for(const path of ['/@fs/'+join(root,'.git','config').replaceAll('\\','/'),'/@fs/'+join(root,'.local','media','Generated_Orbit.mp4').replaceAll('\\','/')])assert((await page.request.get('http://127.0.0.1:5173'+path)).status()>=400);

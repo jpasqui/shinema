@@ -1,6 +1,10 @@
 # React web preview
 
-This bounded web client shares the Rust first-slice API and TypeScript contracts with the native client. It adds responsive library and detail pages, explicit keyboard focus, preserved library scroll, HTML5 direct playback, cached browsing and local progress that retries synchronization. It uses original CSS artwork and three generated H.264/AAC clips. The screenshots and content labeled **Generated demo** are fixtures, not a private media library.
+This bounded web client shares the Rust first-slice API and TypeScript contracts with the native client. It adds responsive library and detail pages, explicit keyboard focus, preserved library scroll, HTML5 direct playback, cached browsing and local progress that retries synchronization. It uses original SVG artwork and three generated H.264/AAC clips. The **Demo library** label identifies fixtures, not a private media library.
+
+The visual redesign uses neutral surfaces, a simple wordmark, readable metadata, restrained title typography and original textured SVG artwork. It removes promotional slogans and repeated badges. The artwork is decorative demo illustration; it does not depict the generated test-pattern video itself. Native clients, server APIs and the progress model are unchanged. Browser QA covers desktop and 390px library/detail/player layouts, visible keyboard focus and actual silent playback; a normal pause/seek does not display a canceled-play warning over the video.
+
+Featured titles wrap safely and are visually bounded to two lines. The heading retains its full accessible text and hover title, while the details page displays the complete title without clamping. Browser regression fixtures exercise the contract's 200-character limit with both unbroken filename-style and spaced titles at 1280px and 390px, checking banner geometry, controls, horizontal overflow and full detail title access.
 
 ## Run the generated demo
 
