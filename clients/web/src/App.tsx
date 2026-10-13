@@ -1,8 +1,8 @@
 import {useCallback,useEffect,useRef,useState} from 'react';
 import type {KeyboardEvent as ReactKeyboardEvent} from 'react';
-import {parseCatalog,parseProgress} from '../../../packages/contracts/index.ts';
+import {parseCatalog} from '../../../packages/contracts/index.ts';
 import type {Media,Progress} from '../../../packages/contracts/index.ts';
-import {clock,empty,initializeSilentVideo,NavigationGuard,progressValue,Queue,recover,resumeAt,synchronize} from './model.ts';
+import {clock,empty,initializeSilentVideo,loadPlaybackProgress,NavigationGuard,progressValue,Queue,recover,resumeAt,synchronize} from './model.ts';
 import type {Cache} from './model.ts';
 
 const storageKey='shinema.web.cache.v1';
@@ -43,6 +43,7 @@ export default function App(){
   const guard=useRef(new NavigationGuard());
   const catalogRequest=useRef(0);
   const queue=useRef(new Queue());
+  const progressRevisions=useRef(new Map<string,number>());
   const persist=useCallback(()=>{
     try{localStorage.setItem(storageKey,JSON.stringify(cache.current));setStorageError(false);}catch{setStorageError(true);}
     render(value=>value+1);
@@ -69,6 +70,7 @@ export default function App(){
   },[refresh]);
   const save=useCallback((id:string,position:number,duration:number)=>{
     const value=progressValue(position,duration);if(!value)return;
+    progressRevisions.current.set(id,(progressRevisions.current.get(id)??0)+1);
     cache.current={...cache.current,progress:{...cache.current.progress,[id]:value},pending:{...cache.current.pending,[id]:value}};
     persist();void sync(id,value);
   },[persist,sync]);
@@ -81,9 +83,7 @@ export default function App(){
   },[focus]);
   const play=async()=>{
     if(!selected || opening)return;const item=selected;const ticket=guard.current.next();setOpening(true);
-    let value=cache.current.pending[item.id]??cache.current.progress[item.id]??null;
-    try{const remote=parseProgress(await json(`/api/media/${item.id}/progress`));value=cache.current.pending[item.id]??remote??value;}
-    catch{/* Local progress remains available when the server is disconnected. */}
+    const value=await loadPlaybackProgress(item.id,{read:()=>cache.current,revision:id=>progressRevisions.current.get(id)??0,load:id=>json(`/api/media/${id}/progress`)});
     if(!guard.current.current(ticket))return;
     setOpening(false);setResume(value);setRoute('player');
   };
@@ -149,7 +149,7 @@ function Player({item,progress,save,back}:{item:Media;progress:Progress|null;sav
     const node=video.current;if(!node)return;
     initializeSilentVideo(node,item.streamPath);container.current?.focus();
     const hide=()=>snapshot();document.addEventListener('visibilitychange',hide);window.addEventListener('pagehide',hide);
-    return()=>{snapshot();node.pause();node.removeAttribute('src');node.load();document.removeEventListener('visibilitychange',hide);window.removeEventListener('pagehide',hide);};
+    return()=>{save(item.id,node.currentTime,node.duration);node.pause();node.removeAttribute('src');node.load();document.removeEventListener('visibilitychange',hide);window.removeEventListener('pagehide',hide);};
   },[item.streamPath,snapshot]);
   const toggle=()=>{const node=video.current;if(!node)return;if(node.paused)void node.play().catch(()=>setError('Playback could not start. Check the connection or media format.'));else node.pause();};
   const seek=(value:number)=>{const node=video.current;if(node && Number.isFinite(node.duration))node.currentTime=Math.max(0,Math.min(value,node.duration));};

@@ -24,9 +24,26 @@ export class Queue {
 export function progressValue(position:number,duration:number):Progress|null {
   try{return parseProgress({positionSeconds:Math.max(0,Math.min(position,duration)),durationSeconds:duration});}catch{return null;}
 }
+export async function loadPlaybackProgress(id:string,io:{read:()=>Cache;revision:(id:string)=>number;load:(id:string)=>Promise<unknown>}):Promise<Progress|null>{
+  const initialState=io.read();const pendingAtStart=initialState.pending[id];
+  const initial=pendingAtStart??initialState.progress[id]??null;const revisionAtStart=io.revision(id);
+  try{
+    const remote=parseProgress(await io.load(id));const current=io.read();
+    if(current.pending[id])return current.pending[id];
+    // A PUT acknowledgement clears pending; it must not erase a local write's
+    // priority over a GET that was already in flight before that acknowledgement.
+    if(pendingAtStart || io.revision(id)!==revisionAtStart)return current.progress[id]??initial;
+    return remote??current.progress[id]??initial;
+  }
+  catch{return io.read().pending[id]??io.read().progress[id]??initial;}
+}
 export async function synchronize(id:string,value:Progress,io:{read:()=>Cache;write:(cache:Cache)=>void;persist:()=>void;send:(id:string,value:Progress)=>Promise<void>}):Promise<void> {
-  await io.send(id,value);const current=io.read();const pending=current.pending[id];
-  if(pending?.positionSeconds!==value.positionSeconds || pending?.durationSeconds!==value.durationSeconds)return;
+  // Every local save creates a fresh, immutable pending object. Its identity
+  // owns the request: equal positions can still belong to different writes.
+  // Skip writes superseded while waiting in the serialized queue.
+  if(io.read().pending[id]!==value)return;
+  await io.send(id,value);const current=io.read();
+  if(current.pending[id]!==value)return;
   const next={...current.pending};delete next[id];io.write({...current,pending:next});io.persist();
 }
 /** Muting is applied before assigning the media source or requesting playback. */

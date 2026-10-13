@@ -51,6 +51,13 @@ try{
  const video=page.locator('video');await expect(video).toHaveJSProperty('paused',false);await expect.poll(()=>video.evaluate(node=>node.currentTime)).toBeGreaterThan(2);
  const initial=await video.evaluate(node=>({muted:node.muted,defaultMuted:node.defaultMuted,volume:node.volume,currentTime:node.currentTime,duration:node.duration,videoWidth:node.videoWidth,videoHeight:node.videoHeight}));
  assert(initial.muted && initial.defaultMuted && initial.volume===0 && initial.videoWidth===1280 && initial.videoHeight===720);results.initialPlayback=initial;
+ const exitAt=await video.evaluate(node=>node.currentTime);await page.getByRole('navigation',{name:'Main navigation'}).getByRole('button',{name:'Library',exact:true}).click();
+ const exitItem=fixtureCatalog.items.find(item=>item.title==='Generated Orbit');
+ await expect.poll(async()=>{const progress=await(await fetch(`http://127.0.0.1:8787/api/media/${exitItem.id}/progress`)).json();return progress?.positionSeconds??0;}).toBeGreaterThan(exitAt-.5);
+ const localExit=await page.evaluate(id=>JSON.parse(localStorage.getItem('shinema.web.cache.v1')).progress[id].positionSeconds,exitItem.id);assert(localExit>exitAt-.5);
+ const serverExit=await(await fetch(`http://127.0.0.1:8787/api/media/${exitItem.id}/progress`)).json();results.headerExitProgress={exitAt,localPosition:localExit,serverPosition:serverExit.positionSeconds};
+ await orbit.click();await page.getByRole('button',{name:'Resume',exact:false}).click();await expect.poll(()=>page.locator('video').evaluate(node=>node.currentTime)).toBeGreaterThan(exitAt-.5);
+ results.checks.push('Header Library navigation during unpaused playback saves final local/server progress and reopens at that position');
  await page.getByRole('button',{name:'Pause video',exact:true}).click();await expect(video).toHaveJSProperty('paused',true);
  const paused=await video.evaluate(node=>node.currentTime);await page.waitForTimeout(300);assert(Math.abs((await video.evaluate(node=>node.currentTime))-paused)<.05);
  await page.getByRole('button',{name:'Forward ten seconds'}).click();await expect.poll(()=>video.evaluate(node=>node.currentTime)).toBeGreaterThan(paused+9.5);

@@ -1,8 +1,39 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {empty,recover,NavigationGuard,Queue,synchronize,progressValue,resumeAt,initializeSilentVideo} from '../src/model.ts';
+import {empty,recover,NavigationGuard,Queue,synchronize,progressValue,resumeAt,initializeSilentVideo,loadPlaybackProgress} from '../src/model.ts';
 import type {Cache} from '../src/model.ts';
 const id='a'.repeat(64);const progress={positionSeconds:12,durationSeconds:60};
+function deferred<T>(){let resolve!:(value:T)=>void;const promise=new Promise<T>(done=>{resolve=done;});return {promise,resolve};}
+test('12 to 22 to 12 retains the newest request until its own acknowledgement and skips obsolete queued writes',async()=>{
+ let cache:Cache=empty();let persisted='';let serverPosition=0;const sent:number[]=[];const queue=new Queue();
+ const firstStarted=deferred<void>();const firstAck=deferred<void>();const lastStarted=deferred<void>();const lastAck=deferred<void>();
+ const persist=()=>{persisted=JSON.stringify(cache);};
+ const io={read:()=>cache,write:(next:Cache)=>{cache=next;},persist,send:async(_id:string,value:typeof progress)=>{
+   sent.push(value.positionSeconds);serverPosition=value.positionSeconds;
+   if(sent.length===1){firstStarted.resolve();await firstAck.promise;}
+   else if(value.positionSeconds===12){lastStarted.resolve();await lastAck.promise;}
+ }};
+ const enqueue=(positionSeconds:number)=>{const value={positionSeconds,durationSeconds:60};cache={...cache,progress:{[id]:value},pending:{[id]:value}};persist();return {value,job:queue.run(()=>synchronize(id,value,io))};};
+ const first=enqueue(12);await firstStarted.promise;const middle=enqueue(22);const latest=enqueue(12);
+ firstAck.resolve();await first.job;await middle.job;await lastStarted.promise;
+ assert.equal(cache.pending[id],latest.value);assert.deepEqual(recover(persisted).pending[id],latest.value);assert.deepEqual(sent,[12,12]);assert.equal(serverPosition,12);
+ lastAck.resolve();await latest.job;assert.equal(cache.pending[id],undefined);assert.equal(recover(persisted).pending[id],undefined);
+});
+test('a delayed old GET cannot supersede a pending position acknowledged during that GET',async()=>{
+ const latest={positionSeconds:28,durationSeconds:60};let cache:Cache={...empty(),progress:{[id]:latest},pending:{[id]:latest}};
+ const get=deferred<unknown>();const put=deferred<void>();
+ const loaded=loadPlaybackProgress(id,{read:()=>cache,revision:()=>0,load:()=>get.promise});
+ const synchronized=synchronize(id,latest,{read:()=>cache,write:next=>{cache=next;},persist:()=>{},send:()=>put.promise});
+ put.resolve();await synchronized;assert.equal(cache.pending[id],undefined);
+ get.resolve({positionSeconds:4,durationSeconds:60});assert.deepEqual(await loaded,latest);
+});
+test('a local write created and acknowledged while GET is delayed wins over the old remote response',async()=>{
+ let cache:Cache={...empty(),progress:{[id]:progress}};let revision=0;const get=deferred<unknown>();
+ const loaded=loadPlaybackProgress(id,{read:()=>cache,revision:()=>revision,load:()=>get.promise});
+ const latest={positionSeconds:35,durationSeconds:60};revision++;cache={...cache,progress:{[id]:latest},pending:{[id]:latest}};
+ await synchronize(id,latest,{read:()=>cache,write:next=>{cache=next;},persist:()=>{},send:async()=>{}});
+ get.resolve(progress);assert.deepEqual(await loaded,latest);
+});
 test('corrupt browser cache recovers and pending progress survives a restart',()=>{
  assert.deepEqual(recover('invalid'),empty());assert.deepEqual(recover(JSON.stringify({...empty(),progress:{[id]:progress},pending:{[id]:progress}})).pending[id],progress);
 });
