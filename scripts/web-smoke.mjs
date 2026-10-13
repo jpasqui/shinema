@@ -61,7 +61,7 @@ try{
  await page.getByRole('button',{name:'Pause video',exact:true}).click();await expect(video).toHaveJSProperty('paused',true);
  const paused=await video.evaluate(node=>node.currentTime);await page.waitForTimeout(300);assert(Math.abs((await video.evaluate(node=>node.currentTime))-paused)<.05);
  await page.getByRole('button',{name:'Forward ten seconds'}).click();await expect.poll(()=>video.evaluate(node=>node.currentTime)).toBeGreaterThan(paused+9.5);
- const seeked=await video.evaluate(node=>node.currentTime);await expect(video).toHaveJSProperty('seeking',false);await expect.poll(()=>page.getByLabel('Playback position').inputValue().then(Number)).toBeGreaterThan(seeked-.5);await screenshot(page,'player-desktop');
+ const seeked=await video.evaluate(node=>node.currentTime);await expect(video).toHaveJSProperty('seeking',false);await expect.poll(()=>page.getByLabel('Playback position').inputValue().then(Number)).toBeGreaterThan(seeked-.5);await expect(page.getByRole('alert')).toHaveCount(0);await screenshot(page,'player-desktop');
  const catalog=await (await fetch('http://127.0.0.1:8787/api/catalog')).json();const item=catalog.items.find(item=>item.title==='Generated Orbit');
  await expect.poll(async()=>{const progress=await(await fetch(`http://127.0.0.1:8787/api/media/${item.id}/progress`)).json();return progress?.positionSeconds??0;}).toBeGreaterThan(seeked-.5);
  await page.getByRole('button',{name:'Back to details',exact:false}).click();await page.getByRole('button',{name:'Resume',exact:false}).click();
@@ -75,8 +75,10 @@ try{
  results.checks.push('Actual 1280x720 video decode, advancing playback, pause, seek, server progress PUT, resume and browser reload persistence; every observed media event muted, source-loaded/play events at volume zero');
  await page.setViewportSize({width:390,height:844});await orbit.focus();await orbit.press('ArrowDown');await expect(page.getByRole('button',{name:'Open Pulse',exact:true})).toBeFocused();await page.keyboard.press('ArrowUp');await expect(page.getByRole('button',{name:'Open Horizon',exact:true})).toBeFocused();await screenshot(page,'library-mobile');
  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));await orbit.click();await screenshot(page,'detail-mobile');
- assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));await page.getByRole('button',{name:'Back to library',exact:false}).click();
- results.checks.push('390px responsive library/details render without horizontal overflow, vertical keyboard navigation follows the responsive grid');
+ assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));await page.getByRole('button',{name:'Resume',exact:false}).click();await expect(page.locator('video')).toHaveJSProperty('paused',false);await page.getByRole('button',{name:'Pause video',exact:true}).click();
+ await page.getByRole('button',{name:'Forward ten seconds'}).click();await expect(page.locator('video')).toHaveJSProperty('seeking',false);await expect(page.getByRole('alert')).toHaveCount(0);assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));await screenshot(page,'player-mobile');
+ await page.getByRole('button',{name:'Back to details',exact:false}).click();await page.getByRole('button',{name:'Back to library',exact:false}).click();
+ results.checks.push('390px responsive library/details/player render without horizontal overflow, phone-sized playback/pause/seek work, vertical keyboard navigation follows the responsive grid');
  await page.setViewportSize({width:1280,height:900});
  // Vite must not expose repository state or private development files.
  for(const path of ['/@fs/'+join(root,'.git','config').replaceAll('\\','/'),'/@fs/'+join(root,'.local','media','Generated_Orbit.mp4').replaceAll('\\','/')])assert((await page.request.get('http://127.0.0.1:5173'+path)).status()>=400);

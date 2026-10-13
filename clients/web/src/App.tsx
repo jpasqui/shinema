@@ -4,13 +4,14 @@ import {parseCatalog} from '../../../packages/contracts/index.ts';
 import type {Media,Progress} from '../../../packages/contracts/index.ts';
 import {clock,empty,initializeSilentVideo,loadPlaybackProgress,NavigationGuard,progressValue,Queue,recover,resumeAt,synchronize} from './model.ts';
 import type {Cache} from './model.ts';
+import {Artwork} from './Artwork.tsx';
 
 const storageKey='shinema.web.cache.v1';
 const demo=import.meta.env.VITE_DEMO_MODE==='true';
 const descriptions=[
-  'A quiet expedition through shape, light and motion. An original generated test clip for the Shinema preview.',
-  'Follow the horizon into a new palette. An original generated test clip for the Shinema preview.',
-  'An exploration of rhythm and color. An original generated test clip for the Shinema preview.',
+  'A generated sample with original lunar landscape artwork.',
+  'A generated sample with original desert landscape artwork.',
+  'A generated sample with original architectural artwork.',
 ];
 const artwork=(item:Media)=>demo ? ['Orbit','Horizon','Pulse'].findIndex(name=>item.title.includes(name)) : parseInt(item.id.slice(0,2),16)%3;
 const title=(item:Media)=>demo ? item.title.replace(/^Generated /,'') : item.title;
@@ -20,9 +21,7 @@ async function json(path:string,init?:RequestInit):Promise<unknown>{
 }
 function Poster({item,large=false}:{item:Media;large?:boolean}){
   return <div aria-hidden="true" className={`poster art-${Math.max(0,artwork(item))}${large?' large':''}`}>
-    <div className="poster-grain"/><div className="orbital"><i/><i/><i/></div>
-    <span className="poster-kicker">{demo?'SHINEMA ORIGINAL FIXTURE':item.container.toUpperCase()}</span>
-    <strong>{title(item)}</strong><span className="poster-bottom">{demo?'GENERATED DEMO / 2026':'YOUR LIBRARY'}</span>
+    <Artwork kind={Math.max(0,artwork(item))}/>
   </div>;
 }
 
@@ -110,31 +109,30 @@ export default function App(){
   const items=cache.current.catalog?.items??[];
   const featured=items.find(item=>item.title.includes('Orbit'))??items[0];
   return <div className="app" data-cache-version={version}>
-    <header className="header"><button className="brand" onClick={showLibrary} aria-label="Shinema library"><span className="brand-mark">S</span>shinema<span className="brand-dot">.</span></button>
-      <nav aria-label="Main navigation"><button className={route==='library'?'nav-link active':'nav-link'} onClick={showLibrary}>Library</button><span className="nav-disabled">Your cinema, everywhere</span></nav>
-      <span className="demo-badge">{demo?'GENERATED DEMO':'LOCAL PREVIEW'}</span></header>
+    <header className="header"><button className="brand" onClick={showLibrary} aria-label="Shinema library">Shinema</button>
+      <nav aria-label="Main navigation"><button className={route==='library'?'nav-link active':'nav-link'} onClick={showLibrary}>Library</button></nav>
+      <span className="context-label">{demo?'Demo library':'Local preview'}</span></header>
     {storageError && <div className="notice" role="alert">Browser storage is unavailable. Resume changes will last for this session only.</div>}
     {route==='player' && selected ? <Player item={selected} progress={resume} save={save} back={()=>{guard.current.next();setRoute('detail');}}/> :
     route==='detail' && selected ? <main className="detail"><button ref={back} className="back-button" onClick={showLibrary}>&larr; Back to library</button>
-      <div className="detail-layout"><Poster item={selected} large/><section className="detail-copy"><p className="eyebrow">{demo?'GENERATED DEMO FIXTURE':'FROM YOUR LIBRARY'}</p><h1>{title(selected)}</h1>
-        <div className="metadata"><span>{selected.container.toUpperCase()}</span><span>{demo?'1 minute':`${(selected.sizeBytes/1048576).toFixed(1)} MB`}</span><span>Direct playback</span></div>
+      <div className="detail-layout"><Poster item={selected} large/><section className="detail-copy"><p className="detail-category">{demo?'Generated sample':'Library title'}</p><h1>{title(selected)}</h1>
+        <div className="metadata"><span>{demo?'1 min':`${(selected.sizeBytes/1048576).toFixed(1)} MB`}</span><span>{selected.container.toUpperCase()}</span></div>
         <p className="description">{demo?descriptions[Math.max(0,artwork(selected))]:'Play this item directly from your connected server. Your position is saved locally and synchronized when the server is available.'}</p>
         <button className="primary" onClick={()=>{void play();}} disabled={opening}>{opening?'Preparing playback...':(cache.current.progress[selected.id]?.positionSeconds??0)>0?'\u25b6 Resume':'\u25b6 Play'}</button>
-        <p className="quiet">Silent preview. Audio stays muted from initialization.</p><div className="detail-note"><span className="small-label">READY WHEN YOU ARE</span><p>Pick up where you left off.<br/>Your place stays with you.</p></div>
+        <p className="quiet">Muted preview &middot; progress saved automatically</p>
       </section></div></main> : <main>
-      <section className="hero"><div className="hero-art" aria-hidden="true"><div className="planet"/><div className="hero-ring"/><span className="star star-one"/><span className="star star-two"/></div>
-        <div className="hero-copy"><p className="eyebrow">A LITTLE SPACE FOR YOUR STORIES</p><h1>Your next<br/>great escape.</h1><p>A familiar library. A fresh perspective.<br/>Everything you love, ready to play.</p>
-          {featured && <button className="primary" onClick={()=>showDetail(featured,items.indexOf(featured))}>&#9654; Explore {title(featured)}</button>}
-          <span className="hero-caption">{demo?'Original artwork / generated test media':'Browse from your local cache'}</span></div>
-        <div className="hero-number" aria-hidden="true">01 <span>/ SHINEMA</span></div></section>
-      <section className="library-section"><div className="section-heading"><div><p className="eyebrow">MAKE YOURSELF AT HOME</p><h2>Your library</h2></div><div className="connection"><span className={error?'status-dot offline':'status-dot'}/>{loading?'Connecting...':error?'Cached browsing':`${items.length} titles`}<button className="text-button" onClick={()=>{void refresh();}} disabled={loading}>{loading?'Refreshing...':'Refresh'}</button></div></div>
+      <div className="page-title"><h1>Library</h1><p>{demo?'Generated clips with original demo artwork.':'Browse your saved titles.'}</p></div>
+      {featured && <section className="feature" aria-label="Featured title"><Artwork kind={Math.max(0,artwork(featured))} wide/><div className="feature-shade"/>
+        <div className="feature-copy"><p className="feature-label">Featured</p><h2>{title(featured)}</h2><p className="feature-meta">{demo?'Generated sample · 1 min':'Direct playback'}</p><button className="primary" onClick={()=>showDetail(featured,items.indexOf(featured))}>View details <span aria-hidden="true">&rarr;</span></button></div>
+      </section>}
+      <section className="library-section"><div className="section-heading"><h2>All titles <span className="title-count">{items.length}</span></h2><div className="connection">{loading?<span>Connecting...</span>:error?<span>{cache.current.catalog?'Cached library':'Offline'}</span>:null}<button className="text-button" onClick={()=>{void refresh();}} disabled={loading}>{loading?'Refreshing...':'Refresh'}</button></div></div>
         {error && <div className="notice" role="status">{error} <button className="text-button" onClick={()=>{void refresh();}}>Retry connection</button></div>}
         {loading && !items.length ? <div className="poster-grid" aria-label="Loading library" aria-busy="true">{[0,1,2].map(i=><div key={i} className="skeleton"/>)}</div> : items.length ? <div className="poster-grid">{items.map((item,index)=>{
           const progress=cache.current.progress[item.id];return <button key={item.id} ref={node=>{cards.current[index]=node;}} className="media-card" tabIndex={index===focus?0:-1} onFocus={()=>setFocus(index)} onKeyDown={event=>navigateCard(event,index)} onClick={()=>showDetail(item,index)} aria-label={`Open ${title(item)}`}>
-            <Poster item={item}/><div className="card-copy"><h3>{title(item)}</h3><span>{demo?'Generated clip':item.container.toUpperCase()} <i/> {progress?`Resume at ${clock(progress.positionSeconds)}`:demo?'1 min':'Direct play'}</span></div>
+            <Poster item={item}/><div className="card-copy"><h3>{title(item)}</h3><span>{progress?`Resume at ${clock(progress.positionSeconds)}`:demo?`1 min · ${item.container.toUpperCase()}`:item.container.toUpperCase()}</span></div>
             {progress && <div className="watch-progress" aria-label={`${Math.round(progress.positionSeconds/progress.durationSeconds*100)} percent watched`}><div style={{width:`${progress.positionSeconds/progress.durationSeconds*100}%`}}/></div>}
-          </button>;})}</div> : <div className="empty-state"><h3>{error?'Waiting for your server':'A new beginning'}</h3><p>{error?'Connect the local Rust server and retry.':'Add supported media to the server fixture directory, then refresh your library.'}</p></div>}
-      </section><footer><span>SHINEMA / YOUR OWN LITTLE CINEMA</span><span>{demo?'Demo fixtures only. No private library data.':'Local browser preview'}</span></footer>
+          </button>;})}</div> : <div className="empty-state"><h3>{error?'Waiting for your server':'Your library is empty'}</h3><p>{error?'Your library will appear when the connection returns.':'Add supported media to the server fixture directory, then refresh your library.'}</p></div>}
+      </section><footer><span>Shinema</span><span>Local preview</span></footer>
     </main>}
   </div>;
 }
@@ -151,7 +149,8 @@ function Player({item,progress,save,back}:{item:Media;progress:Progress|null;sav
     const hide=()=>snapshot();document.addEventListener('visibilitychange',hide);window.addEventListener('pagehide',hide);
     return()=>{save(item.id,node.currentTime,node.duration);node.pause();node.removeAttribute('src');node.load();document.removeEventListener('visibilitychange',hide);window.removeEventListener('pagehide',hide);};
   },[item.streamPath,snapshot]);
-  const toggle=()=>{const node=video.current;if(!node)return;if(node.paused)void node.play().catch(()=>setError('Playback could not start. Check the connection or media format.'));else node.pause();};
+  const startPlayback=(message:string)=>{const node=video.current;if(!node)return;void node.play().catch(error=>{if(error instanceof DOMException && error.name==='AbortError')return;if(node.isConnected)setError(message);});};
+  const toggle=()=>{const node=video.current;if(!node)return;if(node.paused)startPlayback('Playback could not start. Check the connection or media format.');else node.pause();};
   const seek=(value:number)=>{const node=video.current;if(node && Number.isFinite(node.duration))node.currentTime=Math.max(0,Math.min(value,node.duration));};
   const key=(event:ReactKeyboardEvent<HTMLElement>)=>{
     if(event.key==='Escape'){event.preventDefault();snapshot();back();}
@@ -160,17 +159,17 @@ function Player({item,progress,save,back}:{item:Media;progress:Progress|null;sav
     else if(event.key===' ' && !(event.target instanceof HTMLButtonElement)){event.preventDefault();toggle();}
   };
   return <main className="player-page" ref={container} tabIndex={-1} onKeyDown={key} aria-label="Video player">
-    <div className="player-heading"><button className="back-button" onClick={()=>{snapshot();back();}}>&larr; Back to details</button><span className="demo-badge">SILENT PREVIEW</span></div>
+    <div className="player-heading"><button className="back-button" onClick={()=>{snapshot();back();}}>&larr; Back to details</button><span className="context-label">Muted preview</span></div>
     <div className="video-stage"><video ref={video} playsInline muted preload="metadata" aria-label={`Playing ${title(item)}`}
       onLoadedMetadata={()=>{const node=video.current!;setDuration(node.duration);node.currentTime=resumeAt(progress,node.duration);setPosition(node.currentTime);}}
-      onCanPlay={()=>{setReady(true);if(!started.current){started.current=true;void video.current?.play().catch(()=>setError('Press Play to start playback.'));}}}
+      onCanPlay={()=>{setReady(true);if(!started.current){started.current=true;startPlayback('Press Play to start playback.');}}}
       onPlay={()=>{setPaused(false);setError('');}} onPause={()=>{setPaused(true);snapshot();}} onSeeked={()=>{setPosition(video.current?.currentTime??0);snapshot();}} onEnded={snapshot}
       onTimeUpdate={()=>{const node=video.current!;setPosition(node.currentTime);if(Math.abs(node.currentTime-lastSave.current)>=5){lastSave.current=node.currentTime;snapshot();}}}
       onError={()=>setError('This item could not play. Check your server connection and browser codec support.')}/>
-      {!ready && !error && <div className="video-message" role="status">Loading your escape...</div>}
+      {!ready && !error && <div className="video-message" role="status">Loading video...</div>}
       {error && <div className="video-message" role="alert">{error}</div>}
     </div>
     <div className="player-controls"><button className="primary" onClick={toggle} aria-label={paused?'Play video':'Pause video'}>{paused?'\u25b6 Play':'\u2161 Pause'}</button><button className="control-button" onClick={()=>seek(position-10)} aria-label="Back ten seconds">-10s</button><button className="control-button" onClick={()=>seek(position+10)} aria-label="Forward ten seconds">+10s</button><input aria-label="Playback position" type="range" min="0" max={duration||1} step="0.1" value={position} onChange={event=>seek(Number(event.target.value))}/><span className="time">{clock(position)} / {clock(duration)}</span><span className="muted-label">Audio muted</span></div>
-    <div className="now-playing"><p className="eyebrow">NOW PLAYING / {demo?'GENERATED DEMO':'DIRECT STREAM'}</p><h1>{title(item)}</h1><p className="quiet">Space to pause. Arrow keys to seek. Escape to return.</p></div>
+    <div className="now-playing"><div><h1>{title(item)}</h1><p className="quiet">{demo?'Generated sample':'Direct playback'}</p></div><p className="keyboard-hint">Space to pause &middot; Arrows to seek &middot; Esc to return</p></div>
   </main>;
 }
