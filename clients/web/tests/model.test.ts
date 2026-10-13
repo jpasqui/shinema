@@ -2,7 +2,14 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {empty,recover,NavigationGuard,Queue,synchronize,progressValue,resumeAt,initializeSilentVideo,loadPlaybackProgress} from '../src/model.ts';
 import type {Cache} from '../src/model.ts';
+import {parseCatalog} from '../../../packages/contracts/index.ts';
 const id='a'.repeat(64);const progress={positionSeconds:12,durationSeconds:60};
+test('optional thumbnails retain old catalogs and accept only the matching relative media endpoint',()=>{
+ const item={id,title:'Generated sample',container:'mp4',sizeBytes:20,streamPath:`/api/media/${id}/stream`};
+ assert.equal(parseCatalog({apiVersion:1,items:[item]}).items[0].posterPath,undefined);
+ assert.equal(parseCatalog({apiVersion:1,items:[{...item,posterPath:`/api/media/${id}/poster`}]}).items[0].posterPath,`/api/media/${id}/poster`);
+ for(const posterPath of ['https://example.invalid/poster','/api/media/'+'b'.repeat(64)+'/poster',null])assert.throws(()=>parseCatalog({apiVersion:1,items:[{...item,posterPath}]}));
+});
 function deferred<T>(){let resolve!:(value:T)=>void;const promise=new Promise<T>(done=>{resolve=done;});return {promise,resolve};}
 test('12 to 22 to 12 retains the newest request until its own acknowledgement and skips obsolete queued writes',async()=>{
  let cache:Cache=empty();let persisted='';let serverPosition=0;const sent:number[]=[];const queue=new Queue();

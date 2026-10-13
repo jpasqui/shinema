@@ -11,11 +11,12 @@ button, input { -webkit-tap-highlight-color: transparent; }
 .nav-link { position: relative; padding: 12px 0; background: none; font-size: 14px; color: var(--color-muted); }
 .nav-link.active { color: var(--color-text); }
 .nav-link.active::after { content: ''; position: absolute; height: 2px; background: var(--color-text); left: 0; right: 0; bottom: -20px; }
-.context-label { margin-left: auto; font-size: 12px; color: var(--color-muted); white-space: nowrap; }
+.context-label { margin-left: auto; font-size: 12px; color: var(--color-muted); white-space: nowrap; max-width: 32%; overflow: hidden; text-overflow: ellipsis; }
 .page-title { margin: 35px var(--space-page) 26px; display: flex; justify-content: space-between; align-items: baseline; gap: 20px; }
 .page-title h1 { margin: 0; font-size: 34px; letter-spacing: -1px; font-weight: 500; }
 .page-title p { margin: 0; color: var(--color-muted); font-size: 13px; line-height: 1.5; }
 .artwork { display: block; width: 100%; height: 100%; }
+.media-thumbnail { object-fit: cover; }
 .feature { position: relative; height: clamp(350px, 34vw, 470px); overflow: hidden; margin: 0 var(--space-page) 40px; border-radius: var(--radius-card); background: #22312f; }
 .feature > .artwork { position: absolute; inset: 0; }
 .feature-shade { position: absolute; inset: 0; background: linear-gradient(90deg, #070e14a6, transparent 70%), linear-gradient(0deg, #060c13a3, transparent 65%); }

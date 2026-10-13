@@ -62,6 +62,12 @@ try{
  assert(results.longTitleChecks.every(value=>value.copyTop>=value.frameTop && value.copyBottom<=value.frameBottom),'Featured text and controls must stay inside the banner');
  assert(results.longTitleChecks.every(value=>value.titleHeight<=value.lineHeight*2+1),'Featured title must be bounded to two lines');
  results.checks.push('200-character unbroken/spaced catalog titles stay bounded in the featured banner at 1280px/390px; full title remains available in details without horizontal overflow');
+ const thumbnailContext=await browser.newContext({viewport:{width:1280,height:900},reducedMotion:'reduce'});
+ await thumbnailContext.route('**/api/catalog',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({apiVersion:1,items:[{...titleItem,posterPath:`/api/media/${titleItem.id}/poster`}]})}));
+ await thumbnailContext.route('**/api/media/*/poster',route=>route.fulfill({status:200,contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="640" height="360" fill="#304c3b"/></svg>'}));
+ const thumbnailPage=await thumbnailContext.newPage();await thumbnailPage.goto('http://127.0.0.1:5173');await expect(thumbnailPage.locator('.media-thumbnail')).toHaveCount(2);await expect.poll(()=>thumbnailPage.locator('.media-thumbnail').first().evaluate(node=>node.naturalWidth)).toBe(640);
+ await thumbnailContext.unroute('**/api/media/*/poster');await thumbnailContext.route('**/api/media/*/poster',route=>route.fulfill({status:404,body:'Unavailable'}));await thumbnailPage.reload();await expect(thumbnailPage.locator('.feature svg.artwork')).toBeVisible();await expect(thumbnailPage.locator('.media-thumbnail')).toHaveCount(0);await thumbnailContext.close();
+ results.checks.push('Optional same-item thumbnails render from a generated image; failed thumbnails fall back to original artwork without breaking browsing');
  const orbit=page.getByRole('button',{name:'Open Orbit',exact:true});await orbit.focus();await orbit.press('ArrowRight');await expect(page.getByRole('button',{name:'Open Pulse',exact:true})).toBeFocused();
  await page.keyboard.press('ArrowLeft');await expect(orbit).toBeFocused();const scroll=await page.evaluate(()=>window.scrollY);
  await page.keyboard.press('Enter');await expect(page.getByRole('heading',{name:'Orbit',exact:true})).toBeVisible();await screenshot(page,'detail-desktop');

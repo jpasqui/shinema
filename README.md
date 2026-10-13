@@ -11,6 +11,7 @@ The implementation branch contains a read-only Rust catalog/streaming server and
 - HTTPS is required by the client with normal platform trust. The server currently binds only to loopback; TLS termination and production authentication are not implemented.
 - CI checks Rust formatting/lint/tests, shared contract/client tests and types, host HTTP integration and an unsigned Android release build.
 - The stacked React web preview adds a responsive generated-media library, HTML5 direct playback, cached browsing and resume. Its isolated Chromium workload verifies browser rendering and playback; see [web setup and checks](docs/web-preview.md).
+- A [temporary read-only SSH preview](docs/ssh-library-preview.md) can demonstrate actual remote media through an existing approved identity. It is a local Node development bridge; the production Rust storage integration remains separate.
 
 ## Repository
 

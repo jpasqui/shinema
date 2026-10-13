@@ -8,6 +8,7 @@ import {Artwork} from './Artwork.tsx';
 
 const storageKey='shinema.web.cache.v1';
 const demo=import.meta.env.VITE_DEMO_MODE==='true';
+const libraryLabel=Array.from(import.meta.env.VITE_LIBRARY_LABEL??'').slice(0,48).join('');
 const descriptions=[
   'A generated sample with original lunar landscape artwork.',
   'A generated sample with original desert landscape artwork.',
@@ -21,8 +22,12 @@ async function json(path:string,init?:RequestInit):Promise<unknown>{
 }
 function Poster({item,large=false}:{item:Media;large?:boolean}){
   return <div aria-hidden="true" className={`poster art-${Math.max(0,artwork(item))}${large?' large':''}`}>
-    <Artwork kind={Math.max(0,artwork(item))}/>
+    <MediaArtwork item={item}/>
   </div>;
+}
+function MediaArtwork({item,wide=false}:{item:Media;wide?:boolean}){
+  const [failedPath,setFailedPath]=useState<string|null>(null);
+  return item.posterPath && item.posterPath!==failedPath ? <img className="artwork media-thumbnail" src={item.posterPath} alt="" onError={()=>setFailedPath(item.posterPath!)} /> : <Artwork kind={Math.max(0,artwork(item))} wide={wide}/>;
 }
 
 export default function App(){
@@ -111,7 +116,7 @@ export default function App(){
   return <div className="app" data-cache-version={version}>
     <header className="header"><button className="brand" onClick={showLibrary} aria-label="Shinema library">Shinema</button>
       <nav aria-label="Main navigation"><button className={route==='library'?'nav-link active':'nav-link'} onClick={showLibrary}>Library</button></nav>
-      <span className="context-label">{demo?'Demo library':'Local preview'}</span></header>
+      <span className="context-label" title={demo?'Demo library':libraryLabel||'Local preview'}>{demo?'Demo library':libraryLabel||'Local preview'}</span></header>
     {storageError && <div className="notice" role="alert">Browser storage is unavailable. Resume changes will last for this session only.</div>}
     {route==='player' && selected ? <Player item={selected} progress={resume} save={save} back={()=>{guard.current.next();setRoute('detail');}}/> :
     route==='detail' && selected ? <main className="detail"><button ref={back} className="back-button" onClick={showLibrary}>&larr; Back to library</button>
@@ -122,7 +127,7 @@ export default function App(){
         <p className="quiet">Muted preview &middot; progress saved automatically</p>
       </section></div></main> : <main>
       <div className="page-title"><h1>Library</h1><p>{demo?'Generated clips with original demo artwork.':'Browse your saved titles.'}</p></div>
-      {featured && <section className="feature" aria-label="Featured title"><Artwork kind={Math.max(0,artwork(featured))} wide/><div className="feature-shade"/>
+      {featured && <section className="feature" aria-label="Featured title"><MediaArtwork item={featured} wide/><div className="feature-shade"/>
         <div className="feature-copy"><p className="feature-label">Featured</p><h2 title={title(featured)}>{title(featured)}</h2><p className="feature-meta">{demo?'Generated sample · 1 min':'Direct playback'}</p><button className="primary" onClick={()=>showDetail(featured,items.indexOf(featured))}>View details <span aria-hidden="true">&rarr;</span></button></div>
       </section>}
       <section className="library-section"><div className="section-heading"><h2>All titles <span className="title-count">{items.length}</span></h2><div className="connection">{loading?<span>Connecting...</span>:error?<span>{cache.current.catalog?'Cached library':'Offline'}</span>:null}<button className="text-button" onClick={()=>{void refresh();}} disabled={loading}>{loading?'Refreshing...':'Refresh'}</button></div></div>

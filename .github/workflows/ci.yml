@@ -25,6 +25,8 @@ jobs:
         working-directory: clients/web
       - run: npm test && npm run build
         working-directory: clients/web
+      - run: node --test scripts/tests/*.test.mjs
+      - run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
       - run: node clients/web/node_modules/playwright/cli.js install --with-deps chromium
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: node scripts/generate-test-media.mjs

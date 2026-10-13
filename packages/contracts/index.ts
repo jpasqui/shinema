@@ -1,4 +1,4 @@
-export type Media = {id:string; title:string; container:string; sizeBytes:number; streamPath:string};
+export type Media = {id:string; title:string; container:string; sizeBytes:number; streamPath:string; posterPath?:string};
 export type Catalog = {apiVersion:1; items:Media[]};
 export type Progress = {positionSeconds:number; durationSeconds:number};
 const object=(value:unknown):value is Record<string,unknown>=>typeof value==='object' && value!==null;
@@ -9,7 +9,8 @@ export function parseCatalog(value:unknown):Catalog {
     if(!object(item) || typeof item.id!=='string' || !/^[a-f0-9]{64}$/.test(item.id) || ids.has(item.id)
       || typeof item.title!=='string' || Array.from(item.title).length>200 || typeof item.container!=='string'
       || !['mp4','m4v','mkv','webm'].includes(item.container) || !Number.isSafeInteger(item.sizeBytes) || Number(item.sizeBytes)<0
-      || item.streamPath!==`/api/media/${item.id}/stream`)throw new Error('Invalid catalog item');
+      || item.streamPath!==`/api/media/${item.id}/stream`
+      || (item.posterPath!==undefined && item.posterPath!==`/api/media/${item.id}/poster`))throw new Error('Invalid catalog item');
     ids.add(item.id);
   }
   return value as Catalog;

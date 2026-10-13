@@ -53,3 +53,7 @@ local-tools/
 
 # Kotlin compiler/session state
 .kotlin/
+
+# Python helper/test bytecode
+__pycache__/
+*.pyc
