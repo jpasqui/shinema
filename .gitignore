@@ -42,3 +42,14 @@ local.properties
 *.swp
 .DS_Store
 Thumbs.db
+
+# Private development state, generated media and local SDK tools
+.local/
+**/.local/
+local-tools/
+*.mp4
+*.mkv
+*.webm
+
+# Kotlin compiler/session state
+.kotlin/

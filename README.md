@@ -1,38 +1,38 @@
 # Shinema
 
-Shinema is a planned unified media server and client product, with a Rust server and React / React Native clients.
+A unified media product with a Rust server and React / React Native clients.
 
-## Status
+## First usable slice
 
-Early prototype stage. This repository currently contains project documentation and repository configuration only. It does not yet contain a runnable server or client, and no production-ready features or platform support are claimed.
+The implementation branch contains a read-only Rust catalog/streaming server and a React Native TV client for browse, detail, direct playback and resume. It is early development work under draft review. Hardware validation and a real read-only test library are still required; this is not a production deployment.
 
-## Direction
+- The server scans a configurable small media folder, exposes opaque media IDs, supports single byte-range streaming, and stores resume progress in a separate SQLite state directory.
+- The client preserves library selection through detail/player/Back, browses an app-private cached catalog, and queues local progress for server sync.
+- HTTPS is required by the client with normal platform trust. The server currently binds only to loopback; TLS termination and production authentication are not implemented.
+- CI checks Rust formatting/lint/tests, shared contract/client tests and types, host HTTP integration and an unsigned Android release build.
 
-- **Server:** Rust, with one integrated service for library, playback and user workflows.
-- **Web client:** React.
-- **Mobile and TV clients:** React Native, using the maintained React Native TV fork for television platforms.
-- **TV priority:** NVIDIA Shield / Android TV, with fast D-pad navigation, preserved focus and smooth poster-heavy browsing.
-- **Other platforms:** Phones and web are planned from the start. Apple TV is a planned route that requires its own input, cache and player adapters and hardware validation. Desktop delivery is still to be decided.
-- **Local-first browsing:** Clients should browse cached library metadata and artwork while server access is unavailable.
-
-Future work includes GPU transcoding, intro and credits skipping, downloads, generated missing subtitles, integrated Radarr/Sonarr requests and custom channels. These are intended capabilities, not implemented features.
-
-## Intended monorepo structure
+## Repository
 
 ```text
-server/           Rust server and internal crates
-clients/web/      React web client
-clients/native/   React Native mobile and TV clients
-packages/contracts/ Shared API schemas and generated client types
-docs/             Architecture and product decisions
+server/              Rust server
+clients/native/      React Native TV client (Android first)
+packages/contracts/  Shared API schemas, types and runtime parsers
+docs/                Setup, API and dependency license review
+scripts/             Generated fixtures and host integration checks
 ```
 
-These directories describe the intended layout; they have not been scaffolded yet. Platform-specific adapters should share domain logic and API contracts where practical, without assuming identical playback or remote behavior across devices.
+[Development and setup](docs/development.md) explains tools, environment variables and checks. [API definitions](docs/api.md) describe the first-slice contract. No private media, server paths, configuration, credentials, signing keys or built binaries belong in this repository.
 
-## Development
+## Product direction
 
-Build and run instructions will be added alongside the first implementation. No dependency installation or device setup is needed for this initial repository.
+NVIDIA Shield / Android TV is the first required television target. React web, React Native phone clients and an Apple TV route are planned; desktop delivery is undecided. Those platforms are not validated by this Android slice. Shared domain logic and API contracts should coexist with platform-specific input, cache and playback adapters.
+
+GPU transcoding, intro/credits skipping, downloads, generated missing subtitles, integrated Radarr/Sonarr requests and custom channels remain future work.
+
+## Contribution workflow
+
+All changes use branches and pull requests, including documentation and fixes. Incomplete work remains in draft; merging requires approval. See [AGENTS.md](AGENTS.md).
 
 ## License
 
-Original Shinema project code is licensed under the [MIT License](LICENSE). Third-party dependencies retain their own licenses and notices.
+Original Shinema project code is licensed under the [MIT License](LICENSE). Third-party dependencies retain their own licenses and notices; see [dependency review](docs/dependency-licenses.md).
