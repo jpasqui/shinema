@@ -35,4 +35,4 @@ Build and run instructions will be added alongside the first implementation. No 
 
 ## License
 
-The license has not been selected. No LICENSE file has been added; this decision remains pending.
+Original Shinema project code is licensed under the [MIT License](LICENSE). Third-party dependencies retain their own licenses and notices.
