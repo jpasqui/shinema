@@ -1,11 +1,13 @@
 import React,{useEffect,useMemo,useRef,useState} from 'react';
-import {AppState,NativeEventEmitter,NativeModules,Pressable,StyleSheet,Text,TextInput,View,useWindowDimensions} from 'react-native';
+import {AppState,BackHandler,NativeEventEmitter,NativeModules,Pressable,StyleSheet,Text,TextInput,View,useWindowDimensions} from 'react-native';
 import Video from 'react-native-video';
 import type {VideoRef} from 'react-native-video';
-import {parseCatalog,parseProgress,resumeAt,serverOrigin} from '../../../packages/contracts/index.ts';
+import {resumeAt,serverOrigin} from '../../../packages/contracts/index.ts';
 import type {Media,Progress} from '../../../packages/contracts/index.ts';
 import {fresh,recover,move,pageFor} from './domain.ts';
 import type {Stored} from './domain.ts';
+import {SessionGuard,ProgressQueue,connectValidated,persistThenSync,syncProgress,resolveResume,backDestination} from './session.ts';
+import type {ConnectionStamp} from './session.ts';
 
 const Host=NativeModules.ShinemaHost as {readState:()=>Promise<string>;writeState:(value:string)=>Promise<void>;finish:()=>void};
 type Route='setup'|'library'|'detail'|'player';
@@ -28,70 +30,66 @@ export default function App(){
   const video=useRef<VideoRef>(null);const input=useRef<React.ComponentRef<typeof TextInput>>(null);const position=useRef(0);const total=useRef(0);
   const resume=useRef<Progress|null>(null);const waitingSeek=useRef(false);const backHeld=useRef(false);const lastSave=useRef(0);
   const activeItem=useRef<Media|null>(null);
-  const connection=useRef(0);const playGeneration=useRef(0);const handler=useRef<(key:Key)=>void>(()=>{});
+  const activeDestination=useRef<ConnectionStamp|null>(null);
+  const session=useRef(new SessionGuard());const handler=useRef<(key:Key)=>void>(()=>{});
   const saveCurrent=useRef<()=>Promise<void>>(async()=>{});const persistQueue=useRef(Promise.resolve());
-  const syncQueue=useRef(Promise.resolve());
+  const syncQueue=useRef(new ProgressQueue());
   const items=stored.catalog?.items??[];const selected=items[cursor];
   const source=useMemo(()=>({uri:stored.origin+(selected?.streamPath??'')}),[stored.origin,selected?.streamPath]);
 
   function update(value:Stored){store.current=value;setStored(value);}
+  function acceptCatalog(value:Stored){
+    const switched=value.origin!==store.current.origin;
+    update(value);
+    setCursor(current=>switched?0:Math.min(current,Math.max(0,(value.catalog?.items.length??0)-1)));
+  }
   function persist():Promise<void>{
     const snapshot=JSON.stringify(store.current);
     persistQueue.current=persistQueue.current.catch(()=>{}).then(()=>Host.writeState(snapshot));
     return persistQueue.current;
   }
-  async function syncOne(id:string,value:Progress,origin:string){
-    if(store.current.origin!==origin)return;
+  async function syncOne(id:string,value:Progress,destination:ConnectionStamp){
     try{
-      await request(origin,`/api/media/${id}/progress`,'PUT',value);
-      if(store.current.origin!==origin)return;
-      const current=store.current.pending[id];
-      if(current?.positionSeconds===value.positionSeconds && current?.durationSeconds===value.durationSeconds){
-        const pending={...store.current.pending};delete pending[id];update({...store.current,pending});await persist();
-      }
-    }catch{setMessage('Progress saved on this device; sync will retry.');}
+      await syncProgress(session.current,destination,id,value,{read:()=>store.current,write:update,persist},async(origin,key,progress)=>{await request(origin,`/api/media/${key}/progress`,'PUT',progress);});
+    }catch{if(session.current.current(destination,store.current.origin))setMessage('Progress saved on this device; sync will retry.');}
   }
-  function flush(id:string,value:Progress,origin=store.current.origin):Promise<void>{
-    syncQueue.current=syncQueue.current.catch(()=>{}).then(()=>syncOne(id,value,origin));
-    return syncQueue.current;
+  function flush(id:string,value:Progress,destination:ConnectionStamp):Promise<void>{
+    return syncQueue.current.enqueue(()=>syncOne(id,value,destination));
   }
   async function save(item=activeItem.current){
-    if(!item || total.current<=0 || waitingSeek.current)return;
+    const destination=activeDestination.current;
+    if(!item || activeItem.current?.id!==item.id || !destination || !session.current.current(destination,store.current.origin) || total.current<=0 || waitingSeek.current)return;
     const value={positionSeconds:Math.min(Math.max(0,position.current),total.current),durationSeconds:total.current};
     update({...store.current,progress:{...store.current.progress,[item.id]:value},pending:{...store.current.pending,[item.id]:value}});
-    try{await persist();}catch{setMessage('Device progress storage failed.');return;}
-    void flush(item.id,value);
+    try{await persistThenSync(session.current,destination,persist,()=>store.current.origin,stamp=>flush(item.id,value,stamp));}
+    catch{if(session.current.current(destination,store.current.origin))setMessage('Device progress storage failed.');}
   }
   saveCurrent.current=()=>save();
 
   async function connect(raw:string){
     let origin:string;try{origin=serverOrigin(raw);}catch{setMessage('Enter an HTTPS address without a path or credentials.');return;}
-    const generation=++connection.current;setBusy(true);setMessage('Loading library...');
-    if(origin!==store.current.origin){update({...fresh(),origin});setCursor(0);}
+    const attempt=session.current.beginConnection();setBusy(true);setMessage('Loading library...');
     setOriginText(origin);
     try{
-      const catalog=parseCatalog(await request(origin,'/api/catalog'));
-      if(generation!==connection.current)return;
-      update({...store.current,origin,catalog});setCursor(current=>Math.min(current,Math.max(0,catalog.items.length-1)));
-      await persist();setRoute('library');setMessage(catalog.items.length?'Library ready.':'No supported files were found.');
-      for(const [id,pending] of Object.entries(store.current.pending))if(catalog.items.some(item=>item.id===id))void flush(id,pending,origin);
+      const result=await connectValidated(session.current,attempt,origin,value=>request(value,'/api/catalog'),{read:()=>store.current,write:acceptCatalog,persist});
+      if(!result)return;
+      const {catalog,stamp}=result;
+      setRoute('library');setMessage(catalog.items.length?'Library ready.':'No supported files were found.');
+      for(const [id,pending] of Object.entries(store.current.pending))if(catalog.items.some(item=>item.id===id))void flush(id,pending,stamp);
     }catch{
-      if(generation!==connection.current)return;
-      if(store.current.catalog){setRoute('library');setMessage('Browsing cached library. Server is unavailable.');}
+      if(!session.current.currentAttempt(attempt))return;
+      if(store.current.catalog){setRoute('library');setMessage(origin===store.current.origin?'Browsing cached library. Server is unavailable.':'Could not switch server. Your current library and progress are retained.');}
       else setMessage('Could not connect. Check the address and trusted HTTPS setup.');
-    }finally{if(generation===connection.current)setBusy(false);}
+    }finally{if(session.current.currentAttempt(attempt))setBusy(false);}
   }
 
   async function play(){
     if(!selected || busy)return;
-    const item=selected;const origin=store.current.origin;const generation=++playGeneration.current;
-    setBusy(true);setMessage('Checking resume position...');let progress:Progress|null=store.current.progress[item.id]??null;
-    if(!store.current.pending[item.id]){
-      try{progress=parseProgress(await request(origin,`/api/media/${item.id}/progress`));}
-      catch{setMessage('Using progress saved on this device.');}
-    }
-    if(generation!==playGeneration.current || origin!==store.current.origin){setBusy(false);return;}
-    activeItem.current=item;resume.current=progress;position.current=0;total.current=0;waitingSeek.current=false;lastSave.current=Date.now();
+    const item=selected;const ticket=session.current.beginPlayback(store.current.origin);
+    setBusy(true);setMessage('Checking resume position...');
+    const result=await resolveResume(session.current,ticket,item.id,()=>store.current,(origin,id)=>request(origin,`/api/media/${id}/progress`));
+    if(!result)return;
+    activeItem.current=item;activeDestination.current=ticket;resume.current=result.progress;position.current=0;total.current=0;waitingSeek.current=false;lastSave.current=Date.now();
     setClock(0);setDuration(0);setPaused(false);setLoading(true);setRoute('player');setBusy(false);setMessage('');
   }
 
@@ -103,18 +101,24 @@ export default function App(){
       if(typeof key.code==='number' && typeof key.action==='number' && typeof key.repeat==='number')handler.current({code:key.code,action:key.action,repeat:key.repeat});
     });
     const lifecycle=AppState.addEventListener('change',state=>{if(state!=='active'){setPaused(true);void saveCurrent.current();}});
-    return()=>{alive=false;keys.remove();lifecycle.remove();};
+    // ReactActivity can emit this fallback when an address EditText owns native
+    // focus. Keep the route behavior consistent; IME/device behavior is separate.
+    const nativeBack=BackHandler.addEventListener('hardwareBackPress',()=>{
+      handler.current({code:4,action:0,repeat:0});handler.current({code:4,action:1,repeat:0});return true;
+    });
+    return()=>{alive=false;keys.remove();lifecycle.remove();nativeBack.remove();session.current.cancelConnection();};
   },[]);
 
   handler.current=(key:Key)=>{
     const back=key.code===4 || key.code===111;
     if(key.action===1){if(back)backHeld.current=false;return;}
     if(back){
-      if(backHeld.current)return;backHeld.current=true;++playGeneration.current;
-      if(route==='player'){setPaused(true);void save();activeItem.current=null;setRoute('detail');setLoading(false);}
-      else if(route==='detail')setRoute('library');
-      else if(route==='setup' && store.current.catalog)setRoute('library');
-      else void persist().catch(()=>{}).then(()=>Host.finish());
+      if(backHeld.current)return;backHeld.current=true;session.current.invalidatePlayback();
+      if(route==='setup'){session.current.cancelConnection();setBusy(false);}
+      const destination=backDestination(route,Boolean(store.current.catalog));
+      if(route==='player'){setPaused(true);void save();activeItem.current=null;activeDestination.current=null;setLoading(false);}
+      if(destination==='exit')void persist().catch(()=>{}).then(()=>Host.finish());
+      else {setRoute(destination);setBusy(false);}
       return;
     }
     if(route==='setup'){
@@ -122,7 +126,7 @@ export default function App(){
       else if((key.code===23 || key.code===66) && !busy)void connect(originText);
       return;
     }
-    if(key.code===82 && route!=='player'){setRoute('setup');setMessage('Edit server address, then connect.');return;}
+    if(key.code===82 && route!=='player'){session.current.cancelConnection();setBusy(false);setRoute('setup');setMessage('Edit server address, then connect.');return;}
     if(route==='library'){
       const direction=({21:-1,22:1,19:-4,20:4} as Record<number,number>)[key.code];
       if(direction!==undefined)setCursor(current=>move(current,direction,items.length));

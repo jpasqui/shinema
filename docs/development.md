@@ -31,6 +31,10 @@ Default binding is `127.0.0.1:8787`. Non-loopback binds are rejected. Do not exp
 
 Writable state is a SQLite resume database outside media. It persists across server restarts. The client keeps an app-private metadata mirror and pending progress, syncs successful saves to the server, and restores the selected library page through detail/player/Back navigation.
 
+The SQLite database and its WAL, SHM and rollback-journal files must be ordinary singly linked files. Startup rejects existing symbolic links, Windows reparse points, hardlinks and non-file entries before SQLite initialization, and uses SQLite `NOFOLLOW`. New Unix state directories use mode 0700; existing group/other-writable state directories are rejected. Keep this directory and its parents private to the server account; on Windows, use a local application-state directory with appropriate existing ACLs. These checks are not a sandbox against a privileged or same-account process racing parent-directory replacement or hardlink creation. Read-only media access controls remain required for a production boundary.
+
+A candidate server does not replace the working cached library until its catalog validates. Failed switches preserve queued progress. Pending writes capture their origin and confirmed connection generation before asynchronous storage, and stale completions cannot send data to or clear data on another server. Reconnecting to the same server replays retained pending progress in order. This first slice maintains one confirmed server cache; a successful switch replaces that cache rather than providing multiple server profiles.
+
 ## Generated test media
 
 Use existing recognized FFmpeg, or point the `FFMPEG` environment variable to its executable:

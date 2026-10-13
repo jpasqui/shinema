@@ -6,7 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OpenFlags, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -20,6 +20,7 @@ use tokio_util::io::ReaderStream;
 
 const MAX_ITEMS: usize = 500;
 const MAX_DEPTH: usize = 8;
+mod state_files;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -84,6 +85,48 @@ fn checked_file(root: &Path, relative: &Path) -> std::io::Result<PathBuf> {
     Ok(canonical)
 }
 
+fn media_id(relative: &Path) -> String {
+    let parts = relative
+        .components()
+        .map(|part| part.as_os_str().to_os_string())
+        .collect::<Vec<_>>();
+    if let Some(unicode) = parts
+        .iter()
+        .map(|part| part.to_str())
+        .collect::<Option<Vec<_>>>()
+    {
+        // Preserve existing ordinary-path IDs while normalizing only real
+        // separators. A POSIX literal backslash remains part of its component.
+        return format!("{:x}", Sha256::digest(unicode.join("/").as_bytes()));
+    }
+    // NUL cannot appear in a real filename, so this versioned domain is
+    // disjoint from the ordinary UTF-8 path encoding. Length framing preserves
+    // components and raw platform units without lossy Unicode replacement.
+    let mut hash = Sha256::new();
+    hash.update(b"\0shinema-nonunicode-path-v1\0");
+    #[cfg(unix)]
+    hash.update(b"unix\0");
+    #[cfg(windows)]
+    hash.update(b"windows\0");
+    for part in parts {
+        #[cfg(unix)]
+        let bytes = {
+            use std::os::unix::ffi::OsStrExt;
+            part.as_bytes().to_vec()
+        };
+        #[cfg(windows)]
+        let bytes = {
+            use std::os::windows::ffi::OsStrExt;
+            part.encode_wide()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>()
+        };
+        hash.update((bytes.len() as u64).to_le_bytes());
+        hash.update(bytes);
+    }
+    format!("{:x}", hash.finalize())
+}
+
 impl Library {
     pub fn open(
         media_root: &Path,
@@ -115,14 +158,22 @@ impl Library {
         if resolved.starts_with(&root) || root.starts_with(&resolved) {
             return Err("Media and writable state directories must be disjoint".into());
         }
-        fs::create_dir_all(&resolved)?;
+        state_files::create_private_directory(&resolved)?;
         let state = resolved.canonicalize()?;
         if state.starts_with(&root) || root.starts_with(&state) {
             return Err("State overlaps media root".into());
         }
         let mut entries = BTreeMap::new();
         Self::scan(&root, &root, 0, &mut entries)?;
-        let db = Connection::open(state.join("progress.sqlite3"))?;
+        state_files::validate(&state)?;
+        let db = Connection::open_with_flags(
+            state.join("progress.sqlite3"),
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?;
+        state_files::validate(&state)?;
         db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS progress(id TEXT PRIMARY KEY, position REAL NOT NULL, duration REAL NOT NULL);")?;
         let directory = cap_std::fs::Dir::open_ambient_dir(&root, cap_std::ambient_authority())?;
         Ok(Arc::new(Self {
@@ -169,8 +220,7 @@ impl Library {
                 .map_err(|_| std::io::ErrorKind::PermissionDenied)?
                 .to_path_buf();
             checked_file(root, &relative)?;
-            let stable = relative.to_string_lossy().replace('\\', "/");
-            let id = format!("{:x}", Sha256::digest(stable.as_bytes()));
+            let id = media_id(&relative);
             let title = path
                 .file_stem()
                 .unwrap_or_default()

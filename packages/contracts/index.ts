@@ -7,7 +7,7 @@ export function parseCatalog(value:unknown):Catalog {
   const ids=new Set<string>();
   for(const item of value.items){
     if(!object(item) || typeof item.id!=='string' || !/^[a-f0-9]{64}$/.test(item.id) || ids.has(item.id)
-      || typeof item.title!=='string' || item.title.length>200 || typeof item.container!=='string'
+      || typeof item.title!=='string' || Array.from(item.title).length>200 || typeof item.container!=='string'
       || !['mp4','m4v','mkv','webm'].includes(item.container) || !Number.isSafeInteger(item.sizeBytes) || Number(item.sizeBytes)<0
       || item.streamPath!==`/api/media/${item.id}/stream`)throw new Error('Invalid catalog item');
     ids.add(item.id);

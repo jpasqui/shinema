@@ -1,5 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {parseCatalog,parseProgress,resumeAt,serverOrigin} from '../../../packages/contracts/index.ts';
 import {fresh,recover,move,pageFor} from '../src/domain.ts';
 const id='a'.repeat(64);
@@ -27,4 +28,11 @@ test('focus page survives detail/back and boundaries clamp',()=>{
 test('server origin requires HTTPS and refuses credentials or unrelated URL parts',()=>{
  assert.equal(serverOrigin('https://localhost:8787/'),'https://localhost:8787');
  for(const value of ['http://localhost:8787','file:///media','https://user:password@localhost','https://localhost/api','https://localhost?x=1'])assert.throws(()=>serverOrigin(value));
+});
+test('shared Unicode title fits the scalar contract despite exceeding 200 UTF-16 units',()=>{
+ const fixture=JSON.parse(readFileSync(new URL('../../../packages/contracts/fixtures/unicode-title.json',import.meta.url),'utf8'));
+ assert.equal(fixture.title.length,fixture.utf16Length);
+ assert.equal(Array.from(fixture.title).length,fixture.scalarLength);
+ assert.equal(parseCatalog({...catalog,items:[{...catalog.items[0],title:fixture.title}]}).items[0].title,fixture.title);
+ assert.throws(()=>parseCatalog({...catalog,items:[{...catalog.items[0],title:'A'.repeat(201)}]}));
 });
