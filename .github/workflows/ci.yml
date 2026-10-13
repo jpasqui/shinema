@@ -45,7 +45,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
         with:
           gradle-version: '9.4.1'
-      - run: sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;27.1.12297006' 'cmake;3.30.5'
+      - name: Install exact Android SDK packages
+        run: |
+          SDKMANAGER="${ANDROID_HOME:?}/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          "$SDKMANAGER" 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;27.1.12297006' 'cmake;3.30.5'
       - run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: clients/native
       - run: gradle --no-daemon :app:assembleRelease
