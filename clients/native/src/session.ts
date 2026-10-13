@@ -32,6 +32,9 @@ export class SessionGuard {
   }
   invalidatePlayback(): void { ++this.playback; }
   beginPlayback(origin: string): PlaybackTicket {
+    // Explicit playback from cache supersedes an unfinished startup refresh.
+    // Its late response must not confirm a session or replace the player route.
+    this.cancelConnection();
     return {...this.capture(origin), playback: ++this.playback};
   }
   currentPlayback(ticket: PlaybackTicket, origin: string): boolean {
@@ -45,23 +48,50 @@ type StateIO = {
   persist: () => Promise<void>;
 };
 
+/** One queue owns cache writes and their associated connection activation. */
+export class StorageQueue {
+  private tail: Promise<void> = Promise.resolve();
+  run<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.tail.then(operation);
+    this.tail = result.then(() => {}, () => {});
+    return result;
+  }
+}
+
+type ConnectionIO = StateIO & {
+  queue: StorageQueue;
+  writeDisk: (next: Stored) => Promise<void>;
+};
+
 /** No state changes occur before a candidate catalog has validated. */
 export async function connectValidated(
   guard: SessionGuard,
   attempt: number,
   origin: string,
   load: (origin: string) => Promise<unknown>,
-  state: StateIO,
+  state: ConnectionIO,
 ): Promise<{catalog: Catalog; switched: boolean; stamp: ConnectionStamp} | null> {
   const catalog = parseCatalog(await load(origin));
-  if (!guard.currentAttempt(attempt)) return null;
-  const current = state.read();
-  const switched = current.origin !== origin;
-  const stamp = guard.confirm(origin);
-  state.write(switched ? {...fresh(), origin, catalog} : {...current, catalog});
-  await state.persist();
-  if (!guard.currentAttempt(attempt) || !guard.current(stamp, state.read().origin)) return null;
-  return {catalog, switched, stamp};
+  return state.queue.run(async () => {
+    if (!guard.currentAttempt(attempt)) return null;
+    const current = state.read();
+    const switched = current.origin !== origin;
+    const candidate = switched ? {...fresh(), origin, catalog} : {...current, catalog};
+    // Atomic native writes reject without replacing the live cache. Until this
+    // succeeds, memory, the confirmed generation and all queued progress stay A.
+    await state.writeDisk(candidate);
+    if (!guard.currentAttempt(attempt)) {
+      // Navigation can cancel while storage is in flight. Restore the latest
+      // working state in this same queue slot, before any newer activation or
+      // ordinary cache write can run. A stale candidate never becomes active.
+      await state.writeDisk(state.read());
+      return null;
+    }
+    const stamp = guard.confirm(origin);
+    // A same-origin refresh must not discard progress added during disk I/O.
+    state.write(switched ? candidate : {...state.read(), catalog});
+    return {catalog, switched, stamp};
+  });
 }
 
 /** The captured destination can never be resampled after an asynchronous write. */

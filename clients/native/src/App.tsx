@@ -6,7 +6,7 @@ import {resumeAt,serverOrigin} from '../../../packages/contracts/index.ts';
 import type {Media,Progress} from '../../../packages/contracts/index.ts';
 import {fresh,recover,move,pageFor} from './domain.ts';
 import type {Stored} from './domain.ts';
-import {SessionGuard,ProgressQueue,connectValidated,persistThenSync,syncProgress,resolveResume,backDestination} from './session.ts';
+import {SessionGuard,StorageQueue,ProgressQueue,connectValidated,persistThenSync,syncProgress,resolveResume,backDestination} from './session.ts';
 import type {ConnectionStamp} from './session.ts';
 
 const Host=NativeModules.ShinemaHost as {readState:()=>Promise<string>;writeState:(value:string)=>Promise<void>;finish:()=>void};
@@ -32,7 +32,7 @@ export default function App(){
   const activeItem=useRef<Media|null>(null);
   const activeDestination=useRef<ConnectionStamp|null>(null);
   const session=useRef(new SessionGuard());const handler=useRef<(key:Key)=>void>(()=>{});
-  const saveCurrent=useRef<()=>Promise<void>>(async()=>{});const persistQueue=useRef(Promise.resolve());
+  const saveCurrent=useRef<()=>Promise<void>>(async()=>{});const persistQueue=useRef(new StorageQueue());
   const syncQueue=useRef(new ProgressQueue());
   const items=stored.catalog?.items??[];const selected=items[cursor];
   const source=useMemo(()=>({uri:stored.origin+(selected?.streamPath??'')}),[stored.origin,selected?.streamPath]);
@@ -43,10 +43,13 @@ export default function App(){
     update(value);
     setCursor(current=>switched?0:Math.min(current,Math.max(0,(value.catalog?.items.length??0)-1)));
   }
+  function openDetails(){
+    session.current.cancelConnection();setBusy(false);setRoute('detail');
+  }
   function persist():Promise<void>{
-    const snapshot=JSON.stringify(store.current);
-    persistQueue.current=persistQueue.current.catch(()=>{}).then(()=>Host.writeState(snapshot));
-    return persistQueue.current;
+    // Sample when this queue slot executes, so an old snapshot cannot overwrite
+    // a newer successfully activated server after a delayed connection write.
+    return persistQueue.current.run(()=>Host.writeState(JSON.stringify(store.current)));
   }
   async function syncOne(id:string,value:Progress,destination:ConnectionStamp){
     try{
@@ -71,7 +74,10 @@ export default function App(){
     const attempt=session.current.beginConnection();setBusy(true);setMessage('Loading library...');
     setOriginText(origin);
     try{
-      const result=await connectValidated(session.current,attempt,origin,value=>request(value,'/api/catalog'),{read:()=>store.current,write:acceptCatalog,persist});
+      const result=await connectValidated(session.current,attempt,origin,value=>request(value,'/api/catalog'),{
+        read:()=>store.current,write:acceptCatalog,persist,queue:persistQueue.current,
+        writeDisk:value=>Host.writeState(JSON.stringify(value)),
+      });
       if(!result)return;
       const {catalog,stamp}=result;
       setRoute('library');setMessage(catalog.items.length?'Library ready.':'No supported files were found.');
@@ -130,7 +136,7 @@ export default function App(){
     if(route==='library'){
       const direction=({21:-1,22:1,19:-4,20:4} as Record<number,number>)[key.code];
       if(direction!==undefined)setCursor(current=>move(current,direction,items.length));
-      else if((key.code===23 || key.code===66) && key.repeat===0 && selected)setRoute('detail');
+      else if((key.code===23 || key.code===66) && key.repeat===0 && selected)openDetails();
     }else if(route==='detail'){
       if((key.code===23 || key.code===66) && key.repeat===0)void play();
     }else if(route==='player'){
@@ -173,7 +179,7 @@ export default function App(){
       </View>:<View key="library" style={styles.grid}>
         {Array.from({length:8},(_,slot)=>{
           const index=pageFor(cursor)*8+slot;const item=items[index];
-          return <Pressable key={slot} style={[styles.card,{width:(width-94)/4},cursor===index&&styles.focus]} onPress={()=>{if(item){setCursor(index);setRoute('detail');}}}>
+          return <Pressable key={slot} style={[styles.card,{width:(width-94)/4},cursor===index&&styles.focus]} onPress={()=>{if(item){setCursor(index);openDetails();}}}>
             {item?<><View style={[styles.cover,{backgroundColor:`hsl(${parseInt(item.id.slice(0,4),16)%360},35%,25%)`}]}><Text style={styles.initials}>{item.title.slice(0,2).toUpperCase()}</Text></View><Text style={styles.cardTitle} numberOfLines={1}>{item.title}</Text><Text style={styles.small}>{item.container.toUpperCase()}{stored.progress[item.id]?`  ${Math.floor(stored.progress[item.id].positionSeconds)} s`:''}</Text></>:null}
           </Pressable>;
         })}
