@@ -26,7 +26,15 @@
             "mp4",
             "m4v",
             "mkv",
-            "webm"
+            "webm",
+            "avi",
+            "ts",
+            "m2ts",
+            "mov",
+            "mpg",
+            "mpeg",
+            "wmv",
+            "vob"
           ]
         },
         "sizeBytes": {
@@ -37,6 +45,30 @@
         "streamPath": {
           "type": "string",
           "pattern": "^/api/media/[a-f0-9]{64}/stream$"
+        },
+        "collection": {
+          "enum": [
+            "tv",
+            "movies"
+          ]
+        },
+        "seriesId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "seriesTitle": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "season": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "episode": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
         }
       }
     },
@@ -56,6 +88,28 @@
           "items": {
             "$ref": "#/$defs/Media"
           }
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000000
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        },
+        "nextOffset": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 10000000
         }
       }
     },
@@ -75,6 +129,31 @@
           "type": "number",
           "exclusiveMinimum": 0,
           "maximum": 604800
+        }
+      }
+    },
+    "Playback": {
+      "type": "object",
+      "required": [
+        "durationSeconds",
+        "mode",
+        "streamPath"
+      ],
+      "properties": {
+        "durationSeconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 604800
+        },
+        "mode": {
+          "enum": [
+            "direct",
+            "transcode"
+          ]
+        },
+        "streamPath": {
+          "type": "string",
+          "pattern": "^/api/media/[a-f0-9]{64}/(stream|hls/index\\.m3u8)$"
         }
       }
     }

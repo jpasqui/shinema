@@ -1,5 +1,10 @@
-export type Media = {id:string; title:string; container:string; sizeBytes:number; streamPath:string};
-export type Catalog = {apiVersion:1; items:Media[]};
+export type Media = {id:string; title:string; container:string; sizeBytes:number; streamPath:string; collection?:'tv'|'movies';seriesId?:string;seriesTitle?:string;season?:number;episode?:number};
+export type PageInfo = {total:number;offset:number;limit:number;nextOffset:number|null};
+export type Catalog = {apiVersion:1; items:Media[]} & Partial<PageInfo>;
+export type Series = {id:string;title:string;episodes:number;seasons:number};
+export type SeriesPage = {items:Series[]} & PageInfo;
+export type LibrarySummary = {total:number;tv:number;movies:number;series:number};
+export type Seasons = {items:{season:number|null;episodes:number}[]};
 export type Progress = {positionSeconds:number; durationSeconds:number};
 const object=(value:unknown):value is Record<string,unknown>=>typeof value==='object' && value!==null;
 export function parseCatalog(value:unknown):Catalog {
@@ -8,11 +13,35 @@ export function parseCatalog(value:unknown):Catalog {
   for(const item of value.items){
     if(!object(item) || typeof item.id!=='string' || !/^[a-f0-9]{64}$/.test(item.id) || ids.has(item.id)
       || typeof item.title!=='string' || Array.from(item.title).length>200 || typeof item.container!=='string'
-      || !['mp4','m4v','mkv','webm'].includes(item.container) || !Number.isSafeInteger(item.sizeBytes) || Number(item.sizeBytes)<0
+      || !['mp4','m4v','mkv','webm','avi','ts','m2ts','mov','mpg','mpeg','wmv','vob'].includes(item.container) || !Number.isSafeInteger(item.sizeBytes) || Number(item.sizeBytes)<0
       || item.streamPath!==`/api/media/${item.id}/stream`)throw new Error('Invalid catalog item');
+    if(item.collection!==undefined&&!['tv','movies'].includes(String(item.collection)))throw new Error('Invalid collection');
+    if(item.seriesId!==undefined&&(typeof item.seriesId!=='string'||!/^[a-f0-9]{64}$/.test(item.seriesId)))throw new Error('Invalid series');
+    if(item.seriesTitle!==undefined&&(typeof item.seriesTitle!=='string'||Array.from(item.seriesTitle).length>200))throw new Error('Invalid series title');
+    for(const key of ['season','episode'])if(item[key]!==undefined&&(!Number.isSafeInteger(item[key])||Number(item[key])<0||Number(item[key])>10000))throw new Error('Invalid episode grouping');
     ids.add(item.id);
   }
+  if(['total','offset','limit','nextOffset'].some(key=>value[key]!==undefined))validatePage(value,value.items.length);
   return value as Catalog;
+}
+function validatePage(value:Record<string,unknown>,count:number):void {
+  for(const key of ['total','offset','limit'])if(!Number.isSafeInteger(value[key])||Number(value[key])<0)throw new Error('Invalid page');
+  if(Number(value.limit)<1||Number(value.limit)>500||count>Number(value.limit)||count>Number(value.total)||Number(value.offset)>10000000)throw new Error('Invalid page bounds');
+  if(value.nextOffset===null&&Number(value.offset)+count<Number(value.total))throw new Error('Missing next page');
+  if(value.nextOffset!==null&&(!Number.isSafeInteger(value.nextOffset)||value.nextOffset!==Number(value.offset)+count||count===0||Number(value.nextOffset)>=Number(value.total)))throw new Error('Invalid next page');
+}
+export function parseSeriesPage(value:unknown):SeriesPage {
+  if(!object(value)||!Array.isArray(value.items)||value.items.length>500)throw new Error('Invalid series page');validatePage(value,value.items.length);
+  const ids=new Set<string>();for(const item of value.items){if(!object(item)||typeof item.id!=='string'||!/^[a-f0-9]{64}$/.test(item.id)||ids.has(item.id)||typeof item.title!=='string'||Array.from(item.title).length>200||!Number.isSafeInteger(item.episodes)||Number(item.episodes)<1||!Number.isSafeInteger(item.seasons)||Number(item.seasons)<0)throw new Error('Invalid series');ids.add(item.id);}
+  return value as SeriesPage;
+}
+export function parseSummary(value:unknown):LibrarySummary {
+  if(!object(value)||['total','tv','movies','series'].some(key=>!Number.isSafeInteger(value[key])||Number(value[key])<0)||Number(value.tv)+Number(value.movies)>Number(value.total))throw new Error('Invalid summary');return value as LibrarySummary;
+}
+export function parseSeasons(value:unknown):Seasons {
+  if(!object(value)||!Array.isArray(value.items)||value.items.length>10001)throw new Error('Invalid seasons');
+  const seen=new Set<number|null>();for(const item of value.items){if(!object(item)||(item.season!==null&&(!Number.isSafeInteger(item.season)||Number(item.season)<0||Number(item.season)>10000))||!Number.isSafeInteger(item.episodes)||Number(item.episodes)<1||seen.has(item.season as number|null))throw new Error('Invalid season');seen.add(item.season as number|null);}
+  return value as Seasons;
 }
 export function parseProgress(value:unknown):Progress|null {
   if(value===null)return null;
@@ -29,4 +58,9 @@ export function serverOrigin(value:string):string {
 }
 export function resumeAt(progress:Progress|null,duration:number):number {
   return progress && progress.positionSeconds<duration-3 ? Math.min(progress.positionSeconds,duration) : 0;
+}
+
+export type Playback={durationSeconds:number;mode:'direct'|'transcode';streamPath:string};
+export function parsePlayback(value:unknown,id:string):Playback {
+  if(!/^[a-f0-9]{64}$/.test(id)||!object(value)||typeof value.durationSeconds!=='number'||!Number.isFinite(value.durationSeconds)||value.durationSeconds<=0||value.durationSeconds>604800||!['direct','transcode'].includes(String(value.mode))||value.streamPath!==(value.mode==='direct'?`/api/media/${id}/stream`:`/api/media/${id}/hls/index.m3u8`))throw new Error('Invalid playback descriptor');return value as Playback;
 }

@@ -1,6 +1,6 @@
 // Runs only original generated media, on host loopback, in a fresh Chromium context.
 import {spawn} from 'node:child_process';
-import {mkdir,mkdtemp,readFile,writeFile,rm,access} from 'node:fs/promises';
+import {mkdir,mkdtemp,readFile,writeFile,rm,access,lstat} from 'node:fs/promises';
 import {resolve,join,sep} from 'node:path';
 import {performance} from 'node:perf_hooks';
 import assert from 'node:assert/strict';
@@ -11,26 +11,26 @@ import {createServer} from '../clients/web/node_modules/vite/dist/node/index.js'
 const root=resolve('.');const local=join(root,'.local');await mkdir(local,{recursive:true});
 const run=await mkdtemp(join(local,'web-smoke-'));const screenshots=join(local,'web-screenshots');await mkdir(screenshots,{recursive:true});
 for(const name of ['Orbit','Horizon','Pulse'])await access(join(local,'media',`Generated_${name}.mp4`));
-process.env.VITE_DEMO_MODE='true';process.env.SHINEMA_DEMO_DELAY_MS='700';process.env.SHINEMA_API_ORIGIN='http://127.0.0.1:8787';
+process.env.VITE_DEMO_MODE='true';process.env.SHINEMA_DEMO_DELAY_MS='700';process.env.SHINEMA_API_ORIGIN='http://127.0.0.1:28887';
 const processServer=spawn(join(root,'target','debug','shinema-server'+(process.platform==='win32'?'.exe':'')),[],{
-  env:{...process.env,SHINEMA_MEDIA_ROOT:join(local,'media'),SHINEMA_STATE_DIR:join(run,'state'),SHINEMA_BIND:'127.0.0.1:8787'},stdio:['ignore','ignore','pipe'],
+  env:{...process.env,SHINEMA_MEDIA_ROOT:join(local,'media'),SHINEMA_STATE_DIR:join(run,'state'),SHINEMA_BIND:'127.0.0.1:28887'},stdio:['ignore','ignore','pipe'],
 });
 let serverError='';processServer.stderr.on('data',data=>{serverError+=data;});
 let vite,browser;const results={methodology:'Official Chromium in a fresh isolated context; actual Rust API and generated H.264/AAC media on loopback. 700ms deliberate catalog delay exercises loading, not a speed measurement.',checks:[],screenshots:[]};
 async function waitForServer(){
  for(let n=0;n<60;n++){
   if(processServer.exitCode!==null)throw new Error('Test server exited during startup: '+serverError);
-  if(serverError.includes('Shinema listening on loopback')){try{if((await fetch('http://127.0.0.1:8787/health',{signal:AbortSignal.timeout(500)})).ok)return;}catch{}}
+  if(serverError.includes('Shinema listening on loopback')){try{if((await fetch('http://127.0.0.1:28887/health',{signal:AbortSignal.timeout(500)})).ok)return;}catch{}}
   await new Promise(resolve=>setTimeout(resolve,100));
  }throw new Error('Test server startup timed out');
 }
 async function stopServer(){if(processServer.exitCode!==null || processServer.signalCode!==null)return;const stopped=new Promise(resolve=>processServer.once('exit',resolve));processServer.kill();await stopped;}
 async function screenshot(page,name){await page.screenshot({path:join(screenshots,name+'.png'),fullPage:true,animations:'disabled'});results.screenshots.push(name+'.png');}
 try{
- await waitForServer();const fixtureCatalog=await(await fetch('http://127.0.0.1:8787/api/catalog')).json();assert.deepEqual(fixtureCatalog.items.map(item=>item.title).sort(),['Generated Horizon','Generated Orbit','Generated Pulse']);vite=await createServer({configFile:join(root,'clients','web','vite.config.ts'),root:join(root,'clients','web')});await vite.listen();
+ await waitForServer();const fixtureCatalog=await(await fetch('http://127.0.0.1:28887/api/catalog')).json();assert.deepEqual(fixtureCatalog.items.map(item=>item.title).sort(),['Generated Horizon','Generated Orbit','Generated Pulse']);vite=await createServer({configFile:join(root,'clients','web','vite.config.ts'),root:join(root,'clients','web'),server:{port:28883,host:'127.0.0.1',strictPort:true}});await vite.listen();
  browser=await chromium.launch({headless:true,channel:'chromium',args:['--mute-audio']});results.browser=browser.version();
  const context=await browser.newContext({viewport:{width:1280,height:900},reducedMotion:'reduce'});
- await context.route('**/*',route=>{const url=new URL(route.request().url());return url.origin==='http://127.0.0.1:5173'?route.continue():route.abort();});
+ await context.route('**/*',route=>{const url=new URL(route.request().url());return url.origin==='http://127.0.0.1:28883'?route.continue():route.abort();});
  await context.addInitScript(()=>{
   window.__mediaEvents=[];
   for(const type of ['loadstart','loadedmetadata','play','volumechange'])document.addEventListener(type,event=>{
@@ -38,7 +38,7 @@ try{
   },true);
  });
  const page=await context.newPage();const errors=[];page.on('pageerror',error=>errors.push(error.message));
- const start=performance.now();await page.goto('http://127.0.0.1:5173');
+ const start=performance.now();await page.goto('http://127.0.0.1:28883');
  await expect(page.getByLabel('Loading library')).toBeVisible();await screenshot(page,'loading');
  await expect(page.getByRole('button',{name:'Open Orbit',exact:true})).toBeVisible();results.catalogToVisibleMs=Math.round(performance.now()-start);
  results.checks.push('Actual catalog, deliberate loading state and library render');await screenshot(page,'library-desktop');
@@ -48,7 +48,7 @@ try{
  await titleContext.route('**/api/catalog',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({apiVersion:1,items:[{...titleItem,title:testTitle}]})}));
  const titlePage=await titleContext.newPage();results.longTitleChecks=[];
  for(const width of [1280,390])for(const value of longTitles){
-  testTitle=value;await titlePage.setViewportSize({width,height:900});await titlePage.goto('http://127.0.0.1:5173');await expect(titlePage.locator('.feature h2')).toHaveText(value);await expect(titlePage.getByRole('button',{name:'View details',exact:false})).toBeVisible();
+  testTitle=value;await titlePage.setViewportSize({width,height:900});await titlePage.goto('http://127.0.0.1:28883');await expect(titlePage.locator('.feature h2')).toHaveText(value);await expect(titlePage.getByRole('button',{name:'View details',exact:false})).toBeVisible();
   const geometry=await titlePage.locator('.feature').evaluate(node=>{const heading=node.querySelector('h2');const copy=node.querySelector('.feature-copy');const button=node.querySelector('button');const frame=node.getBoundingClientRect();const text=heading.getBoundingClientRect();const controls=copy.getBoundingClientRect();const action=button.getBoundingClientRect();return {frameTop:frame.top,frameBottom:frame.bottom,copyTop:controls.top,copyBottom:controls.bottom,titleWidth:heading.clientWidth,titleScrollWidth:heading.scrollWidth,titleHeight:heading.clientHeight,lineHeight:parseFloat(getComputedStyle(heading).lineHeight),actionBottom:action.bottom,textLeft:text.left,textRight:text.right,frameLeft:frame.left,frameRight:frame.right};});
   results.longTitleChecks.push({width,kind:value.includes(' ')?'spaced':'unbroken',...geometry});
   await writeFile(join(local,'redesign-long-title-evidence.json'),JSON.stringify(results.longTitleChecks,null,2),'utf8');
@@ -73,17 +73,17 @@ try{
  assert(initial.muted && initial.defaultMuted && initial.volume===0 && initial.videoWidth===1280 && initial.videoHeight===720);results.initialPlayback=initial;
  const exitAt=await video.evaluate(node=>node.currentTime);await page.getByRole('navigation',{name:'Main navigation'}).getByRole('button',{name:'Library',exact:true}).click();
  const exitItem=fixtureCatalog.items.find(item=>item.title==='Generated Orbit');
- await expect.poll(async()=>{const progress=await(await fetch(`http://127.0.0.1:8787/api/media/${exitItem.id}/progress`)).json();return progress?.positionSeconds??0;}).toBeGreaterThan(exitAt-.5);
+ await expect.poll(async()=>{const progress=await(await fetch(`http://127.0.0.1:28887/api/media/${exitItem.id}/progress`)).json();return progress?.positionSeconds??0;}).toBeGreaterThan(exitAt-.5);
  const localExit=await page.evaluate(id=>JSON.parse(localStorage.getItem('shinema.web.cache.v1')).progress[id].positionSeconds,exitItem.id);assert(localExit>exitAt-.5);
- const serverExit=await(await fetch(`http://127.0.0.1:8787/api/media/${exitItem.id}/progress`)).json();results.headerExitProgress={exitAt,localPosition:localExit,serverPosition:serverExit.positionSeconds};
+ const serverExit=await(await fetch(`http://127.0.0.1:28887/api/media/${exitItem.id}/progress`)).json();results.headerExitProgress={exitAt,localPosition:localExit,serverPosition:serverExit.positionSeconds};
  await orbit.click();await page.getByRole('button',{name:'Resume',exact:false}).click();await expect.poll(()=>page.locator('video').evaluate(node=>node.currentTime)).toBeGreaterThan(exitAt-.5);
  results.checks.push('Header Library navigation during unpaused playback saves final local/server progress and reopens at that position');
  await page.getByRole('button',{name:'Pause video',exact:true}).click();await expect(video).toHaveJSProperty('paused',true);
  const paused=await video.evaluate(node=>node.currentTime);await page.waitForTimeout(300);assert(Math.abs((await video.evaluate(node=>node.currentTime))-paused)<.05);
  await page.getByRole('button',{name:'Forward ten seconds'}).click();await expect.poll(()=>video.evaluate(node=>node.currentTime)).toBeGreaterThan(paused+9.5);
  const seeked=await video.evaluate(node=>node.currentTime);await expect(video).toHaveJSProperty('seeking',false);await expect.poll(()=>page.getByLabel('Playback position').inputValue().then(Number)).toBeGreaterThan(seeked-.5);await expect(page.getByRole('alert')).toHaveCount(0);await screenshot(page,'player-desktop');
- const catalog=await (await fetch('http://127.0.0.1:8787/api/catalog')).json();const item=catalog.items.find(item=>item.title==='Generated Orbit');
- await expect.poll(async()=>{const progress=await(await fetch(`http://127.0.0.1:8787/api/media/${item.id}/progress`)).json();return progress?.positionSeconds??0;}).toBeGreaterThan(seeked-.5);
+ const catalog=await (await fetch('http://127.0.0.1:28887/api/catalog')).json();const item=catalog.items.find(item=>item.title==='Generated Orbit');
+ await expect.poll(async()=>{const progress=await(await fetch(`http://127.0.0.1:28887/api/media/${item.id}/progress`)).json();return progress?.positionSeconds??0;}).toBeGreaterThan(seeked-.5);
  await page.getByRole('button',{name:'Back to details',exact:false}).click();await page.getByRole('button',{name:'Resume',exact:false}).click();
  await expect(page.locator('video')).toHaveJSProperty('paused',false);await expect.poll(()=>page.locator('video').evaluate(node=>node.currentTime)).toBeGreaterThan(seeked-.5);
  await page.getByRole('button',{name:'Pause video',exact:true}).click();const resumed=await page.locator('video').evaluate(node=>node.currentTime);results.pauseSeekResume={paused,seeked,resumed};
@@ -101,12 +101,13 @@ try{
  results.checks.push('390px responsive library/details/player render without horizontal overflow, phone-sized playback/pause/seek work, vertical keyboard navigation follows the responsive grid');
  await page.setViewportSize({width:1280,height:900});
  // Vite must not expose repository state or private development files.
- for(const path of ['/@fs/'+join(root,'.git','config').replaceAll('\\','/'),'/@fs/'+join(root,'.local','media','Generated_Orbit.mp4').replaceAll('\\','/')])assert((await page.request.get('http://127.0.0.1:5173'+path)).status()>=400);
+ const gitFile=(await lstat(join(root,'.git'))).isFile()?join(root,'.git'):join(root,'.git','config');
+ for(const path of ['/@fs/'+gitFile.replaceAll('\\','/'),'/@fs/'+join(root,'.local','media','Generated_Orbit.mp4').replaceAll('\\','/')])assert((await page.request.get('http://127.0.0.1:28883'+path)).status()>=400);
  results.checks.push('Development file serving denies .git and .local');
  await stopServer();await page.getByRole('button',{name:'Refresh',exact:true}).click();await expect(page.getByText('The server is unavailable.',{exact:false})).toBeVisible();await expect(orbit).toBeVisible();await screenshot(page,'cached-disconnected');
  await orbit.click();await page.getByRole('button',{name:'Resume',exact:false}).click();await expect(page.getByRole('alert')).toContainText('could not play');await screenshot(page,'playback-connection-error');
  results.checks.push('Actual server shutdown: cached library still browsable and playback connection error displayed');
- const fresh=await browser.newContext({viewport:{width:1280,height:900}});const emptyPage=await fresh.newPage();await emptyPage.goto('http://127.0.0.1:5173');await expect(emptyPage.getByRole('heading',{name:'Waiting for your server'})).toBeVisible();await screenshot(emptyPage,'uncached-disconnected');await fresh.close();
+ const fresh=await browser.newContext({viewport:{width:1280,height:900}});const emptyPage=await fresh.newPage();await emptyPage.goto('http://127.0.0.1:28883');await expect(emptyPage.getByRole('heading',{name:'Waiting for your server'})).toBeVisible();await screenshot(emptyPage,'uncached-disconnected');await fresh.close();
  assert.deepEqual(errors,[]);results.checks.push('Fresh profile failed connection state; no browser JavaScript errors');
  results.status='passed';
 }finally{

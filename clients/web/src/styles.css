@@ -146,3 +146,15 @@ footer > span:first-child { color: #c8cdc4; }
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+.browse-toolbar,.season-toolbar,.pagination { display:flex; gap:24px; align-items:center; flex-wrap:wrap; margin:20px var(--space-page); }
+.browse-toolbar nav { display:flex; gap:25px; }
+.browse-toolbar .nav-link.active::after { bottom:-6px; }
+.browse-toolbar form { display:flex; gap:12px; align-items:center; margin-left:auto; }
+.browse-toolbar input,.season-toolbar select { font:inherit; color:var(--color-text); background:var(--color-elevated); border:1px solid var(--color-line); border-radius:8px; padding:10px; max-width:100%; }
+.season-toolbar label { display:flex; gap:12px; align-items:center; }
+.pagination { margin:30px 0; justify-content:space-between; font-size:13px; }
+.pagination .control-button { padding:12px; background:var(--color-elevated); }
+button:disabled { opacity:0.45; cursor:default; }
+.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+@media(max-width:560px) { .browse-toolbar { gap:20px; } .browse-toolbar form { margin-left:0; width:100%; } .browse-toolbar input { flex:1; min-width:0; } .pagination { gap:10px; font-size:11px; } }

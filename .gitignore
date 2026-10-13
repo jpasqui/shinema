@@ -53,3 +53,7 @@ local-tools/
 
 # Kotlin compiler/session state
 .kotlin/
+
+# Original remote-helper test bytecode
+__pycache__/
+*.pyc

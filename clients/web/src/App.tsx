@@ -1,6 +1,9 @@
 import {useCallback,useEffect,useRef,useState} from 'react';
 import type {KeyboardEvent as ReactKeyboardEvent} from 'react';
-import {parseCatalog} from '../../../packages/contracts/index.ts';
+import type Hls from 'hls.js';
+import {LibraryBrowser} from './LibraryBrowser.tsx';
+import {initialBrowse} from './browse.ts';
+import {parseCatalog,parsePlayback} from '../../../packages/contracts/index.ts';
 import type {Media,Progress} from '../../../packages/contracts/index.ts';
 import {clock,empty,initializeSilentVideo,loadPlaybackProgress,NavigationGuard,progressValue,Queue,recover,resumeAt,synchronize} from './model.ts';
 import type {Cache} from './model.ts';
@@ -28,6 +31,7 @@ function Poster({item,large=false}:{item:Media;large?:boolean}){
 export default function App(){
   const cache=useRef<Cache>(empty());
   const [version,render]=useState(0);
+  const [browseNavigation,setBrowseNavigation]=useState(initialBrowse);
   const [route,setRoute]=useState<'library'|'detail'|'player'>('library');
   const [selected,setSelected]=useState<Media|null>(null);
   const [loading,setLoading]=useState(true);
@@ -107,20 +111,21 @@ export default function App(){
     event.preventDefault();setFocus(next);cards.current[next]?.focus();
   };
   const items=cache.current.catalog?.items??[];
+  const fullLibrary=!demo&&items.some(item=>item.collection);
   const featured=items.find(item=>item.title.includes('Orbit'))??items[0];
   return <div className="app" data-cache-version={version}>
     <header className="header"><button className="brand" onClick={showLibrary} aria-label="Shinema library">Shinema</button>
       <nav aria-label="Main navigation"><button className={route==='library'?'nav-link active':'nav-link'} onClick={showLibrary}>Library</button></nav>
-      <span className="context-label">{demo?'Demo library':'Local preview'}</span></header>
+      <span className="context-label">{demo?'Demo library':'Connected library'}</span></header>
     {storageError && <div className="notice" role="alert">Browser storage is unavailable. Resume changes will last for this session only.</div>}
     {route==='player' && selected ? <Player item={selected} progress={resume} save={save} back={()=>{guard.current.next();setRoute('detail');}}/> :
     route==='detail' && selected ? <main className="detail"><button ref={back} className="back-button" onClick={showLibrary}>&larr; Back to library</button>
-      <div className="detail-layout"><Poster item={selected} large/><section className="detail-copy"><p className="detail-category">{demo?'Generated sample':'Library title'}</p><h1>{title(selected)}</h1>
+      <div className="detail-layout"><Poster item={selected} large/><section className="detail-copy"><p className="detail-category">{demo?'Generated sample':selected.collection==='tv'?selected.seriesTitle??'TV episode':selected.collection==='movies'?'Movie':'Library title'}</p><h1>{title(selected)}</h1>
         <div className="metadata"><span>{demo?'1 min':`${(selected.sizeBytes/1048576).toFixed(1)} MB`}</span><span>{selected.container.toUpperCase()}</span></div>
         <p className="description">{demo?descriptions[Math.max(0,artwork(selected))]:'Play this item directly from your connected server. Your position is saved locally and synchronized when the server is available.'}</p>
         <button className="primary" onClick={()=>{void play();}} disabled={opening}>{opening?'Preparing playback...':(cache.current.progress[selected.id]?.positionSeconds??0)>0?'\u25b6 Resume':'\u25b6 Play'}</button>
-        <p className="quiet">Muted preview &middot; progress saved automatically</p>
-      </section></div></main> : <main>
+        <p className="quiet">Starts muted &middot; progress saved automatically</p>
+      </section></div></main> : fullLibrary ? <LibraryBrowser navigation={browseNavigation} setNavigation={setBrowseNavigation} onSelect={showDetail} progress={cache.current.progress}/> : <main>
       <div className="page-title"><h1>Library</h1><p>{demo?'Generated clips with original demo artwork.':'Browse your saved titles.'}</p></div>
       {featured && <section className="feature" aria-label="Featured title"><Artwork kind={Math.max(0,artwork(featured))} wide/><div className="feature-shade"/>
         <div className="feature-copy"><p className="feature-label">Featured</p><h2 title={title(featured)}>{title(featured)}</h2><p className="feature-meta">{demo?'Generated sample · 1 min':'Direct playback'}</p><button className="primary" onClick={()=>showDetail(featured,items.indexOf(featured))}>View details <span aria-hidden="true">&rarr;</span></button></div>
@@ -141,14 +146,33 @@ function Player({item,progress,save,back}:{item:Media;progress:Progress|null;sav
   const video=useRef<HTMLVideoElement|null>(null);
   const container=useRef<HTMLElement|null>(null);
   const [paused,setPaused]=useState(true);const [position,setPosition]=useState(0);const [duration,setDuration]=useState(0);const [error,setError]=useState('');const [ready,setReady]=useState(false);
-  const lastSave=useRef(0);const started=useRef(false);
+  const lastSave=useRef(0);const started=useRef(false);const [muted,setMuted]=useState(true);const [mode,setMode]=useState('');
   const snapshot=useCallback(()=>{const node=video.current;if(node)save(item.id,node.currentTime,node.duration);},[item.id,save]);
   useEffect(()=>{
     const node=video.current;if(!node)return;
-    initializeSilentVideo(node,item.streamPath);container.current?.focus();
+    const controller=new AbortController();let hls:Hls|undefined;
+    node.defaultMuted=true;node.muted=true;node.volume=0;container.current?.focus();
+    const prepare=async()=>{
+      try {
+        const response=await fetch(`/api/media/${item.id}/playback`,{signal:AbortSignal.any([controller.signal,AbortSignal.timeout(50000)])});
+        if(!response.ok)throw new Error('Playback unavailable');const info=parsePlayback(await response.json(),item.id);if(controller.signal.aborted)return;
+        setDuration(info.durationSeconds);setMode(info.mode);
+        if(info.mode==='direct'){initializeSilentVideo(node,info.streamPath);}
+        else {
+          const {default:Hls}=await import('hls.js');if(controller.signal.aborted)return;
+          if(Hls.isSupported()){
+          hls=new Hls({startPosition:resumeAt(progress,info.durationSeconds),maxBufferLength:18,maxMaxBufferLength:36,backBufferLength:18});
+          hls.on(Hls.Events.ERROR,(_event,data)=>{if(data.fatal&&!controller.signal.aborted)setError('Playback stopped. Check the server connection and try again.');});
+          hls.attachMedia(node);hls.loadSource(info.streamPath);
+          }else if(node.canPlayType('application/vnd.apple.mpegurl')){initializeSilentVideo(node,info.streamPath);}
+          else{setError('This browser cannot play the compatibility stream.');}
+        }
+      }catch{if(!controller.signal.aborted)setError('This item could not play. Check your server connection and browser codec support.');}
+    };
+    void prepare();
     const hide=()=>snapshot();document.addEventListener('visibilitychange',hide);window.addEventListener('pagehide',hide);
-    return()=>{save(item.id,node.currentTime,node.duration);node.pause();node.removeAttribute('src');node.load();document.removeEventListener('visibilitychange',hide);window.removeEventListener('pagehide',hide);};
-  },[item.streamPath,snapshot]);
+    return()=>{controller.abort();save(item.id,node.currentTime,node.duration);node.pause();hls?.destroy();node.removeAttribute('src');node.load();document.removeEventListener('visibilitychange',hide);window.removeEventListener('pagehide',hide);};
+  },[item.id,item.streamPath,snapshot,progress]);
   const startPlayback=(message:string)=>{const node=video.current;if(!node)return;void node.play().catch(error=>{if(error instanceof DOMException && error.name==='AbortError')return;if(node.isConnected)setError(message);});};
   const toggle=()=>{const node=video.current;if(!node)return;if(node.paused)startPlayback('Playback could not start. Check the connection or media format.');else node.pause();};
   const seek=(value:number)=>{const node=video.current;if(node && Number.isFinite(node.duration))node.currentTime=Math.max(0,Math.min(value,node.duration));};
@@ -159,7 +183,7 @@ function Player({item,progress,save,back}:{item:Media;progress:Progress|null;sav
     else if(event.key===' ' && !(event.target instanceof HTMLButtonElement)){event.preventDefault();toggle();}
   };
   return <main className="player-page" ref={container} tabIndex={-1} onKeyDown={key} aria-label="Video player">
-    <div className="player-heading"><button className="back-button" onClick={()=>{snapshot();back();}}>&larr; Back to details</button><span className="context-label">Muted preview</span></div>
+    <div className="player-heading"><button className="back-button" onClick={()=>{snapshot();back();}}>&larr; Back to details</button><span className="context-label">{muted?'Muted':'Sound on'}</span></div>
     <div className="video-stage"><video ref={video} playsInline muted preload="metadata" aria-label={`Playing ${title(item)}`}
       onLoadedMetadata={()=>{const node=video.current!;setDuration(node.duration);node.currentTime=resumeAt(progress,node.duration);setPosition(node.currentTime);}}
       onCanPlay={()=>{setReady(true);if(!started.current){started.current=true;startPlayback('Press Play to start playback.');}}}
@@ -169,7 +193,7 @@ function Player({item,progress,save,back}:{item:Media;progress:Progress|null;sav
       {!ready && !error && <div className="video-message" role="status">Loading video...</div>}
       {error && <div className="video-message" role="alert">{error}</div>}
     </div>
-    <div className="player-controls"><button className="primary" onClick={toggle} aria-label={paused?'Play video':'Pause video'}>{paused?'\u25b6 Play':'\u2161 Pause'}</button><button className="control-button" onClick={()=>seek(position-10)} aria-label="Back ten seconds">-10s</button><button className="control-button" onClick={()=>seek(position+10)} aria-label="Forward ten seconds">+10s</button><input aria-label="Playback position" type="range" min="0" max={duration||1} step="0.1" value={position} onChange={event=>seek(Number(event.target.value))}/><span className="time">{clock(position)} / {clock(duration)}</span><span className="muted-label">Audio muted</span></div>
-    <div className="now-playing"><div><h1>{title(item)}</h1><p className="quiet">{demo?'Generated sample':'Direct playback'}</p></div><p className="keyboard-hint">Space to pause &middot; Arrows to seek &middot; Esc to return</p></div>
+    <div className="player-controls"><button className="primary" onClick={toggle} aria-label={paused?'Play video':'Pause video'}>{paused?'\u25b6 Play':'\u2161 Pause'}</button><button className="control-button" onClick={()=>seek(position-10)} aria-label="Back ten seconds">-10s</button><button className="control-button" onClick={()=>seek(position+10)} aria-label="Forward ten seconds">+10s</button><input aria-label="Playback position" type="range" min="0" max={duration||1} step="0.1" value={position} onChange={event=>seek(Number(event.target.value))}/><span className="time">{clock(position)} / {clock(duration)}</span><button className="control-button" aria-label={muted?'Enable audio':'Mute audio'} onClick={()=>{const node=video.current;if(node){node.muted=!muted;node.volume=muted?1:0;setMuted(!muted);}}}>{muted?'Enable audio':'Mute'}</button></div>
+    <div className="now-playing"><div><h1>{title(item)}</h1><p className="quiet">{demo?'Generated sample':mode==='transcode'?'Full-length compatibility playback':'Direct playback'}</p></div><p className="keyboard-hint">Space to pause &middot; Arrows to seek &middot; Esc to return</p></div>
   </main>;
 }

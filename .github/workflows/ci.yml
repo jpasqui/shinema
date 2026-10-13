@@ -29,6 +29,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: node scripts/generate-test-media.mjs
       - run: node scripts/web-smoke.mjs
+      - run: node scripts/full-library-smoke.mjs
   server-and-contracts:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -43,6 +44,7 @@ jobs:
       - run: cargo +1.94.0 fmt --all --check
       - run: cargo +1.94.0 clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo +1.94.0 test --workspace --locked
+      - run: python3 server/tests/test_remote_reader.py
       - run: cargo +1.94.0 build --workspace --locked
       - run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: clients/native

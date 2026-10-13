@@ -9,7 +9,7 @@ export default defineConfig({
   plugins:[react(),{name:'bounded-demo-loading',configureServer(server){if(delay)server.middlewares.use((request,_response,next)=>{if(request.url==='/api/catalog')setTimeout(next,delay);else next();});}}],
   server:{host:'127.0.0.1',port:5173,strictPort:true,open:false,cors:false,
     allowedHosts:['127.0.0.1','localhost'],
-    fs:{strict:true,allow:[directory('.'),directory('../../packages/contracts'),directory('../../packages/design-tokens')],deny:['**/.git/**','**/.local/**','**/.private/**','**/.env*','**/*.pem','**/*.key','**/*.p12','**/*.jks']},
+    fs:{strict:true,allow:[directory('.'),directory('../../packages/contracts'),directory('../../packages/design-tokens')],deny:['**/.git','**/.git/**','**/.local/**','**/.private/**','**/.env*','**/*.pem','**/*.key','**/*.p12','**/*.jks']},
     proxy:{'/api':{target:api.origin,changeOrigin:false,ws:false}},
   },
   preview:{host:'127.0.0.1',port:5173,strictPort:true,open:false},

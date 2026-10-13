@@ -498,6 +498,11 @@
       "license": "MIT"
     },
     {
+      "package": "hls.js",
+      "version": "1.7.3",
+      "license": "Apache-2.0"
+    },
+    {
       "package": "js-tokens",
       "version": "4.0.0",
       "license": "MIT"
