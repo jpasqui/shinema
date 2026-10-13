@@ -10,13 +10,16 @@ The implementation branch contains a read-only Rust catalog/streaming server and
 - The client preserves library selection through detail/player/Back, browses an app-private cached catalog, and queues local progress for server sync.
 - HTTPS is required by the client with normal platform trust. The server currently binds only to loopback; TLS termination and production authentication are not implemented.
 - CI checks Rust formatting/lint/tests, shared contract/client tests and types, host HTTP integration and an unsigned Android release build.
+- The stacked React web preview adds a responsive generated-media library, HTML5 direct playback, cached browsing and resume. Its isolated Chromium workload verifies browser rendering and playback; see [web setup and checks](docs/web-preview.md).
 
 ## Repository
 
 ```text
 server/              Rust server
 clients/native/      React Native TV client (Android first)
+clients/web/         React web preview
 packages/contracts/  Shared API schemas, types and runtime parsers
+packages/design-tokens/ Shared web design tokens
 docs/                Setup, API and dependency license review
 scripts/             Generated fixtures and host integration checks
 ```
