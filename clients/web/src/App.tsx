@@ -2,6 +2,8 @@ import { MetadataCredits } from './MetadataCredits.tsx';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type Hls from 'hls.js';
+import { restoreBrowserResume } from './playback.ts';
+import type { PlaybackDriver } from './playback.ts';
 import { LibraryBrowser } from './LibraryBrowser.tsx';
 import { initialBrowse } from './browse.ts';
 import {
@@ -593,7 +595,7 @@ function Player({
   const [ready, setReady] = useState(false);
   const lastSave = useRef(0);
   const started = useRef(false);
-  const playbackMode = useRef('');
+  const playbackDriver = useRef<PlaybackDriver>('');
   const [muted, setMuted] = useState(true);
   const [mode, setMode] = useState('');
   const snapshot = useCallback(() => {
@@ -622,13 +624,14 @@ function Player({
         if (controller.signal.aborted) return;
         setDuration(info.durationSeconds);
         setMode(info.mode);
-        playbackMode.current = info.mode;
         if (info.mode === 'direct') {
+          playbackDriver.current = 'direct';
           initializeSilentVideo(node, info.streamPath);
         } else {
           const { default: Hls } = await import('hls.js');
           if (controller.signal.aborted) return;
           if (Hls.isSupported()) {
+            playbackDriver.current = 'hls-js';
             hls = new Hls({
               startPosition: resumeAt(progress, info.durationSeconds),
               maxBufferLength: 18,
@@ -650,6 +653,7 @@ function Player({
             hls.attachMedia(node);
             hls.loadSource(info.streamPath);
           } else if (node.canPlayType('application/vnd.apple.mpegurl')) {
+            playbackDriver.current = 'native-hls';
             initializeSilentVideo(node, info.streamPath);
           } else {
             setError('This browser cannot play the compatibility stream.');
@@ -749,8 +753,7 @@ function Player({
           onLoadedMetadata={() => {
             const node = video.current!;
             setDuration(node.duration);
-            if (playbackMode.current === 'direct')
-              node.currentTime = resumeAt(progress, node.duration);
+            restoreBrowserResume(node, playbackDriver.current, progress);
             setPosition(node.currentTime);
           }}
           onCanPlay={() => {

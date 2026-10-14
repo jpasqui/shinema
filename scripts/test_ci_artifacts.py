@@ -1,5 +1,9 @@
 """Exercise the public-build guard with synthetic data only."""
 import tempfile
+import hashlib
+import json
+from unittest.mock import patch
+from types import SimpleNamespace
 import unittest
 import zipfile
 from pathlib import Path
@@ -10,7 +14,7 @@ from audit_ci_artifacts import REACT_NATIVE_DEBUG_HINT, audit, check
 class ArtifactAuditTests(unittest.TestCase):
     def test_private_content_is_rejected_without_echoing_values(self):
         for content in [
-            b'-----BEGIN RSA PRIVATE KEY-----',
+            b'-----BEGIN ' + b'RSA PRIVATE KEY-----',
             b'ghp_' + b'x' * 36,
             b'https://fixture:password@example.invalid/',
             b'http://192.168.2.3:8787',
@@ -100,6 +104,59 @@ class ArtifactAuditTests(unittest.TestCase):
             (path / 'unrelated.json').write_text('{}')
             with self.assertRaises(SystemExit):
                 audit('diagnostics', path)
+
+
+    def generated_evidence(self, path):
+        png = b'\x89PNG\r\n\x1a\n' + b'\x00' * 8 + (1280).to_bytes(4, 'big') + (900).to_bytes(4, 'big')
+        assets = {}
+        for name in ['before-movies.png', 'before-series.png', 'after-movies.png', 'after-series.png', 'interactions.webm']:
+            content = b'\x1a\x45\xdf\xa3generated fixture' if name.endswith('webm') else png
+            (path / name).write_bytes(content)
+            assets[name] = hashlib.sha256(content).hexdigest()
+        data = {'schema': 1, 'generatedOnly': True, 'fixtureCount': 1457, 'providersEnabled': False,
+                'sourceRevision': 'a' * 40, 'beforeRevision': 'c2d82902fab5fc9e4e16555d5978df943f5ab865',
+                'viewport': {'width': 1280, 'height': 900}, 'recording': 'Generated silent recording',
+                'methodology': 'Generated fixtures', 'checks': [], 'seeks': [], 'browser': 'fixture',
+                'hevcStartupMs': 1000, 'assets': assets}
+        (path / 'provenance.json').write_text(json.dumps(data), encoding='utf-8')
+        return data
+
+    @patch('audit_ci_artifacts.subprocess.run')
+    def test_generated_evidence_requires_provenance_and_rejects_extra_files(self, probe):
+        probe.return_value = SimpleNamespace(returncode=0, stdout=json.dumps({
+            'streams': [{'codec_type': 'video', 'width': 1280, 'height': 900}],
+            'format': {'duration': '60'}}).encode())
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            data = self.generated_evidence(path)
+            audit('public-fixtures', path)
+            (path / 'source.mp4').write_bytes(b'generated')
+            with self.assertRaises(SystemExit): audit('public-fixtures', path)
+            (path / 'source.mp4').unlink()
+            data['generatedOnly'] = False
+            (path / 'provenance.json').write_text(json.dumps(data))
+            with self.assertRaises(SystemExit): audit('public-fixtures', path)
+
+    @patch('audit_ci_artifacts.subprocess.run')
+    def test_generated_evidence_rejects_hash_mismatch_and_audio(self, probe):
+        probe.return_value = SimpleNamespace(returncode=0, stdout=json.dumps({
+            'streams': [{'codec_type': 'video', 'width': 1280, 'height': 900}],
+            'format': {'duration': '60'}}).encode())
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            self.generated_evidence(path)
+            with (path / 'before-movies.png').open('ab') as output: output.write(b'changed')
+            with self.assertRaises(SystemExit): audit('public-fixtures', path)
+            self.generated_evidence(path)
+            probe.return_value.stdout = json.dumps({'streams': [{'codec_type': 'audio'}], 'format': {'duration': '60'}}).encode()
+            with self.assertRaises(SystemExit): audit('public-fixtures', path)
+
+    def test_generated_evidence_rejects_private_markers_before_probe(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            self.generated_evidence(path)
+            with (path / 'before-movies.png').open('ab') as output: output.write(b'C:/Users/fixture/private')
+            with self.assertRaises(SystemExit): audit('public-fixtures', path)
 
 
 if __name__ == '__main__':

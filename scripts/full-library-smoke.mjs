@@ -1,7 +1,19 @@
 // Synthetic media only. Actual Rust/SQLite API, React navigation and browser
 // decoding; desktop integration checks, not TV frame-time measurements.
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, link, rm, copyFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  link,
+  rm,
+  copyFile,
+  readFile,
+  writeFile,
+  readdir,
+  symlink,
+  realpath,
+} from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { resolve, join, sep } from 'node:path';
 import assert from 'node:assert/strict';
 import { chromium } from '../clients/web/node_modules/playwright/index.mjs';
@@ -26,7 +38,99 @@ function generate(args) {
   );
   assert.equal(result.status, 0, result.stderr?.toString());
 }
-let server, vite, browser, diagnostics;
+let server, vite, beforeVite, browser, diagnostics;
+const captureEvidence = process.env.SHINEMA_PUBLIC_EVIDENCE === '1';
+const evidence = join(root, 'ci-artifacts', 'public-fixtures');
+const beforeRevision = 'c2d82902fab5fc9e4e16555d5978df943f5ab865';
+async function captureBefore() {
+  const beforeRoot = resolve(
+    process.env.SHINEMA_BEFORE_UI_ROOT ?? 'local-tools/pr5-before',
+  );
+  // Execute only the pinned original project source, never a local/private UI.
+  const gitRoot = await realpath(join(beforeRoot, '.git'))
+    .then(() => beforeRoot)
+    .catch(() => root);
+  const files = spawnSync(
+    'git',
+    [
+      '-C',
+      gitRoot,
+      'ls-tree',
+      '-r',
+      '--name-only',
+      beforeRevision,
+      'clients/web',
+      'packages',
+    ],
+    { encoding: 'utf8' },
+  );
+  assert.equal(files.status, 0, 'Pinned before revision is unavailable');
+  for (const name of files.stdout.trim().split(/\r?\n/)) {
+    const original = spawnSync('git', [
+      '-C',
+      gitRoot,
+      'show',
+      `${beforeRevision}:${name}`,
+    ]);
+    assert.equal(original.status, 0);
+    assert.equal(
+      (await readFile(join(beforeRoot, name), 'utf8')).replaceAll('\r\n', '\n'),
+      original.stdout.toString('utf8').replaceAll('\r\n', '\n'),
+      'Before source differs from pinned public revision: ' + name,
+    );
+  }
+  const modules = join(beforeRoot, 'clients/web/node_modules');
+  const trustedModules = join(root, 'clients/web/node_modules');
+  try {
+    assert.equal(await realpath(modules), await realpath(trustedModules));
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    await symlink(
+      trustedModules,
+      modules,
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+  }
+  beforeVite = await createServer({
+    configFile: join(beforeRoot, 'clients/web/vite.config.ts'),
+    root: join(beforeRoot, 'clients/web'),
+    server: { port: 39873, host: '127.0.0.1', strictPort: true },
+  });
+  await beforeVite.listen();
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 900 },
+  });
+  await loopbackOnly(context);
+  try {
+    const page = await context.newPage();
+    await page.goto('http://127.0.0.1:39873');
+    await expect(
+      page.getByRole('button', { name: 'Open Generated film', exact: true }),
+    ).toBeVisible();
+    await page.screenshot({ path: join(evidence, 'before-movies.png') });
+    await page.getByRole('button', { name: 'TV shows', exact: true }).click();
+    await expect(
+      page.getByRole('button', {
+        name: 'Open Generated series 00',
+        exact: true,
+      }),
+    ).toBeVisible();
+    await page.screenshot({ path: join(evidence, 'before-series.png') });
+  } finally {
+    await context.close();
+    await beforeVite.close();
+    beforeVite = undefined;
+  }
+}
+async function loopbackOnly(context) {
+  await context.route('**/*', (route) => {
+    const url = new URL(route.request().url());
+    if (url.protocol === 'http:' && url.hostname === '127.0.0.1')
+      return route.continue();
+    return route.abort();
+  });
+}
+
 const result = {
   methodology:
     'Fresh full Chromium; original generated full-duration sources; 1,457 recursive media entries; loopback only.',
@@ -42,6 +146,14 @@ async function wait(predicate, seconds = 90) {
   throw new Error('Integration condition timed out');
 }
 try {
+  if (captureEvidence) {
+    await mkdir(evidence, { recursive: true });
+    assert.deepEqual(
+      await readdir(evidence),
+      [],
+      'Public evidence directory must start empty',
+    );
+  }
   const fixture = join(run, 'generated-full-source.mkv');
   generate([
     '-f',
@@ -203,9 +315,19 @@ try {
     browser,
     join(root, 'ci-artifacts', 'browser-failure'),
   );
+  if (captureEvidence) await captureBefore();
   const context = await browser.newContext({
     viewport: { width: 1280, height: 900 },
+    ...(captureEvidence
+      ? {
+          recordVideo: {
+            dir: join(run, 'recording'),
+            size: { width: 1280, height: 900 },
+          },
+        }
+      : {}),
   });
+  await loopbackOnly(context);
   diagnostics.observe(context);
   const page = await context.newPage();
   const errors = [];
@@ -214,10 +336,18 @@ try {
   await expect(
     page.getByRole('heading', { name: 'Movies', exact: true }),
   ).toBeVisible();
+  if (captureEvidence) {
+    await expect(
+      page.getByRole('button', { name: 'Open Generated film', exact: true }),
+    ).toBeVisible();
+    await page.screenshot({ path: join(evidence, 'after-movies.png') });
+  }
   await page.getByRole('button', { name: 'TV shows', exact: true }).click();
   await expect(
     page.getByRole('button', { name: 'Open Generated series 00', exact: true }),
   ).toBeVisible();
+  if (captureEvidence)
+    await page.screenshot({ path: join(evidence, 'after-series.png') });
   await page.getByRole('button', { name: 'Next page', exact: true }).click();
   await expect(
     page.getByRole('button', { name: 'Open Generated series 60', exact: true }),
@@ -423,7 +553,10 @@ try {
     'Episode request deadline clears loading and a late superseded reply cannot replace a newer search',
   );
   assert.deepEqual(errors, []);
+  const recording = page.video();
   await context.close();
+  if (captureEvidence)
+    await recording.saveAs(join(evidence, 'interactions.webm'));
   await wait(async () => {
     const health = await (await fetch(origin + '/health')).json();
     return health.playback.activeCodecJobs === 0;
@@ -433,6 +566,46 @@ try {
   result.checks.push(
     'No abandoned codec jobs; compatibility cache remains bounded',
   );
+  if (captureEvidence) {
+    const sourceRevision =
+      process.env.SHINEMA_SOURCE_REVISION ??
+      spawnSync('git', ['rev-parse', 'HEAD'], {
+        encoding: 'utf8',
+      }).stdout.trim();
+    assert.match(sourceRevision, /^[a-f0-9]{40}$/);
+    const assets = {};
+    for (const name of [
+      'before-movies.png',
+      'before-series.png',
+      'after-movies.png',
+      'after-series.png',
+      'interactions.webm',
+    ]) {
+      assets[name] = createHash('sha256')
+        .update(await readFile(join(evidence, name)))
+        .digest('hex');
+    }
+    await writeFile(
+      join(evidence, 'provenance.json'),
+      JSON.stringify(
+        {
+          schema: 1,
+          generatedOnly: true,
+          fixtureCount: 1457,
+          providersEnabled: false,
+          sourceRevision,
+          beforeRevision,
+          viewport: { width: 1280, height: 900 },
+          recording:
+            'Silent, untrimmed generated workload; desktop Chromium, not a Shield benchmark',
+          ...result,
+          assets,
+        },
+        null,
+        2,
+      ),
+    );
+  }
   console.log(JSON.stringify(result, null, 2));
 } catch (error) {
   if (diagnostics)
@@ -440,6 +613,7 @@ try {
   throw error;
 } finally {
   if (browser) await browser.close();
+  if (beforeVite) await beforeVite.close();
   if (vite) await vite.close();
   if (server && server.exitCode === null) {
     const stopped = new Promise((done) => server.once('exit', done));

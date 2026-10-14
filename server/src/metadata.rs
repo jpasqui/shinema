@@ -632,6 +632,20 @@ impl Engine {
             .map_err(io::Error::other)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(io::Error::other)?;
+        // A process can stop after the final rename but before the row insert.
+        // Unregistered finals must not remain invisible and outside quota.
+        let registered: BTreeSet<_> = keys.iter().cloned().collect();
+        for entry in fs::read_dir(&self.images)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.len() == 64
+                && name.bytes().all(|c| c.is_ascii_hexdigit())
+                && !registered.contains(&name)
+            {
+                crate::state_files::validate_file(&entry.path())?;
+                fs::remove_file(entry.path())?;
+            }
+        }
         for key in keys {
             if key.len() != 64 || !key.bytes().all(|c| c.is_ascii_hexdigit()) {
                 return Err(io::Error::other("Invalid artwork cache identity"));
@@ -756,8 +770,23 @@ impl Engine {
     async fn download_image(&self, url: &str) -> Result<(), Failure> {
         let key = format!("{:x}", Sha256::digest(url.as_bytes()));
         let path = self.images.join(&key);
-        if crate::state_files::validate_file(&path).is_ok() {
+        if self.image_key(url).is_some() {
             return Ok(());
+        }
+        // Also recover a failed row insert without waiting for a restart/purge.
+        // Only a validated, quota-accounted and unexpired image is a cache hit.
+        {
+            let db = self.database.lock().map_err(|_| Failure::Unavailable)?;
+            match fs::symlink_metadata(&path) {
+                Ok(_) => {
+                    crate::state_files::validate_file(&path).map_err(|_| Failure::Unavailable)?;
+                    fs::remove_file(&path).map_err(|_| Failure::Unavailable)?;
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+                Err(_) => return Err(Failure::Unavailable),
+            }
+            db.execute("DELETE FROM images WHERE key=?", [&key])
+                .map_err(|_| Failure::Unavailable)?;
         }
         let url = reqwest::Url::parse(url).map_err(|_| Failure::Unavailable)?;
         if ![Some("image.tmdb.org"), Some("static.tvmaze.com")].contains(&url.host_str())
@@ -1218,6 +1247,45 @@ mod tests {
         let engine = fixture(state.path(), calls, false);
         assert!(!partial.exists());
         assert!(engine.images.join("b".repeat(64)).is_file());
+    }
+    #[tokio::test]
+    async fn renamed_artwork_without_a_row_is_pruned_and_can_be_published_again() {
+        let state = tempfile::tempdir().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let engine = fixture(state.path(), calls.clone(), false);
+        let url = "https://static.tvmaze.com/uploads/images/medium_portrait/1/2.png";
+        let key = format!("{:x}", Sha256::digest(url));
+        let data = b"\x89PNGgenerated crash fixture";
+        let orphan = engine.images.join(&key);
+        // Reproduce the crash window exactly: bytes renamed, no SQLite row.
+        fs::write(&orphan, data).unwrap();
+        assert!(engine.image_key(url).is_none());
+        drop(engine);
+        let engine = fixture(state.path(), calls, false);
+        assert!(!orphan.exists());
+        engine.commit_image(&key, data, data.len() as u64).unwrap();
+        assert_eq!(engine.image_key(url), Some(key.clone()));
+        let accounted: u64 = engine
+            .database
+            .lock()
+            .unwrap()
+            .query_row("SELECT sum(size) FROM images", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(accounted, data.len() as u64);
+        engine
+            .database
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM images WHERE key=?", [&key])
+            .unwrap();
+        // No provider transport is used: a disallowed URL with existing bytes
+        // must return failure, never the previous false-success cache hit.
+        let invalid = "https://example.invalid/orphan.png";
+        let invalid_key = format!("{:x}", Sha256::digest(invalid));
+        let invalid_orphan = engine.images.join(invalid_key);
+        fs::write(&invalid_orphan, data).unwrap();
+        assert!(engine.download_image(invalid).await.is_err());
+        assert!(!invalid_orphan.exists());
     }
     #[tokio::test]
     async fn stale_provider_content_is_removed_instead_of_refreshing_its_age() {
