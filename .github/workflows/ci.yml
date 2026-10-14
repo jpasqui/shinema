@@ -67,17 +67,23 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: node scripts/generate-test-media.mjs
       - name: Browser smoke with retained failure logs
-        run: node scripts/web-smoke.mjs 2>&1 | tee .local/browser-test.log
+        id: browser-smoke
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p ci-artifacts/browser-failure
+          node scripts/web-smoke.mjs 2>&1 | tee ci-artifacts/browser-failure/browser-test.log
+      - name: Audit browser failure diagnostics
+        id: audit-diagnostics
+        if: failure() && steps.browser-smoke.outcome == 'failure'
+        run: python3 scripts/audit_ci_artifacts.py diagnostics ci-artifacts/browser-failure
       - name: Save browser failure diagnostics
-        if: failure()
+        if: failure() && steps.audit-diagnostics.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: shinema-browser-failure-${{ github.event.pull_request.head.sha || github.sha }}
-          path: |
-            .local/browser-diagnostics/
-            .local/browser-test.log
-            .local/web-smoke-results.json
-          if-no-files-found: warn
+          path: ci-artifacts/browser-failure/
+          if-no-files-found: error
           retention-days: 7
   server-and-contracts:
     runs-on: ubuntu-24.04

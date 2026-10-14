@@ -10,6 +10,7 @@ import {createServer} from '../clients/web/node_modules/vite/dist/node/index.js'
 import {browserDiagnostics} from './browser-diagnostics.mjs';
 
 const root=resolve('.');const local=join(root,'.local');await mkdir(local,{recursive:true});
+const evidence=join(root,'ci-artifacts','browser-failure');
 const run=await mkdtemp(join(local,'web-smoke-'));const screenshots=join(local,'web-screenshots');await mkdir(screenshots,{recursive:true});
 for(const name of ['Orbit','Horizon','Pulse'])await access(join(local,'media',`Generated_${name}.mp4`));
 process.env.VITE_DEMO_MODE='true';process.env.SHINEMA_DEMO_DELAY_MS='700';process.env.SHINEMA_API_ORIGIN='http://127.0.0.1:8787';
@@ -30,7 +31,7 @@ async function screenshot(page,name){await page.screenshot({path:join(screenshot
 try{
  await waitForServer();const fixtureCatalog=await(await fetch('http://127.0.0.1:8787/api/catalog')).json();assert.deepEqual(fixtureCatalog.items.map(item=>item.title).sort(),['Generated Horizon','Generated Orbit','Generated Pulse']);vite=await createServer({configFile:join(root,'clients','web','vite.config.ts'),root:join(root,'clients','web')});await vite.listen();
  browser=await chromium.launch({headless:true,channel:'chromium',args:['--mute-audio']});results.browser=browser.version();
- diagnostics=browserDiagnostics(browser,join(local,'browser-diagnostics'));
+ diagnostics=browserDiagnostics(browser,evidence);
  const context=await browser.newContext({viewport:{width:1280,height:900},reducedMotion:'reduce'});
  diagnostics.observe(context);
  await context.route('**/*',route=>{const url=new URL(route.request().url());return url.origin==='http://127.0.0.1:5173'?route.continue():route.abort();});
@@ -118,7 +119,8 @@ try{
  results.status='failed';results.error=error.stack??String(error);
  try{
   if(diagnostics)await diagnostics.save(error,serverError);
-  else{await mkdir(join(local,'browser-diagnostics'),{recursive:true});await writeFile(join(local,'browser-diagnostics','failure.json'),JSON.stringify({error:results.error,serverLog:serverError},null,2));}
+  else{await mkdir(evidence,{recursive:true});await writeFile(join(evidence,'failure.json'),JSON.stringify({error:results.error,serverLog:serverError},null,2));}
+  await writeFile(join(evidence,'web-smoke-results.json'),JSON.stringify(results,null,2),'utf8');
   await writeFile(join(local,'web-smoke-results.json'),JSON.stringify(results,null,2),'utf8');
  }catch(diagnosticError){console.error('Could not save browser failure evidence:',diagnosticError);}
  throw error;

@@ -26,6 +26,12 @@ class ArtifactAuditTests(unittest.TestCase):
     def test_loopback_and_public_source_are_allowed(self):
         check('assets/generated.js', b'http://127.0.0.1:8787 https://example.invalid')
 
+    def test_binary_string_boundaries_cannot_form_a_credential_origin(self):
+        check('classes2.dex', b'http://\x00unrelated:descriptor@\x00')
+        check('classes2.dex', b'http://example.invalid\x00unrelated:descriptor@\x00')
+        with self.assertRaises(SystemExit):
+            check('classes2.dex', b'\x00https://fixture:password@example.invalid/\x00')
+
     def test_only_standalone_dex_emulator_alias_constants_are_allowed(self):
         for alias in [b'10.0.2.2', b'10.0.3.2']:
             check('classes2.dex', b'\x08' + alias + b'\x00')
@@ -69,6 +75,18 @@ class ArtifactAuditTests(unittest.TestCase):
                 apk.writestr('META-INF/TEST.RSA', b'generated fixture')
             with self.assertRaises(SystemExit):
                 audit('android', path)
+
+    def test_diagnostics_require_logs_and_reject_unrelated_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            with self.assertRaises(SystemExit):
+                audit('diagnostics', path)
+            (path / 'browser-test.log').write_text('Generated failure')
+            (path / 'failure.json').write_text('{"status":"failed"}')
+            audit('diagnostics', path)
+            (path / 'unrelated.json').write_text('{}')
+            with self.assertRaises(SystemExit):
+                audit('diagnostics', path)
 
 
 if __name__ == '__main__':

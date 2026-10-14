@@ -1,17 +1,19 @@
 """Check allowlisted CI builds before upload; never inspect developer state."""
+import hashlib
 import re
 import sys
 import zipfile
 from pathlib import Path
 
 PRIVATE_CONTENT = re.compile(
-    rb"-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----"
-    rb"|(?:gh[opusr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})"
-    rb"|(?:https?://|ssh://)[^\s/]+:[^\s/@]+@"
-    rb"|(?<![\d.])(?:10\.(?:\d{1,3}\.){2}\d{1,3}"
+    rb"(?P<key>-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----)"
+    rb"|(?P<token>gh[opusr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})"
+    # Binary string boundaries cannot be part of a credential-bearing origin.
+    rb"|(?P<origin>(?:https?://|ssh://)[^\x00-\x20/:@\"<>]+:[^\x00-\x20/@\"<>]+@)"
+    rb"|(?P<ip>(?<![\d.])(?:10\.(?:\d{1,3}\.){2}\d{1,3}"
     rb"|192\.168\.\d{1,3}\.\d{1,3}"
-    rb"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(?![\d.])"
-    rb"|/volume[0-9]+/|/mnt/(?:nas|media)/",
+    rb"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(?![\d.]))"
+    rb"|(?P<nas>/volume[0-9]+/|/mnt/(?:nas|media)/)",
     re.IGNORECASE,
 )
 FORBIDDEN_SUFFIXES = {'.pem', '.key', '.jks', '.keystore', '.p12', '.pfx', '.sqlite', '.sqlite3', '.mp4', '.mkv', '.webm'}
@@ -30,7 +32,8 @@ def check(name, content):
                 and content[match.end():match.end() + 1] == b'\x00'):
             continue
         # Do not echo potentially sensitive matched data into the public CI log.
-        raise SystemExit(f'Potential private endpoint or credential in build: {name}')
+        fingerprint = hashlib.sha256(match.group()).hexdigest()[:12]
+        raise SystemExit(f'Potential private content in build: {name}; rule={match.lastgroup}; fingerprint={fingerprint}; bytes={len(match.group())}')
 
 
 def audit(kind, path):
@@ -58,8 +61,17 @@ def audit(kind, path):
         # APK v2/v3 signatures live outside ZIP entries.
         if b'APK Sig Block 42' in path.read_bytes():
             raise SystemExit('Expected an unsigned APK, found an APK signing block')
+    elif kind == 'diagnostics':
+        if not (path / 'browser-test.log').is_file():
+            raise SystemExit('Browser failure evidence is missing the workload log')
+        for file in path.iterdir():
+            if file.is_symlink() or not file.is_file() or not re.fullmatch(
+                    r'(?:failure-[0-9]+\.png|failure\.json|web-smoke-results\.json|browser-test\.log)', file.name):
+                raise SystemExit('Unexpected file in browser failure evidence')
+            check(file.name, file.read_bytes())
+            count += 1
     else:
-        raise SystemExit('Expected web or android')
+        raise SystemExit('Expected web, android or diagnostics')
     print(f'Audited {count} build files: no credential markers, unexpected private IPs, NAS roots, state or media detected.')
 
 
