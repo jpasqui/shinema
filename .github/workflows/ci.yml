@@ -137,7 +137,8 @@ jobs:
           "$SDKMANAGER" 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;27.1.12297006' 'cmake;3.30.5'
       - run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: clients/native
-      - run: gradle --no-daemon :app:assembleRelease
+      # React Native otherwise embeds the runner's host IP in a debugger resource.
+      - run: gradle --no-daemon :app:assembleRelease -PreactNativeDevServerIp=127.0.0.1
         working-directory: clients/native/android
         env:
           CI: 'true'
