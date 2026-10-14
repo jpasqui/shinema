@@ -53,3 +53,7 @@ local-tools/
 
 # Kotlin compiler/session state
 .kotlin/
+
+# Local bytecode from the CI artifact guard tests
+/scripts/__pycache__/
+/ci-artifacts/

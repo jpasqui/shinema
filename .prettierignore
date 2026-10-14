@@ -1,0 +1,25 @@
+# Existing source formatting baseline; remove an entry when formatting that file.
+# New JS/TS files are checked automatically. ESLint still checks every source file.
+**/node_modules/
+**/dist/
+**/build/
+**/.local/
+target/
+local-tools/
+clients/native/index.js
+clients/native/src/App.tsx
+clients/native/src/domain.ts
+clients/native/src/session.ts
+clients/native/tests/domain.test.ts
+clients/native/tests/session.test.ts
+clients/web/src/App.tsx
+clients/web/src/Artwork.tsx
+clients/web/src/main.tsx
+clients/web/src/model.ts
+clients/web/tests/model.test.ts
+clients/web/vite.config.ts
+packages/contracts/index.ts
+scripts/generate-test-media.mjs
+scripts/host-smoke.mjs
+scripts/web-dev.mjs
+scripts/web-smoke.mjs
