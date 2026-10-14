@@ -151,12 +151,17 @@ class ArtifactAuditTests(unittest.TestCase):
             probe.return_value.stdout = json.dumps({'streams': [{'codec_type': 'audio'}], 'format': {'duration': '60'}}).encode()
             with self.assertRaises(SystemExit): audit('public-fixtures', path)
 
-    def test_generated_evidence_rejects_private_markers_before_probe(self):
+    @patch('audit_ci_artifacts.subprocess.run')
+    def test_generated_evidence_rejects_private_markers_before_probe(self, probe):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary)
             self.generated_evidence(path)
             with (path / 'before-movies.png').open('ab') as output: output.write(b'C:/Users/fixture/private')
-            with self.assertRaises(SystemExit): audit('public-fixtures', path)
+            entries = list(path.iterdir())
+            entries.sort(key=lambda file: file.name != 'interactions.webm')
+            with patch('audit_ci_artifacts.Path.iterdir', return_value=iter(entries)):
+                with self.assertRaises(SystemExit): audit('public-fixtures', path)
+            probe.assert_not_called()
 
 
 if __name__ == '__main__':

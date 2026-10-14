@@ -106,19 +106,24 @@ def audit(kind, path):
             if file.suffix == '.webm':
                 if not content.startswith(b'\x1a\x45\xdf\xa3'):
                     raise SystemExit('Invalid public recording format')
-                probe = subprocess.run(['ffprobe', '-v', 'error', '-show_entries',
-                                        'format=duration:format_tags:stream=codec_type,width,height',
-                                        '-of', 'json', str(file)], capture_output=True, timeout=30)
-                if probe.returncode:
-                    raise SystemExit('Public recording cannot be decoded/probed')
-                check('recording-probe.json', probe.stdout)
-                info = json.loads(probe.stdout)
-                streams = info.get('streams', [])
-                if (len(streams) != 1 or streams[0].get('codec_type') != 'video'
-                        or streams[0].get('width') != 1280 or streams[0].get('height') != 900
-                        or not 1 <= float(info.get('format', {}).get('duration', 0)) <= 600):
-                    raise SystemExit('Public recording must be bounded, silent and at the fixed viewport')
             count += 1
+        # Scan every allowlisted byte stream before running a media decoder.
+        file = path / 'interactions.webm'
+        try:
+            probe = subprocess.run(['ffprobe', '-v', 'error', '-show_entries',
+                                'format=duration:format_tags:stream=codec_type,width,height',
+                                '-of', 'json', str(file)], capture_output=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            raise SystemExit('Public recording probe is unavailable')
+        if probe.returncode:
+            raise SystemExit('Public recording cannot be decoded/probed')
+        check('recording-probe.json', probe.stdout)
+        info = json.loads(probe.stdout)
+        streams = info.get('streams', [])
+        if (len(streams) != 1 or streams[0].get('codec_type') != 'video'
+                or streams[0].get('width') != 1280 or streams[0].get('height') != 900
+                or not 1 <= float(info.get('format', {}).get('duration', 0)) <= 600):
+            raise SystemExit('Public recording must be bounded, silent and at the fixed viewport')
         data = json.loads((path / 'provenance.json').read_text(encoding='utf-8'))
         allowed = {'schema', 'generatedOnly', 'fixtureCount', 'providersEnabled', 'sourceRevision',
                    'beforeRevision', 'viewport', 'recording', 'methodology', 'checks', 'seeks',
