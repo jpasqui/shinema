@@ -44,7 +44,6 @@ try{
  const page=await context.newPage();const errors=[];page.on('pageerror',error=>errors.push(error.message));
  const start=performance.now();await page.goto('http://127.0.0.1:5173');
  await expect(page.getByLabel('Loading library')).toBeVisible();await screenshot(page,'loading');
- assert.fail('Intentional CI failure-evidence verification; removed before readiness');
  await expect(page.getByRole('button',{name:'Open Orbit',exact:true})).toBeVisible();results.catalogToVisibleMs=Math.round(performance.now()-start);
  results.checks.push('Actual catalog, deliberate loading state and library render');await screenshot(page,'library-desktop');
  const longTitles=['Orbit'+'x'.repeat(195),('Orbit '+('long spaced catalog title '.repeat(9))).slice(0,200)];

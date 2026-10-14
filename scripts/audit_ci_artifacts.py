@@ -1,5 +1,4 @@
 """Check allowlisted CI builds before upload; never inspect developer state."""
-import hashlib
 import re
 import sys
 import zipfile
@@ -17,6 +16,7 @@ PRIVATE_CONTENT = re.compile(
     re.IGNORECASE,
 )
 FORBIDDEN_SUFFIXES = {'.pem', '.key', '.jks', '.keystore', '.p12', '.pfx', '.sqlite', '.sqlite3', '.mp4', '.mkv', '.webm'}
+REACT_NATIVE_DEBUG_HINT = b"'Debug server host & port for device' in 'Dev settings' to your machine's IP address and the port of the local dev server - e.g. "
 
 
 def check(name, content):
@@ -31,9 +31,15 @@ def check(name, content):
                 and content[match.start() - 1:match.start()] == b'\x08'
                 and content[match.end():match.end() + 1] == b'\x00'):
             continue
+        # DebugServerException's pinned public help text includes this example.
+        # Require its exact surrounding instruction and <PORT> placeholder;
+        # the same address in an origin, app bundle or other context is rejected.
+        if (path.suffix == '.dex' and match.group() == b'10.0.1.1'
+                and content[max(0, match.start() - len(REACT_NATIVE_DEBUG_HINT)):match.start()] == REACT_NATIVE_DEBUG_HINT
+                and content[match.end():match.end() + 7] == b':<PORT>'):
+            continue
         # Do not echo potentially sensitive matched data into the public CI log.
-        fingerprint = hashlib.sha256(match.group()).hexdigest()[:12]
-        raise SystemExit(f'Potential private content in build: {name}; rule={match.lastgroup}; fingerprint={fingerprint}; bytes={len(match.group())}')
+        raise SystemExit(f'Potential private content in build: {name}; rule={match.lastgroup}; bytes={len(match.group())}')
 
 
 def audit(kind, path):

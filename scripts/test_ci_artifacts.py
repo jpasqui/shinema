@@ -4,7 +4,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from audit_ci_artifacts import audit, check
+from audit_ci_artifacts import REACT_NATIVE_DEBUG_HINT, audit, check
 
 
 class ArtifactAuditTests(unittest.TestCase):
@@ -49,6 +49,19 @@ class ArtifactAuditTests(unittest.TestCase):
         for name in ['.env.local', 'identity.pem', 'state.sqlite3', 'fixture.mp4']:
             with self.subTest(name=name), self.assertRaises(SystemExit):
                 check(name, b'generated fixture')
+
+    def test_public_debugger_example_needs_exact_dex_help_context(self):
+        example = REACT_NATIVE_DEBUG_HINT + b'10.0.1.1:<PORT>'
+        check('classes2.dex', example)
+        for name, content in [
+            ('assets/index.android.bundle', example),
+            ('classes2.dex', b'http://10.0.1.1:8787'),
+            ('classes2.dex', b'10.0.1.1:<PORT>'),
+            ('classes2.dex', REACT_NATIVE_DEBUG_HINT + b'10.0.1.1:8787'),
+            ('classes2.dex', example + b' 192.168.2.3'),
+        ]:
+            with self.subTest(name=name, content=content), self.assertRaises(SystemExit):
+                check(name, content)
 
     def test_web_requires_an_entrypoint_and_checks_all_assets(self):
         with tempfile.TemporaryDirectory() as temporary:
