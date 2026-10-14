@@ -18,9 +18,12 @@ use std::{
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
+mod cache_lease;
 mod catalog;
+mod metadata;
 mod playback;
 mod ssh;
+mod web;
 pub use catalog::Classification;
 pub use ssh::SshConfig;
 mod state_files;
@@ -35,6 +38,33 @@ pub struct Media {
     pub stream_path: String,
     #[serde(flatten)]
     pub classification: Classification,
+    #[serde(flatten)]
+    pub presentation: Presentation,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Presentation {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub poster_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backdrop_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub year: Option<u32>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub genres: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_year: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata_expires_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -71,6 +101,8 @@ pub struct Library {
     entries: BTreeMap<String, Entry>,
     database: Mutex<Connection>,
     playback: playback::Engine,
+    metadata: Arc<metadata::Engine>,
+    web_root: Option<PathBuf>,
 }
 
 fn checked_file(root: &Path, relative: &Path) -> std::io::Result<PathBuf> {
@@ -176,6 +208,7 @@ impl Library {
         let mut entries = BTreeMap::new();
         Self::scan(&root, &mut entries)?;
         state_files::validate(&state)?;
+        let playback = playback::Engine::new(&state)?;
         let mut db = Connection::open_with_flags(
             state.join("progress.sqlite3"),
             OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -185,6 +218,19 @@ impl Library {
         )?;
         state_files::validate(&state)?;
         db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS progress(id TEXT PRIMARY KEY, position REAL NOT NULL, duration REAL NOT NULL);")?;
+        for entry in entries.values_mut() {
+            metadata::prepare(&mut entry.media);
+            if entry.media.classification.collection.as_deref() == Some("movies")
+                && entry.media.presentation.year.is_none()
+            {
+                entry.media.presentation.year = entry
+                    .relative
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|p| p.to_str())
+                    .and_then(|p| metadata::title_year(p).1);
+            }
+        }
         catalog::replace_index(&mut db, entries.values().map(|entry| entry.media.clone()))?;
         let directory = cap_std::fs::Dir::open_ambient_dir(&root, cap_std::ambient_authority())?;
         Ok(Arc::new(Self {
@@ -194,7 +240,9 @@ impl Library {
             remote_transfers: Arc::new(tokio::sync::Semaphore::new(4)),
             entries,
             database: Mutex::new(db),
-            playback: playback::Engine::new(&state)?,
+            playback,
+            metadata: metadata::Engine::new(&state)?,
+            web_root: web::configured()?,
         }))
     }
 
@@ -275,6 +323,7 @@ impl Library {
                         container,
                         size_bytes: record.size_bytes,
                         classification,
+                        presentation: Presentation::default(),
                     },
                     relative,
                     remote: Some(record),
@@ -285,6 +334,7 @@ impl Library {
         state_files::create_private_directory(state_dir)?;
         let state = state_dir.canonicalize()?;
         state_files::validate(&state)?;
+        let playback = playback::Engine::new(&state)?;
         let mut db = Connection::open_with_flags(
             state.join("progress.sqlite3"),
             OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -294,6 +344,19 @@ impl Library {
         )?;
         state_files::validate(&state)?;
         db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS progress(id TEXT PRIMARY KEY, position REAL NOT NULL, duration REAL NOT NULL);")?;
+        for entry in entries.values_mut() {
+            metadata::prepare(&mut entry.media);
+            if entry.media.classification.collection.as_deref() == Some("movies")
+                && entry.media.presentation.year.is_none()
+            {
+                entry.media.presentation.year = entry
+                    .relative
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|p| p.to_str())
+                    .and_then(|p| metadata::title_year(p).1);
+            }
+        }
         catalog::replace_index(&mut db, entries.values().map(|entry| entry.media.clone()))?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS scan_summary(files_seen INTEGER,ignored_files INTEGER,links_skipped INTEGER);")?;
         db.execute("DELETE FROM scan_summary", [])?;
@@ -308,7 +371,9 @@ impl Library {
             remote_transfers: Arc::new(tokio::sync::Semaphore::new(4)),
             entries,
             database: Mutex::new(db),
-            playback: playback::Engine::new(&state)?,
+            playback,
+            metadata: metadata::Engine::new(&state)?,
+            web_root: web::configured()?,
         }))
     }
 
@@ -363,6 +428,7 @@ impl Library {
                             container: extension,
                             size_bytes: metadata.len(),
                             classification,
+                            presentation: Presentation::default(),
                         },
                         relative,
                         remote: None,
@@ -390,11 +456,23 @@ pub fn router_at(library: Arc<Library>, bind: std::net::SocketAddr) -> Router {
         .route("/api/series", get(series))
         .route("/api/series/{id}/seasons", get(seasons))
         .route("/api/media/{id}/stream", get(stream))
+        .route("/api/media/{id}/metadata",get(media_metadata))
+        .route("/api/metadata/status",get(metadata_status))
+        .route("/api/media/{id}/poster",get(poster))
+        .route("/api/media/{id}/backdrop",get(backdrop))
         .route("/api/media/{id}/playback", get(playback_info))
         .route("/api/media/{id}/hls/{segment}", get(hls))
         .route("/api/media/{id}/progress", get(progress).put(save_progress))
         .layer(DefaultBodyLimit::max(4096))
+        .fallback(static_web)
         .with_state(library)
+}
+
+async fn static_web(
+    State(library): State<Arc<Library>>,
+    uri: axum::http::Uri,
+) -> Result<Response, StatusCode> {
+    web::response(library.web_root.as_deref(), uri).await
 }
 
 async fn catalog(
@@ -406,9 +484,20 @@ async fn catalog(
         .database
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    catalog::page(&db, query)
-        .map(Json)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    let mut value = catalog::page(&db, query).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    drop(db);
+    let mut pending = false;
+    for row in value["items"]
+        .as_array_mut()
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
+    {
+        let mut item: Media =
+            serde_json::from_value(row.clone()).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        pending |= library.metadata.overlay(&mut item, false, false);
+        *row = serde_json::to_value(item).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    value["metadataPending"] = pending.into();
+    Ok(Json(value))
 }
 async fn library_summary(
     State(library): State<Arc<Library>>,
@@ -430,9 +519,42 @@ async fn series(
         .database
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    catalog::series(&db, query)
-        .map(Json)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    let mut value = catalog::series(&db, query).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    drop(db);
+    let mut pending = false;
+    for row in value["items"]
+        .as_array_mut()
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
+    {
+        let sid = row["id"].as_str().unwrap_or_default();
+        if let Some(entry) = library
+            .entries
+            .values()
+            .find(|entry| entry.media.classification.series_id.as_deref() == Some(sid))
+        {
+            let mut item = entry.media.clone();
+            item.title = row["title"].as_str().unwrap_or_default().to_string();
+            pending |= library.metadata.overlay(&mut item, true, false);
+            row["title"] = item.title.into();
+            let extra = serde_json::to_value(&item.presentation)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            for key in [
+                "fileTitle",
+                "metadataSource",
+                "metadataUrl",
+                "metadataExpiresAt",
+            ] {
+                if let Some(value) = extra.get(key) {
+                    row[key] = value.clone();
+                }
+            }
+            if let Some(path) = item.presentation.poster_path {
+                row["posterPath"] = path.into();
+            }
+        }
+    }
+    value["metadataPending"] = pending.into();
+    Ok(Json(value))
 }
 async fn seasons(
     State(library): State<Arc<Library>>,
@@ -455,18 +577,17 @@ async fn seasons(
 }
 
 impl Entry {
-    fn fingerprint(&self) -> String {
+    fn fingerprint(&self, local_root: Option<&Path>) -> String {
         let stamp = self
             .remote
             .as_ref()
             .map(|r| r.modified_ns.clone())
             .unwrap_or_else(|| format!("{:?}", self.modified));
-        format!(
-            "{:x}",
-            Sha256::digest(
-                format!("{}\0{}\0{}", self.media.id, self.media.size_bytes, stamp).as_bytes()
-            )
-        )
+        let base = format!("{}\0{}\0{}", self.media.id, self.media.size_bytes, stamp);
+        let namespaced = local_root
+            .map(|root| format!("shinema-local-cache-v1\0{}\0{base}", media_id(root)))
+            .unwrap_or(base);
+        format!("{:x}", Sha256::digest(namespaced.as_bytes()))
     }
 }
 async fn verify_source(library: &Library, entry: &Entry) -> Result<(), StatusCode> {
@@ -500,7 +621,7 @@ async fn playback_info(
     verify_source(&library, entry).await?;
     library
         .playback
-        .metadata(&entry.media)
+        .metadata(&entry.media, &entry.fingerprint(library.root.as_deref()))
         .await
         .map(Json)
         .map_err(|_| StatusCode::UNPROCESSABLE_ENTITY)
@@ -513,7 +634,7 @@ async fn hls(
     verify_source(&library, entry).await?;
     let metadata = library
         .playback
-        .metadata(&entry.media)
+        .metadata(&entry.media, &entry.fingerprint(library.root.as_deref()))
         .await
         .map_err(|_| StatusCode::UNPROCESSABLE_ENTITY)?;
     if metadata.mode != "transcode" {
@@ -539,7 +660,7 @@ async fn hls(
         return Err(StatusCode::NOT_FOUND);
     }
     let media = entry.media.clone();
-    let fingerprint = entry.fingerprint();
+    let fingerprint = entry.fingerprint(library.root.as_deref());
     Ok(playback::segment_response(
         library,
         media,
@@ -547,6 +668,60 @@ async fn hls(
         index,
         metadata.duration_seconds,
     ))
+}
+
+async fn metadata_status(State(library): State<Arc<Library>>) -> Json<serde_json::Value> {
+    Json(library.metadata.status())
+}
+async fn media_metadata(
+    State(library): State<Arc<Library>>,
+    ApiPath(id): ApiPath<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut item = library
+        .entries
+        .get(&id)
+        .ok_or(StatusCode::NOT_FOUND)?
+        .media
+        .clone();
+    let pending = library.metadata.overlay(&mut item, false, true);
+    Ok(Json(
+        serde_json::json!({"apiVersion":1,"items":[item],"metadataPending":pending}),
+    ))
+}
+
+async fn poster(
+    State(library): State<Arc<Library>>,
+    ApiPath(id): ApiPath<String>,
+) -> Result<Response, StatusCode> {
+    image_response(library, id, "poster").await
+}
+async fn backdrop(
+    State(library): State<Arc<Library>>,
+    ApiPath(id): ApiPath<String>,
+) -> Result<Response, StatusCode> {
+    image_response(library, id, "backdrop").await
+}
+async fn image_response(
+    library: Arc<Library>,
+    id: String,
+    kind: &str,
+) -> Result<Response, StatusCode> {
+    let entry = library.entries.get(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let bytes = library
+        .metadata
+        .image(&entry.media, kind == "backdrop")
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let mime = if bytes.starts_with(b"\x89PNG") {
+        "image/png"
+    } else {
+        "image/jpeg"
+    };
+    Response::builder()
+        .header(header::CONTENT_TYPE, mime)
+        .header(header::CACHE_CONTROL, "no-store")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(Body::from(bytes))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 async fn progress(
@@ -641,7 +816,8 @@ async fn stream(
             library
                 .remote_transfers
                 .clone()
-                .try_acquire_owned()
+                .acquire_owned()
+                .await
                 .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?,
         )
     } else {
@@ -730,4 +906,40 @@ async fn stream(
     response
         .body(body)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[cfg(test)]
+mod cache_identity_tests {
+    use super::*;
+    #[test]
+    fn switching_local_roots_with_same_path_size_and_time_cannot_reuse_cached_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path().join("state");
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        for (root, bytes) in [(&first, b"first---"), (&second, b"second--")] {
+            fs::create_dir(root).unwrap();
+            let path = root.join("same.mkv");
+            fs::write(&path, bytes).unwrap();
+            let stamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(123456);
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(stamp))
+                .unwrap();
+        }
+        let a = Library::open(&first, &state).unwrap();
+        let entry = a.entries.values().next().unwrap();
+        let id = entry.media.id.clone();
+        let stamp = entry.modified;
+        let fingerprint = entry.fingerprint(a.root.as_deref());
+        drop(a);
+        let b = Library::open(&second, &state).unwrap();
+        let entry = b.entries.values().next().unwrap();
+        assert_eq!(entry.media.id, id);
+        assert_eq!(entry.media.size_bytes, 8);
+        assert_eq!(entry.modified, stamp);
+        assert_ne!(entry.fingerprint(b.root.as_deref()), fingerprint);
+    }
 }

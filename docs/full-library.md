@@ -1,6 +1,6 @@
 # Full-library development
 
-The Rust server recursively indexes all supported video files. It stores the full catalog and playback progress in local SQLite; HTTP queries return bounded pages. The web client separates Movies from TV series, seasons and episodes, preserves navigation through detail/player/back, and caches the twelve most recently browsed pages. Folder and filename metadata drive grouping. Artwork is explicitly placeholder artwork; no external metadata provider is configured.
+The Rust server recursively indexes all supported video files. It stores the full catalog and playback progress in local SQLite; HTTP queries return bounded pages. The web client separates Movies from TV series, seasons and episodes, preserves navigation through detail/player/back, and caches the twelve most recently browsed pages. Folder and filename metadata drive grouping. Optional existing Plex metadata supplies exact-file-matched titles, synopsis, years, genres, posters and backdrops. No external metadata account is configured. Missing artwork is displayed plainly.
 
 ## Existing read-only SSH source
 
@@ -32,7 +32,14 @@ $env:SHINEMA_BIND = '127.0.0.1:8787'
 .\target\debug\shinema-server.exe
 ```
 
-In a second terminal:
+For the integrated prebuilt UI, build it and set its public asset directory before starting Rust:
+
+```powershell
+npm --prefix clients/web run build
+$env:SHINEMA_WEB_ROOT = Join-Path (Get-Location).Path 'clients/web/dist'
+```
+
+The same Rust loopback origin then serves the UI and API. Development hot reload remains available in a second terminal:
 
 ```powershell
 $env:VITE_DEMO_MODE = 'false'
@@ -62,6 +69,21 @@ npm --prefix clients/web run build
 node scripts/full-library-smoke.mjs
 ```
 
-The final command uses generated full-duration media, 601 recursive media entries, an isolated full Chromium browser and separate loopback ports. It verifies complete paging, TV grouping, decoding, beginning/middle/end seeks, resume and cached browsing. CI runs POSIX helper path/link tests using local generated fixtures; no real NAS configuration or media enters CI.
+The final command uses generated full-duration media, 1,457 recursive media entries, an isolated full Chromium browser and separate loopback ports. It verifies complete paging, TV grouping, decoding, beginning/middle/end seeks, resume and cached browsing. CI runs POSIX helper path/link tests using local generated fixtures; no real NAS configuration or media enters CI.
 
-This is an interactive development server, not a persistent deployment. There is one development profile and no production authentication/TLS termination. The native TV client still has its original flat first-page UI; this change does not validate Shield playback or deliver its full-library navigation. Automatic rescans, external posters/metadata, subtitles, alternate audio selection, GPU transcoding and adaptive bitrate remain unfinished. Indexed formats may still contain an unsupported or corrupt codec; playback preparation fails visibly instead of inventing a playable result. Desktop timings do not establish TV input or frame performance.
+This is an interactive development server, not a persistent deployment. There is one development profile and no production authentication/TLS termination. The native TV client still has its original flat first-page UI; this change does not validate Shield playback or deliver its full-library navigation. Automatic rescans, new metadata matching beyond configured providers, subtitles, alternate audio selection, production GPU encoding and adaptive bitrate remain unfinished. Indexed formats may still contain an unsupported or corrupt codec; playback preparation fails visibly instead of inventing a playable result. Desktop timings do not establish TV input or frame performance.
+
+
+## Independent metadata and artwork
+
+Shinema reads media source files only. It does not open Plex databases, preferences, credentials or artwork directories. File-derived catalog rows and grouping are indexed immediately; external metadata is demand-driven and never blocks a browse response. The Movies bootstrap requests its visible collection, and TV-only libraries retain their navigation.
+
+The Rust server directly supports TMDB Movies/TV and optional TVmaze TV metadata. There is no centralized metadata relay or required end-user provider-account onboarding. A finished project-wide default requires the provider's permission and an appropriate distribution/licensing decision. No credential is committed or bundled. Pending that decision, optional administrator overrides are `SHINEMA_TMDB_TOKEN_FILE` (a private regular file containing an approved project API Read Access Token) and `SHINEMA_TVMAZE=1`. Both are disabled in this development environment; synthetic provider fixtures verify implementation without claiming live metadata or artwork coverage.
+
+Only cleaned title/year searches and provider IDs plus season/episode numbers leave the server. Paths, library databases and watch history are excluded. Matching requires a unique normalized title and a matching year when known; ambiguous remakes keep file-derived details. The queue holds at most 128 demand requests. A single pooled HTTPS client spaces requests by at least 600 ms and respects HTTP 429/Retry-After; failures retain file browsing and defer retries. No whole-library eager image download occurs. Posters are fetched for demanded pages, backdrops for demanded details; endpoints serve only already-cached image bytes.
+
+The private cache retains at most 20,000 metadata records and 4,096 images/256 MiB of images. Metadata refreshes after seven days, negative matches after one day, and provider failures back off. Content has a conservative 30-day hard expiry, checked before reuse and purged at startup/hourly during demand. Client caches discard expired provider fields and retain grouping/file details. Artwork writes are atomic, bounded and recovered after interruption under exclusive ownership. Existing links fail closed. Provider source links and credits accompany metadata; TVmaze data remains subject to CC BY-SA, separately from the MIT licence of original code. TMDB usage, logo attribution and commercial/project distribution permission remain governed by its current terms. No terms or new agreements have been accepted by this implementation.
+
+Codec information is independent of internet metadata. Shinema's own ffprobe results are cached against the complete source identity; every stream request still validates original size/mtime. Bounded input probing and manifest-ready HLS startup avoid repeated preparation and startup deadlocks. CPU H.264/AAC output remains selected. Segment cache reserves space for its bounded probe database/journal. These are desktop engineering checks; Shield input/frame/playback validation remains separate.
+
+References: [TMDB application authentication](https://developer.themoviedb.org/docs/authentication-application), [TMDB FAQ/attribution](https://developer.themoviedb.org/docs/faq), [TMDB rate limiting](https://developer.themoviedb.org/docs/rate-limiting), [TVmaze API and licence](https://www.tvmaze.com/api).

@@ -89,6 +89,10 @@ async fn all_files_are_indexed_and_pages_cover_the_catalog_without_duplicates() 
         .query_row("SELECT count(*) FROM media_catalog", [], |row| row.get(0))
         .unwrap();
     assert_eq!(count, 601);
+    let plan=db.prepare("EXPLAIN QUERY PLAN SELECT media_json FROM media_catalog ORDER BY CASE WHEN series_id IS NULL THEN title ELSE series_title END COLLATE NOCASE,season,episode,title COLLATE NOCASE,id LIMIT 60").unwrap().query_map([],|row|row.get::<_,String>(3)).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
+    assert!(plan.iter().any(|line| line.contains("media_order")));
+    assert!(!plan.iter().any(|line| line.contains("TEMP B-TREE")));
+
     drop(db);
     drop(app);
     std::fs::remove_file(movie.join("Generated film.mp4")).unwrap();

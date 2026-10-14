@@ -22,7 +22,7 @@ use std::{
     task::{Context, Poll},
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::AsyncReadExt,
     process::Command,
     sync::{Mutex as AsyncMutex, Semaphore},
     time::{Duration, timeout},
@@ -85,6 +85,8 @@ pub struct Engine {
     cache: Mutex<BTreeMap<String, CacheFile>>,
     clock: AtomicU64,
     cache_limit: u64,
+    probes: Mutex<rusqlite::Connection>,
+    _lease: crate::cache_lease::Lease,
 }
 fn failure(message: &str) -> io::Error {
     io::Error::other(message)
@@ -135,11 +137,35 @@ impl Engine {
         if fs::symlink_metadata(&directory)?.file_type().is_symlink() {
             return Err(failure("Cache must be a private ordinary directory"));
         }
+        let lease = crate::cache_lease::Lease::acquire(&directory)?;
+        for name in ["probes.sqlite3", "probes.sqlite3-journal"] {
+            match crate::state_files::validate_file(&directory.join(name)) {
+                Ok(_) => (),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+                Err(e) => return Err(e),
+            }
+        }
+        let probes = rusqlite::Connection::open_with_flags(
+            directory.join("probes.sqlite3"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+                | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
+                | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(io::Error::other)?;
+        probes.execute_batch("PRAGMA auto_vacuum=INCREMENTAL;PRAGMA max_page_count=8192;CREATE TABLE IF NOT EXISTS probes(identity TEXT PRIMARY KEY,data TEXT,used INTEGER);").map_err(io::Error::other)?;
         let mut cache = BTreeMap::new();
         for entry in fs::read_dir(&directory)? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
-            if cache_name(&name) {
+            if let Some(pid) = temporary_owner(&name) {
+                valid_file(&entry.path())?;
+                if crate::cache_lease::alive(pid) {
+                    return Err(failure(
+                        "Legacy cache temporary file has a live owner; stop it or use separate state",
+                    ));
+                }
+                fs::remove_file(entry.path())?;
+            } else if cache_name(&name) {
                 cache.insert(
                     name,
                     CacheFile {
@@ -157,7 +183,9 @@ impl Engine {
             locks: (0..64).map(|_| AsyncMutex::new(())).collect(),
             cache: Mutex::new(cache),
             clock: AtomicU64::new(1),
-            cache_limit: CACHE_BYTES,
+            cache_limit: CACHE_BYTES - 256 - 64 * 1024 * 1024,
+            probes: Mutex::new(probes),
+            _lease: lease,
         };
         value.evict(0)?;
         Ok(value)
@@ -178,8 +206,8 @@ impl Engine {
             item.stream_path
         )
     }
-    pub async fn metadata(&self, item: &Media) -> io::Result<Playback> {
-        if let Some(value) = self.metadata.lock().await.get(&item.id).cloned() {
+    pub async fn metadata(&self, item: &Media, fingerprint: &str) -> io::Result<Playback> {
+        if let Some(value) = self.metadata.lock().await.get(fingerprint).cloned() {
             return Ok(value);
         }
         let _permit = self
@@ -187,7 +215,38 @@ impl Engine {
             .acquire()
             .await
             .map_err(|_| failure("Playback is shutting down"))?;
-        if let Some(value) = self.metadata.lock().await.get(&item.id).cloned() {
+        if let Some(value) = self.metadata.lock().await.get(fingerprint).cloned() {
+            return Ok(value);
+        }
+        let cached = self
+            .probes
+            .lock()
+            .map_err(|_| failure("Probe cache lock"))?
+            .query_row(
+                "SELECT data FROM probes WHERE identity=?",
+                [fingerprint],
+                |row| row.get::<_, String>(0),
+            )
+            .ok();
+        if let Some(value) = cached
+            .and_then(|data| serde_json::from_str::<Playback>(&data).ok())
+            .filter(|value| {
+                value.duration_seconds.is_finite()
+                    && value.duration_seconds > 0.0
+                    && value.duration_seconds <= 604800.0
+                    && ["direct", "transcode"].contains(&value.mode.as_str())
+                    && value.stream_path
+                        == if value.mode == "direct" {
+                            item.stream_path.clone()
+                        } else {
+                            format!("/api/media/{}/hls/index.m3u8", item.id)
+                        }
+            })
+        {
+            self.metadata
+                .lock()
+                .await
+                .insert(fingerprint.into(), value.clone());
             return Ok(value);
         }
         let mut command = Command::new("ffprobe");
@@ -195,6 +254,10 @@ impl Engine {
             .args([
                 "-v",
                 "error",
+                "-analyzeduration",
+                "1000000",
+                "-probesize",
+                "1048576",
                 "-show_entries",
                 "format=duration:stream=codec_type,codec_name,pix_fmt",
                 "-of",
@@ -248,7 +311,23 @@ impl Engine {
         self.metadata
             .lock()
             .await
-            .insert(item.id.clone(), value.clone());
+            .insert(fingerprint.into(), value.clone());
+        let db = self
+            .probes
+            .lock()
+            .map_err(|_| failure("Probe cache lock"))?;
+        db.execute(
+            "INSERT OR REPLACE INTO probes VALUES (?1,?2,?3)",
+            rusqlite::params![
+                fingerprint,
+                serde_json::to_string(&value)?,
+                self.clock.fetch_add(1, Ordering::Relaxed)
+            ],
+        )
+        .map_err(io::Error::other)?;
+        db.execute("DELETE FROM probes WHERE identity IN (SELECT identity FROM probes ORDER BY used LIMIT max((SELECT count(*) FROM probes)-4096,0))",[]).map_err(io::Error::other)?;
+        db.execute_batch("PRAGMA incremental_vacuum(64)")
+            .map_err(io::Error::other)?;
         Ok(value)
     }
     pub fn playlist(duration: f64, id: &str) -> String {
@@ -305,7 +384,7 @@ impl Engine {
         let encoded = format!(
             "{:x}",
             <sha2::Sha256 as sha2::Digest>::digest(
-                format!("hls-720p-yuv420p-v2\0{fingerprint}").as_bytes()
+                format!("hls-720p-yuv420p-cpu-v6\0{fingerprint}").as_bytes()
             )
         );
         let name = format!("{encoded}-{index}.ts");
@@ -330,41 +409,48 @@ impl Engine {
             .map_err(|_| failure("Playback is shutting down"))?;
         let mut command = Command::new("ffmpeg");
         command
-            .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-ss"])
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-analyzeduration",
+                "1000000",
+                "-probesize",
+                "1048576",
+                "-ss",
+            ])
             .arg(format!("{start:.6}"))
             .arg("-i")
             .arg(self.source(item))
             .arg("-t")
             .arg(format!("{:.6}", segment_length(duration, index)))
+            .args(["-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn", "-vf"])
+            .arg("scale=1280:-2,format=yuv420p");
+        command.args([
+            "-c:v",
+            "libx264",
+            "-threads",
+            "4",
+            "-preset",
+            "veryfast",
+            "-tune",
+            "zerolatency",
+            "-crf",
+            "23",
+            "-keyint_min",
+            "120",
+            "-sc_threshold",
+            "0",
+        ]);
+        command
             .args([
-                "-map",
-                "0:v:0",
-                "-map",
-                "0:a:0?",
-                "-sn",
-                "-dn",
-                "-vf",
-                "scale=1280:-2",
-                "-c:v",
-                "libx264",
-                "-pix_fmt",
-                "yuv420p",
-                "-threads",
-                "4",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "23",
                 "-maxrate",
                 "6000k",
                 "-bufsize",
                 "12000k",
                 "-g",
                 "120",
-                "-keyint_min",
-                "120",
-                "-sc_threshold",
-                "0",
                 "-c:a",
                 "aac",
                 "-ac",
@@ -387,23 +473,16 @@ impl Engine {
         if bytes.is_empty() {
             return Err(failure("Empty compatibility segment"));
         }
-        // Serialize eviction + insertion; concurrent jobs cannot exceed the bound.
-        self.evict(bytes.len() as u64)?;
-        let temporary = self
-            .directory
-            .join(format!("{name}.{}.{}.tmp", std::process::id(), tick));
-        let cleanup = Temporary(temporary.clone());
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-            .await?;
-        file.write_all(&bytes).await?;
-        file.flush().await?;
-        drop(file);
+        // Keep eviction, temporary-file creation and atomic publication under
+        // one writer lock. There are no await points while temporary bytes exist:
+        // concurrent jobs cannot spend the same free disk-space allowance.
         let mut cache = self.cache.lock().map_err(|_| failure("Cache lock"))?;
-        // Other stripes may have inserted after eviction; enforce the same cap again.
-        while cache.values().map(|v| v.bytes).sum::<u64>() + bytes.len() as u64 > self.cache_limit
+        while cache
+            .values()
+            .map(|v| v.bytes)
+            .sum::<u64>()
+            .saturating_add(bytes.len() as u64)
+            > self.cache_limit
             || cache.len() >= 4096
         {
             let victim = cache
@@ -416,6 +495,17 @@ impl Engine {
             fs::remove_file(old)?;
             cache.remove(&victim);
         }
+        let temporary = self
+            .directory
+            .join(format!("{name}.{}.{}.tmp", std::process::id(), tick));
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        let cleanup = Temporary(temporary.clone());
+        let written = std::io::Write::write_all(&mut file, &bytes).and_then(|_| file.sync_all());
+        drop(file);
+        written?;
         fs::rename(&temporary, &path)?;
         drop(cleanup);
         cache.insert(
@@ -444,6 +534,18 @@ fn cache_name(value: &str) -> bool {
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
         && !index.is_empty()
         && index.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn temporary_owner(name: &str) -> Option<u32> {
+    let stem = name.strip_suffix(".tmp")?;
+    let (stem, tick) = stem.rsplit_once('.')?;
+    let (base, pid) = stem.rsplit_once('.')?;
+    if !cache_name(base) || tick.parse::<u64>().ok()? == 0 {
+        return None;
+    }
+    pid.parse::<u32>()
+        .ok()
+        .filter(|pid| *pid > 0 && *pid <= i32::MAX as u32)
 }
 
 struct SegmentBody {
@@ -496,6 +598,48 @@ pub fn segment_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn startup_recovers_owned_dead_writer_temporary_files_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("playback-cache");
+        fs::create_dir(&directory).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--help")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        assert!(!crate::cache_lease::alive(pid));
+        let owned = directory.join(format!("{}-3.ts.{pid}.7.tmp", "a".repeat(64)));
+        fs::write(&owned, [1_u8; 100]).unwrap();
+        let unrelated = directory.join("personal-notes.tmp");
+        fs::write(&unrelated, b"keep").unwrap();
+        fs::write(
+            directory.join("writer.lock"),
+            format!("shinema-cache-writer-v1\n{pid}\n12345\n"),
+        )
+        .unwrap();
+        let engine = Engine::new(temp.path()).unwrap();
+        assert!(!owned.exists());
+        assert_eq!(fs::read(unrelated).unwrap(), b"keep");
+        assert!(Engine::new(temp.path()).is_err());
+        drop(engine);
+        assert!(!directory.join("writer.lock").exists());
+    }
+    #[test]
+    fn temporary_links_are_never_deleted_as_orphans() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("playback-cache");
+        fs::create_dir(&directory).unwrap();
+        let source = temp.path().join("original");
+        fs::write(&source, b"unchanged").unwrap();
+        let linked = directory.join(format!("{}-1.ts.12345.1.tmp", "b".repeat(64)));
+        fs::hard_link(&source, &linked).unwrap();
+        assert!(Engine::new(temp.path()).is_err());
+        assert!(linked.exists());
+        assert_eq!(fs::read(source).unwrap(), b"unchanged");
+    }
     #[test]
     fn tiny_trailing_audio_duration_is_merged_into_the_last_video_segment() {
         assert_eq!(segment_count(90.024), 15);

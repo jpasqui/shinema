@@ -110,14 +110,44 @@ pub(crate) fn replace_index(
     db: &mut Connection,
     items: impl Iterator<Item = Media>,
 ) -> rusqlite::Result<()> {
-    db.execute_batch("CREATE TABLE IF NOT EXISTS media_catalog(id TEXT PRIMARY KEY, title TEXT NOT NULL, collection TEXT, series_id TEXT, series_title TEXT, season INTEGER, episode INTEGER, media_json TEXT NOT NULL); CREATE INDEX IF NOT EXISTS media_browse ON media_catalog(collection,series_id,season,episode,title,id);")?;
+    db.execute_batch("CREATE TABLE IF NOT EXISTS media_catalog(id TEXT PRIMARY KEY,title TEXT NOT NULL,collection TEXT,series_id TEXT,series_title TEXT,season INTEGER,episode INTEGER,media_json TEXT NOT NULL); CREATE TABLE IF NOT EXISTS catalog_totals(total INTEGER,tv INTEGER,movies INTEGER,series INTEGER); CREATE TABLE IF NOT EXISTS series_catalog(id TEXT PRIMARY KEY,title TEXT NOT NULL,search_text TEXT NOT NULL,series_json TEXT NOT NULL); CREATE INDEX IF NOT EXISTS series_order ON series_catalog(title COLLATE NOCASE,id); CREATE INDEX IF NOT EXISTS media_order ON media_catalog((CASE WHEN series_id IS NULL THEN title ELSE series_title END) COLLATE NOCASE,season,episode,title COLLATE NOCASE,id); CREATE INDEX IF NOT EXISTS media_collection_order ON media_catalog(collection,(CASE WHEN series_id IS NULL THEN title ELSE series_title END) COLLATE NOCASE,season,episode,title COLLATE NOCASE,id); CREATE INDEX IF NOT EXISTS media_series_order ON media_catalog(series_id,season,episode,title COLLATE NOCASE,id);")?;
     let transaction = db.transaction()?;
     transaction.execute("DELETE FROM media_catalog", [])?;
+    transaction.execute("DELETE FROM series_catalog", [])?;
+    transaction.execute("DELETE FROM catalog_totals", [])?;
+    let mut totals = [0_u32; 3];
+    let mut shows = std::collections::BTreeMap::<
+        String,
+        (String, u32, std::collections::BTreeSet<u32>, Option<String>),
+    >::new();
     {
         let mut statement =
             transaction.prepare("INSERT INTO media_catalog VALUES (?1,?2,?3,?4,?5,?6,?7,?8)")?;
         for item in items {
-            let json = serde_json::to_string(&item).expect("Media serialization cannot fail");
+            totals[0] += 1;
+            if item.classification.collection.as_deref() == Some("tv") {
+                totals[1] += 1;
+            } else if item.classification.collection.as_deref() == Some("movies") {
+                totals[2] += 1;
+            }
+            if let Some(id) = &item.classification.series_id {
+                let show = shows.entry(id.clone()).or_insert_with(|| {
+                    (
+                        item.classification.series_title.clone().unwrap_or_default(),
+                        0,
+                        Default::default(),
+                        None,
+                    )
+                });
+                show.1 += 1;
+                if let Some(season) = item.classification.season {
+                    show.2.insert(season);
+                }
+                if show.3.is_none() {
+                    show.3 = item.presentation.poster_path.clone();
+                }
+            }
+            let json = serde_json::to_string(&item).expect("Media serialization");
             statement.execute(params![
                 item.id,
                 item.title,
@@ -129,6 +159,21 @@ pub(crate) fn replace_index(
                 json
             ])?;
         }
+    }
+    transaction.execute(
+        "INSERT INTO catalog_totals VALUES (?1,?2,?3,?4)",
+        params![totals[0], totals[1], totals[2], shows.len() as u32],
+    )?;
+    for (id, (title, episodes, seasons, poster)) in shows {
+        let mut value =
+            serde_json::json!({"id":id,"title":title,"episodes":episodes,"seasons":seasons.len()});
+        if let Some(path) = poster {
+            value["posterPath"] = path.into();
+        }
+        transaction.execute(
+            "INSERT INTO series_catalog VALUES (?1,?2,?3,?4)",
+            params![id, title, title.to_lowercase(), value.to_string()],
+        )?;
     }
     transaction.commit()
 }
@@ -175,71 +220,78 @@ pub(crate) fn page(
     query: CatalogQuery,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     query.validate()?;
-    let collection = query.collection.filter(|s| s != "all");
-    let search = query.search.unwrap_or_default();
-    let offset = query.offset.unwrap_or(0);
-    let limit = query.limit.unwrap_or(500);
-    let filter = "(?1 IS NULL OR collection=?1) AND (?2 IS NULL OR series_id=?2) AND (?3 IS NULL OR season=?3) AND (?4='' OR instr(lower(title),lower(?4))>0 OR instr(lower(coalesce(series_title,'')),lower(?4))>0)";
+    let mut filters = Vec::new();
+    let mut values = Vec::<rusqlite::types::Value>::new();
+    if let Some(collection) = query.collection.filter(|s| s != "all") {
+        filters.push("collection=?".to_string());
+        values.push(collection.into());
+    }
+    if let Some(series) = query.series {
+        filters.push("series_id=?".to_string());
+        values.push(series.into());
+    }
+    if let Some(season) = query.season {
+        filters.push("season=?".to_string());
+        values.push(season.into());
+    }
+    if let Some(search) = query.search.filter(|s| !s.is_empty()) {
+        filters.push("(instr(lower(title),lower(?))>0 OR instr(lower(coalesce(series_title,'')),lower(?))>0)".into());
+        values.push(search.clone().into());
+        values.push(search.into());
+    }
+    let predicate = if filters.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", filters.join(" AND "))
+    };
     let total: u32 = db.query_row(
-        &format!("SELECT count(*) FROM media_catalog WHERE {filter}"),
-        params![collection, query.series, query.season, search],
+        &format!("SELECT count(*) FROM media_catalog {predicate}"),
+        rusqlite::params_from_iter(values.iter()),
         |row| row.get(0),
     )?;
-    let mut statement = db.prepare(&format!("SELECT media_json FROM media_catalog WHERE {filter} ORDER BY CASE WHEN series_id IS NULL THEN title ELSE series_title END COLLATE NOCASE, season, episode, title COLLATE NOCASE,id LIMIT ?5 OFFSET ?6"))?;
+    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(500);
+    values.push(limit.into());
+    values.push(offset.into());
+    let mut statement=db.prepare(&format!("SELECT media_json FROM media_catalog {predicate} ORDER BY CASE WHEN series_id IS NULL THEN title ELSE series_title END COLLATE NOCASE,season,episode,title COLLATE NOCASE,id LIMIT ? OFFSET ?"))?;
     let items = statement
-        .query_map(
-            params![
-                collection,
-                query.series,
-                query.season,
-                search,
-                limit,
-                offset
-            ],
-            |row| row.get::<_, String>(0),
-        )?
+        .query_map(rusqlite::params_from_iter(values.iter()), |row| {
+            row.get::<_, String>(0)
+        })?
         .map(|row| Ok(serde_json::from_str::<Media>(&row?)?))
         .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
     let next = offset.saturating_add(items.len() as u32);
     Ok(
-        serde_json::json!({"apiVersion":1,"items":items,"total":total,"offset":offset,"limit":limit,"nextOffset":if next<total {Some(next)} else {None}}),
+        serde_json::json!({"apiVersion":1,"fullLibrary":db.query_row("SELECT tv>0 OR movies>0 FROM catalog_totals",[],|r|r.get::<_,bool>(0))?,"items":items,"total":total,"offset":offset,"limit":limit,"nextOffset":if next<total {Some(next)} else {None}}),
     )
 }
 
 pub(crate) fn summary(db: &Connection) -> rusqlite::Result<serde_json::Value> {
-    let total: u32 = db.query_row("SELECT count(*) FROM media_catalog", [], |row| row.get(0))?;
-    let tv: u32 = db.query_row(
-        "SELECT count(*) FROM media_catalog WHERE collection='tv'",
-        [],
-        |row| row.get(0),
-    )?;
-    let movies: u32 = db.query_row(
-        "SELECT count(*) FROM media_catalog WHERE collection='movies'",
-        [],
-        |row| row.get(0),
-    )?;
-    let series: u32 = db.query_row(
-        "SELECT count(DISTINCT series_id) FROM media_catalog",
-        [],
-        |row| row.get(0),
-    )?;
-    Ok(serde_json::json!({"total":total,"tv":tv,"movies":movies,"series":series}))
+    db.query_row("SELECT total,tv,movies,series FROM catalog_totals",[],|row|Ok(serde_json::json!({"total":row.get::<_,u32>(0)?,"tv":row.get::<_,u32>(1)?,"movies":row.get::<_,u32>(2)?,"series":row.get::<_,u32>(3)?})))
 }
-
 pub(crate) fn series(
     db: &Connection,
     query: CatalogQuery,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     query.validate()?;
-    let search = query.search.unwrap_or_default();
+    let search = query.search.unwrap_or_default().to_lowercase();
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(60);
-    let total: u32=db.query_row("SELECT count(DISTINCT series_id) FROM media_catalog WHERE collection='tv' AND (?1='' OR instr(lower(series_title),lower(?1))>0)", [&search], |row|row.get(0))?;
-    let mut statement=db.prepare("SELECT series_id,series_title,count(*),count(DISTINCT season) FROM media_catalog WHERE collection='tv' AND (?1='' OR instr(lower(series_title),lower(?1))>0) GROUP BY series_id ORDER BY series_title COLLATE NOCASE,series_id LIMIT ?2 OFFSET ?3")?;
-    let items=statement.query_map(params![search,limit,offset],|row|Ok(serde_json::json!({"id":row.get::<_,String>(0)?,"title":row.get::<_,String>(1)?,"episodes":row.get::<_,u32>(2)?,"seasons":row.get::<_,u32>(3)?})))?.collect::<Result<Vec<_>,_>>()?;
+    let total: u32 = db.query_row(
+        "SELECT count(*) FROM series_catalog WHERE (?1='' OR instr(search_text,?1)>0)",
+        [&search],
+        |row| row.get(0),
+    )?;
+    let mut statement=db.prepare("SELECT series_json FROM series_catalog WHERE (?1='' OR instr(search_text,?1)>0) ORDER BY title COLLATE NOCASE,id LIMIT ?2 OFFSET ?3")?;
+    let items = statement
+        .query_map(params![search, limit, offset], |row| {
+            row.get::<_, String>(0)
+        })?
+        .map(|row| Ok(serde_json::from_str::<serde_json::Value>(&row?)?))
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
     let next = offset.saturating_add(items.len() as u32);
     Ok(
-        serde_json::json!({"items":items,"total":total,"offset":offset,"limit":limit,"nextOffset":if next<total {Some(next)} else {None}}),
+        serde_json::json!({"items":items,"total":total,"offset":offset,"limit":limit,"nextOffset":if next<total{Some(next)}else{None}}),
     )
 }
 

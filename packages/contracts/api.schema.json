@@ -69,6 +69,54 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 10000
+        },
+        "posterPath": {
+          "type": "string",
+          "pattern": "^/api/media/[a-f0-9]{64}/poster$"
+        },
+        "backdropPath": {
+          "type": "string",
+          "pattern": "^/api/media/[a-f0-9]{64}/backdrop$"
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "year": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9999
+        },
+        "genres": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "string",
+            "maxLength": 80
+          }
+        },
+        "fileTitle": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "fileYear": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9999
+        },
+        "metadataSource": {
+          "enum": [
+            "tmdb",
+            "tvmaze"
+          ]
+        },
+        "metadataUrl": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "metadataExpiresAt": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     },
@@ -110,6 +158,12 @@
           ],
           "minimum": 0,
           "maximum": 10000000
+        },
+        "fullLibrary": {
+          "type": "boolean"
+        },
+        "metadataPending": {
+          "type": "boolean"
         }
       }
     },

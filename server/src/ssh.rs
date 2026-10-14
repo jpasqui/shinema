@@ -93,9 +93,11 @@ impl SshConfig {
     }
     fn command(&self, mut payload: serde_json::Value) -> io::Result<Child> {
         payload["roots"] = serde_json::to_value(&self.roots)?;
+        let source = include_str!("remote_reader.py");
+        let program = "python3";
         let remote = format!(
-            "python3 -c {} {}",
-            quote(include_str!("remote_reader.py")),
+            "{program} -c {} {}",
+            quote(source),
             quote(&payload.to_string())
         );
         let mut command = Command::new("ssh");
