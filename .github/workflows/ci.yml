@@ -9,6 +9,19 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  javascript-quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.14.0'
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run lint && npm run format:check
+      - run: python3 scripts/test_ci_artifacts.py
   web-preview:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -20,15 +33,52 @@ jobs:
           cache: npm
           cache-dependency-path: clients/web/package-lock.json
       - run: rustup toolchain install 1.94.0 --profile minimal
+      - name: Cache Rust dependencies and build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-web-rust-1.94.0-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('**/*.rs', '**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-web-rust-1.94.0-${{ hashFiles('Cargo.lock') }}-
       - run: cargo +1.94.0 build --workspace --locked
       - run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: clients/web
       - run: npm test && npm run build
         working-directory: clients/web
+      - name: Audit web development build
+        run: python3 scripts/audit_ci_artifacts.py web clients/web/dist
+      - name: Save web development build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shinema-web-development-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            clients/web/dist/
+            clients/web/node_modules/react/LICENSE
+            clients/web/node_modules/react-dom/LICENSE
+            docs/ci-builds.md
+            docs/dependency-licenses.md
+            docs/web-dependency-licenses.json
+            LICENSE
+          if-no-files-found: error
+          retention-days: 14
       - run: node clients/web/node_modules/playwright/cli.js install --with-deps chromium
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: node scripts/generate-test-media.mjs
-      - run: node scripts/web-smoke.mjs
+      - name: Browser smoke with retained failure logs
+        run: node scripts/web-smoke.mjs 2>&1 | tee .local/browser-test.log
+      - name: Save browser failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shinema-browser-failure-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            .local/browser-diagnostics/
+            .local/browser-test.log
+            .local/web-smoke-results.json
+          if-no-files-found: warn
+          retention-days: 7
   server-and-contracts:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -40,6 +90,15 @@ jobs:
           cache: npm
           cache-dependency-path: clients/native/package-lock.json
       - run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt,clippy
+      - name: Cache Rust dependencies and build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-server-rust-1.94.0-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('**/*.rs', '**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-server-rust-1.94.0-${{ hashFiles('Cargo.lock') }}-
       - run: cargo +1.94.0 fmt --all --check
       - run: cargo +1.94.0 clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo +1.94.0 test --workspace --locked
@@ -76,3 +135,16 @@ jobs:
         working-directory: clients/native/android
         env:
           CI: 'true'
+      - name: Audit unsigned Android development APK
+        run: python3 scripts/audit_ci_artifacts.py android clients/native/android/app/build/outputs/apk/release/app-release-unsigned.apk
+      - name: Save unsigned Android development APK
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shinema-android-unsigned-development-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            clients/native/android/app/build/outputs/apk/release/app-release-unsigned.apk
+            docs/ci-builds.md
+            docs/dependency-licenses.md
+            LICENSE
+          if-no-files-found: error
+          retention-days: 14
