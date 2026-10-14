@@ -54,6 +54,10 @@ local-tools/
 # Kotlin compiler/session state
 .kotlin/
 
-# Original remote-helper test bytecode
+# Local bytecode from the CI artifact guard tests
+/scripts/__pycache__/
+/ci-artifacts/
+
+# Original media helper test bytecode
 __pycache__/
 *.pyc

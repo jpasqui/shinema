@@ -36,7 +36,7 @@ GPU transcoding, intro/credits skipping, downloads, generated missing subtitles,
 
 ## Contribution workflow
 
-All changes use branches and pull requests, including documentation and fixes. Incomplete work remains in draft; merging requires approval. See [AGENTS.md](AGENTS.md).
+All changes use branches and pull requests, including documentation and fixes. Incomplete work remains in draft; merging requires approval. See [AGENTS.md](AGENTS.md) and [contribution verification guidance](CONTRIBUTING.md).
 
 ## License
 
