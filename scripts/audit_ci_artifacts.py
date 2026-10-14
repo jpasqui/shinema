@@ -21,7 +21,14 @@ def check(name, content):
     path = Path(name)
     if path.suffix.lower() in FORBIDDEN_SUFFIXES or path.name.startswith('.env'):
         raise SystemExit(f'Unexpected private/state/media file in build: {name}')
-    if PRIVATE_CONTENT.search(content):
+    for match in PRIVATE_CONTENT.finditer(content):
+        # Locked React Native AndroidInfoHelpers contains these public emulator
+        # aliases. Allow only their standalone DEX string constants, not URLs,
+        # app JS, configured origins or arbitrary addresses in the same subnet.
+        if (path.suffix == '.dex' and match.group() in {b'10.0.2.2', b'10.0.3.2'}
+                and content[match.start() - 1:match.start()] == b'\x08'
+                and content[match.end():match.end() + 1] == b'\x00'):
+            continue
         # Do not echo potentially sensitive matched data into the public CI log.
         raise SystemExit(f'Potential private endpoint or credential in build: {name}')
 
@@ -53,7 +60,7 @@ def audit(kind, path):
             raise SystemExit('Expected an unsigned APK, found an APK signing block')
     else:
         raise SystemExit('Expected web or android')
-    print(f'Audited {count} build files: no credential markers, private IPs, NAS roots, state or media detected.')
+    print(f'Audited {count} build files: no credential markers, unexpected private IPs, NAS roots, state or media detected.')
 
 
 if __name__ == '__main__':

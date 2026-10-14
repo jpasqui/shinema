@@ -26,6 +26,19 @@ class ArtifactAuditTests(unittest.TestCase):
     def test_loopback_and_public_source_are_allowed(self):
         check('assets/generated.js', b'http://127.0.0.1:8787 https://example.invalid')
 
+    def test_only_standalone_dex_emulator_alias_constants_are_allowed(self):
+        for alias in [b'10.0.2.2', b'10.0.3.2']:
+            check('classes2.dex', b'\x08' + alias + b'\x00')
+            for name, value in [
+                ('assets/index.android.bundle', b'\x08' + alias + b'\x00'),
+                ('classes2.dex', b'http://' + alias + b'\x00'),
+                ('classes2.dex', alias),
+                ('classes2.dex', b'\x08' + alias + b'/api\x00'),
+                ('classes2.dex', b'\x08' + alias + b'\x00 192.168.2.3'),
+            ]:
+                with self.subTest(name=name, value=value), self.assertRaises(SystemExit):
+                    check(name, value)
+
     def test_state_media_and_credentials_are_rejected(self):
         for name in ['.env.local', 'identity.pem', 'state.sqlite3', 'fixture.mp4']:
             with self.subTest(name=name), self.assertRaises(SystemExit):
