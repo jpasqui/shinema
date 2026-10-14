@@ -1,6 +1,6 @@
 # Full-library development
 
-The Rust server recursively indexes all supported video files. It stores the full catalog and playback progress in local SQLite; HTTP queries return bounded pages. The web client separates Movies from TV series, seasons and episodes, preserves navigation through detail/player/back, and caches the twelve most recently browsed pages. Folder and filename metadata drive grouping. Optional existing Plex metadata supplies exact-file-matched titles, synopsis, years, genres, posters and backdrops. No external metadata account is configured. Missing artwork is displayed plainly.
+The Rust server recursively indexes all supported video files. It stores the full catalog and playback progress in local SQLite; HTTP queries return bounded pages. The web client separates Movies from TV series, seasons and episodes, preserves navigation through detail/player/back, and caches the twelve most recently browsed pages. Folder and filename metadata drive grouping. Optional direct TMDB/TVmaze adapters supply conservatively matched metadata and artwork through Shinema-owned caches. Live provider access is unconfigured in this development environment. Missing artwork is displayed plainly.
 
 ## Existing read-only SSH source
 
@@ -52,7 +52,7 @@ Open `http://127.0.0.1:5173`. Both processes bind to loopback. Stop them after u
 
 The playback descriptor reports the complete source duration. Browser-compatible H.264/AAC MP4 and compatible WebM can play directly from the original range endpoint. Other containers/codecs use a full-duration VOD HLS playlist, with segments encoded only as the player requests them, including after seeks. This is not an excerpt catalog or a whole-library conversion job.
 
-Compatibility output currently uses CPU libx264, 1280-pixel-wide 8-bit H.264 and stereo AAC. At most two codec jobs and four SSH byte transfers run concurrently. Each segment is capped at 16 MiB; local cache eviction caps retained segments at 512 MiB and 4,096 entries. Cache identities include source modification metadata and the encoding revision. Abandoned response bodies abort codec jobs and own their child processes for cleanup. Very short trailing audio tails are merged into the last video segment.
+Compatibility output currently uses CPU libx264, 1280-pixel-wide 8-bit H.264 and stereo AAC. At most two codec jobs and four SSH byte transfers run concurrently. Each segment is capped at 16 MiB; the 512 MiB playback cache reserves 64 MiB for the bounded probe database/journal, leaving 448 MiB for at most 4,096 retained segments. Cache identities include source modification metadata and the encoding revision. Abandoned response bodies abort codec jobs and own their child processes for cleanup. Very short trailing audio tails are merged into the last video segment.
 
 Playback starts muted; the user can enable audio. Progress uses the stable source ID and the full source timeline. A file that changes after indexing is rejected until the server is restarted and rescans it.
 
