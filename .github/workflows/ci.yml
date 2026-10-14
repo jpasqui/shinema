@@ -66,6 +66,12 @@ jobs:
       - run: node clients/web/node_modules/playwright/cli.js install --with-deps chromium
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: node scripts/generate-test-media.mjs
+      - name: Check out pinned public before-client source for comparison
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: c2d82902fab5fc9e4e16555d5978df943f5ab865
+          path: local-tools/pr5-before
+          persist-credentials: false
       - name: Browser smoke with retained failure logs
         id: browser-smoke
         shell: bash
@@ -73,6 +79,26 @@ jobs:
           set -o pipefail
           mkdir -p ci-artifacts/browser-failure
           node scripts/web-smoke.mjs 2>&1 | tee ci-artifacts/browser-failure/browser-test.log
+          node scripts/full-library-smoke.mjs 2>&1 | tee -a ci-artifacts/browser-failure/browser-test.log
+        env:
+          SHINEMA_PUBLIC_EVIDENCE: '1'
+          SHINEMA_BEFORE_UI_ROOT: local-tools/pr5-before
+          SHINEMA_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Audit generated public UI evidence
+        run: python3 scripts/audit_ci_artifacts.py public-fixtures ci-artifacts/public-fixtures
+      - name: Save generated public UI evidence
+        id: public-evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shinema-generated-ui-evidence-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ci-artifacts/public-fixtures/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Link generated evidence in run summary
+        env:
+          ARTIFACT_URL: ${{ steps.public-evidence.outputs.artifact-url }}
+        run: |
+          echo "Generated-only before/after screenshots and silent, untrimmed desktop workload recording (not TV validation): $ARTIFACT_URL" >> "$GITHUB_STEP_SUMMARY"
       - name: Audit browser failure diagnostics
         id: audit-diagnostics
         if: failure() && steps.browser-smoke.outcome == 'failure'

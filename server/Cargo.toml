@@ -6,17 +6,22 @@ publish = false
 license = "MIT"
 
 [dependencies]
+futures-core = "0.3"
 axum = "=0.8.9"
 cap-std = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "fs", "io-util", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "fs", "io-util", "signal", "process", "time", "sync"] }
 tokio-util = { version = "0.7", features = ["io"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 rusqlite = { version = "0.37", features = ["bundled"] }
+reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls", "json"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

@@ -1,5 +1,8 @@
 """Check allowlisted CI builds before upload; never inspect developer state."""
 import re
+import hashlib
+import json
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -76,9 +79,68 @@ def audit(kind, path):
                 raise SystemExit('Unexpected file in browser failure evidence')
             check(file.name, file.read_bytes())
             count += 1
+    elif kind == 'public-fixtures':
+        expected = {'before-movies.png', 'before-series.png', 'after-movies.png',
+                    'after-series.png', 'interactions.webm', 'provenance.json'}
+        entries = list(path.iterdir())
+        if {file.name for file in entries} != expected:
+            raise SystemExit('Public fixture evidence must contain exactly the dedicated allowlist')
+        for file in entries:
+            if file.is_symlink() or not file.is_file():
+                raise SystemExit('Public fixture evidence cannot contain links or directories')
+            size = file.stat().st_size
+            limit = 100 * 1024 * 1024 if file.suffix == '.webm' else 10 * 1024 * 1024
+            if not 0 < size <= limit:
+                raise SystemExit('Public fixture evidence exceeds its per-file bound')
+            content = file.read_bytes()
+            # Media suffixes remain forbidden for all ordinary build/diagnostic
+            # uploads. Only this exact generated-evidence allowlist permits them.
+            check(file.name + '.generated-bytes', content)
+            if re.search(rb'C:[\\/]+Users[\\/]|/Users/|/mnt/Storage/|id_ed25519|known_hosts', content, re.IGNORECASE):
+                raise SystemExit('Private host/source marker in public fixture evidence')
+            if file.suffix == '.png':
+                if not content.startswith(b'\x89PNG\r\n\x1a\n'):
+                    raise SystemExit('Invalid public screenshot format')
+                if content[16:24] != (1280).to_bytes(4, 'big') + (900).to_bytes(4, 'big'):
+                    raise SystemExit('Public screenshots must use the declared fixed viewport')
+            if file.suffix == '.webm':
+                if not content.startswith(b'\x1a\x45\xdf\xa3'):
+                    raise SystemExit('Invalid public recording format')
+            count += 1
+        # Scan every allowlisted byte stream before running a media decoder.
+        file = path / 'interactions.webm'
+        try:
+            probe = subprocess.run(['ffprobe', '-v', 'error', '-show_entries',
+                                'format=duration:format_tags:stream=codec_type,width,height',
+                                '-of', 'json', str(file)], capture_output=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            raise SystemExit('Public recording probe is unavailable')
+        if probe.returncode:
+            raise SystemExit('Public recording cannot be decoded/probed')
+        check('recording-probe.json', probe.stdout)
+        info = json.loads(probe.stdout)
+        streams = info.get('streams', [])
+        if (len(streams) != 1 or streams[0].get('codec_type') != 'video'
+                or streams[0].get('width') != 1280 or streams[0].get('height') != 900
+                or not 1 <= float(info.get('format', {}).get('duration', 0)) <= 600):
+            raise SystemExit('Public recording must be bounded, silent and at the fixed viewport')
+        data = json.loads((path / 'provenance.json').read_text(encoding='utf-8'))
+        allowed = {'schema', 'generatedOnly', 'fixtureCount', 'providersEnabled', 'sourceRevision',
+                   'beforeRevision', 'viewport', 'recording', 'methodology', 'checks', 'seeks',
+                   'browser', 'hevcStartupMs', 'assets'}
+        if (set(data) != allowed or data['schema'] != 1 or data['generatedOnly'] is not True
+                or data['fixtureCount'] != 1457 or data['providersEnabled'] is not False
+                or not re.fullmatch(r'[a-f0-9]{40}', data['sourceRevision'])
+                or data['beforeRevision'] != 'c2d82902fab5fc9e4e16555d5978df943f5ab865'
+                or data['viewport'] != {'width': 1280, 'height': 900}
+                or set(data['assets']) != expected - {'provenance.json'}):
+            raise SystemExit('Public fixture provenance is missing or invalid')
+        for name, digest in data['assets'].items():
+            if digest != hashlib.sha256((path / name).read_bytes()).hexdigest():
+                raise SystemExit('Public fixture evidence hash mismatch')
     else:
-        raise SystemExit('Expected web, android or diagnostics')
-    print(f'Audited {count} build files: no credential markers, unexpected private IPs, NAS roots, state or media detected.')
+        raise SystemExit('Expected web, android, diagnostics or public-fixtures')
+    print(f'Audited {count} allowlisted files: no forbidden content or unexpected files detected.')
 
 
 if __name__ == '__main__':

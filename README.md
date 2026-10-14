@@ -6,7 +6,7 @@ A unified media product with a Rust server and React / React Native clients.
 
 The implementation branch contains a read-only Rust catalog/streaming server and a React Native TV client for browse, detail, direct playback and resume. It is early development work under draft review. Hardware validation and a real read-only test library are still required; this is not a production deployment.
 
-- The server scans a configurable small media folder, exposes opaque media IDs, supports single byte-range streaming, and stores resume progress in a separate SQLite state directory.
+- The server recursively scans configured media folders, exposes opaque media IDs, supports single byte-range streaming, and stores resume progress in a separate SQLite state directory.
 - The client preserves library selection through detail/player/Back, browses an app-private cached catalog, and queues local progress for server sync.
 - HTTPS is required by the client with normal platform trust. The server currently binds only to loopback; TLS termination and production authentication are not implemented.
 - CI checks Rust formatting/lint/tests, shared contract/client tests and types, host HTTP integration and an unsigned Android release build.
@@ -29,6 +29,8 @@ scripts/             Generated fixtures and host integration checks
 ## Product direction
 
 NVIDIA Shield / Android TV is the first required television target. React web, React Native phone clients and an Apple TV route are planned; desktop delivery is undecided. Those platforms are not validated by this Android slice. Shared domain logic and API contracts should coexist with platform-specific input, cache and playback adapters.
+
+CPU compatibility transcoding and full-duration web playback are under development; see [full-library setup](docs/full-library.md).
 
 GPU transcoding, intro/credits skipping, downloads, generated missing subtitles, integrated Radarr/Sonarr requests and custom channels remain future work.
 

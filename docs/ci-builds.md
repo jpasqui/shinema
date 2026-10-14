@@ -19,3 +19,11 @@ Rust caches contain only Cargo registry/git dependencies and build output, separ
 ## Main enforcement sequence
 
 Require pull requests and successful checks without requiring unavailable reviewers. Verify check names and a successful run before changing protection. Initially only the existing `web-preview`, `server-and-contracts` and `android-release` checks are eligible. Add `javascript-quality` only after this workflow is merged and a main run succeeds; never require a new check while main cannot produce it. Repository settings are managed separately from this PR. Merging still requires explicit approval under the repository working rules.
+
+## Generated UI comparison evidence
+
+The web-preview job runs the full synthetic library workload with 1,457 original generated entries. It captures ready-state Movies/TV screenshots from the pinned before-client revision `c2d82902fab5fc9e4e16555d5978df943f5ab865` and the current client on the same current backend/catalog. It records the successful desktop Chromium interactions silently and without trimming. Provider access is disabled, writable state is isolated, browser traffic is restricted to loopback, and every before-client source file is checked against the pinned revision.
+
+The dedicated `shinema-generated-ui-evidence-<head>` artifact contains four PNG screenshots, one WebM recording and a provenance JSON with source revisions, workload checks and SHA-256 hashes. An explicit allowlist, signature/dimension checks, video-only duration bounds, private-marker checks and provenance/hash validation must pass before the pinned upload action runs. The general build/media exclusions remain in force for other artifacts. No NAS data or development `.local` files are uploaded. Artifact links are in the run summary and PR description; GitHub may require sign-in and artifacts expire after 14 days. This is desktop visual/integration evidence, not a Shield frame-time or remote-input benchmark.
+
+Native-browser HLS resume has application logic regression coverage; Safari/iOS native-HLS execution was not performed in this Windows environment.
