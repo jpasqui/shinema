@@ -1100,9 +1100,19 @@ for (const result of ['hidden', 'removed', 'reordered'] as const) {
         })),
       ],
     };
-    expectStable(
-      await coldStartup(page, info, { width: 1600, libraries: initial }),
-    );
+    const healthy = await coldStartup(page, info, {
+      width: 1600,
+      libraries: initial,
+    });
+    expectStable(healthy);
+    const expectedArtwork = Object.entries(healthy.samples.at(-1)!.anchors)
+      .filter(
+        ([name, anchor]) =>
+          /^slot\d+Artwork$/.test(name) &&
+          (anchor.visible || anchor.eagerArtwork),
+      )
+      .map(([name]) => name);
+    expect(expectedArtwork.length).toBeGreaterThan(0);
     await expect(
       page.getByRole('button', { name: 'Custom', exact: true }),
     ).toBeVisible();
@@ -1194,6 +1204,15 @@ for (const result of ['hidden', 'removed', 'reordered'] as const) {
         JSON.stringify(trace),
       );
       expectStable(trace, false, [], { allowCatalogRevisionReset: true });
+      for (const name of expectedArtwork) {
+        const artwork = trace.samples.at(-1)!.anchors[name];
+        expect(
+          artwork,
+          `Decoded fixture artwork must return in ${name}`,
+        ).toBeDefined();
+        expect(artwork.loadedSlot).toBe(true);
+        expect(artwork.rendered).toBe(true);
+      }
       if (result !== 'reordered') {
         await expect(
           page.getByRole('button', { name: 'Custom', exact: true }),
@@ -1304,6 +1323,39 @@ test('catalog revision calibration preserves geometry and rejects media replacem
         (problem) => problem.anchor === anchor && problem.kind === kind,
       ),
     ).toBe(true);
+  const boundaryArtwork = corrupted.samples.at(-1)!.anchors.slot4Artwork;
+  expect(boundaryArtwork.visible || boundaryArtwork.eagerArtwork).toBe(true);
+  await page.evaluate(() => {
+    document
+      .querySelector('[data-testid="library-feed"]')!
+      .setAttribute('data-library-revision', '9');
+    document.querySelector('[data-browse-slot="4"] img')!.remove();
+  });
+  const unresolved = await startupTrace(page);
+  expect(unresolved.samples.at(-1)!.anchors.slot4Artwork).toBeUndefined();
+  expect(startupProblems(unresolved, options)).toContainEqual({
+    frame: unresolved.samples.at(-1)!.frame,
+    anchor: 'slot4Artwork',
+    kind: 'unresolved-artwork',
+  });
+  await page.evaluate(() => {
+    const image = document
+      .querySelector('[data-browse-slot="5"] img')!
+      .cloneNode(true) as HTMLImageElement;
+    image.style.transition = 'none';
+    image.style.opacity = '0';
+    document.querySelector('[data-browse-slot="4"] .poster')!.append(image);
+  });
+  await page
+    .locator('[data-browse-slot="4"] img')
+    .evaluate((image: HTMLImageElement) => image.decode());
+  const transparent = await startupTrace(page);
+  expect(transparent.samples.at(-1)!.anchors.slot4Artwork.rendered).toBe(false);
+  expect(startupProblems(transparent, options)).toContainEqual({
+    frame: transparent.samples.at(-1)!.frame,
+    anchor: 'slot4Artwork',
+    kind: 'unresolved-artwork',
+  });
   expect(api.blockedRequests).toEqual([]);
 });
 

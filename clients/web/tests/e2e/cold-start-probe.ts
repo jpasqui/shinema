@@ -7,6 +7,7 @@ type Anchor = {
   visible: boolean;
   rendered: boolean;
   loadedSlot?: boolean;
+  eagerArtwork?: boolean;
 };
 export const startupShellAnchors = [
   'app',
@@ -261,6 +262,7 @@ export async function installStartupProbe(
             anchors[`slot${logicalIndex}Artwork`] = {
               ...measure(image, false),
               loadedSlot: true,
+              eagerArtwork: image.loading !== 'lazy',
             };
         });
         trace.samples.push({
@@ -455,6 +457,7 @@ export function startupProblems(
   const loadedSlots = new Map<string, number>();
   let catalogRevision: number | null = null;
   const pendingArtwork = new Set<string>();
+  const requiredArtwork = new Set<string>();
   const realCollectionPositions = new Set(
     remaining.flatMap((sample) =>
       Object.entries(sample.anchors)
@@ -515,7 +518,14 @@ export function startupProblems(
       (catalogRevision === null || sample.catalogRevision > catalogRevision)
     )
       catalogRevision = sample.catalogRevision;
-    for (const name of Object.keys(sample.anchors)) pendingArtwork.delete(name);
+    for (const [name, anchor] of Object.entries(sample.anchors)) {
+      if (anchor.rendered) pendingArtwork.delete(name);
+      if (
+        /^slot\d+Artwork$/.test(name) &&
+        (anchor.visible || anchor.eagerArtwork)
+      )
+        requiredArtwork.add(name);
+    }
     // The first painted shell must already reserve every logical slot. Learning
     // a slot only when it appears later would accept a three-card opening.
     if (!(options.allowEmptySlots && terminalFrames.has(sample.frame)))
@@ -655,5 +665,16 @@ export function startupProblems(
       )
     )
       problems.push({ ...removal, kind: 'removed' });
+  for (const name of pendingArtwork) {
+    if (
+      requiredArtwork.has(name) &&
+      !(options.allowEmptySlots && terminalFrames.has(final.frame))
+    )
+      problems.push({
+        frame: final.frame,
+        anchor: name,
+        kind: 'unresolved-artwork',
+      });
+  }
   return problems;
 }
