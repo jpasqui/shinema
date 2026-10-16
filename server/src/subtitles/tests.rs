@@ -163,7 +163,13 @@ fn fixture() -> (tempfile::TempDir, Arc<Library>, String) {
 }
 async fn request(app: axum::Router, uri: &str) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
     let response = app
-        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header(header::HOST, "127.0.0.1:8787")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let status = response.status();
