@@ -3,28 +3,40 @@ import {
   test,
   expect,
   idFor,
-  mediaFor,
   openMovie,
   pauseDecoded,
+  revealMovie,
 } from './fixtures.ts';
 import type { SyntheticApi } from './fixtures.ts';
 
 // Structural ceilings, not wall-clock targets. This suite uses the Vite dev
-// server: React.StrictMode repeats mount effects. Bootstrap and LibraryBrowser
-// each fetch twice. App and LibraryBrowser also discover libraries separately,
-// each twice. These ceilings allow current development behavior and allow
-// future reductions; they are not production request-count guarantees.
+// server: React.StrictMode repeats summary and library-discovery mount effects.
+// The lazy feed shares its initial in-flight catalogue request. These ceilings
+// allow future reductions; they are not production request-count guarantees.
 const initialBrowseBudget = {
   mountedCards: 60,
   catalogLimit: 60,
   invalidLimits: 0,
-  catalogRequests: 4,
+  catalogRequests: 1,
   summaryRequests: 2,
-  descriptorRequests: 4,
-  totalApiRequests: 10,
+  descriptorRequests: 2,
+  totalApiRequests: 5,
   unrequestedPages: 0,
   mediaRequests: 0,
   externalRequests: 0,
+} as const;
+// Two complete batches may coexist; after a third loads, virtualization must
+// keep the mounted set bounded independently of the accumulated loaded extent.
+const appendedBrowseBudget = {
+  ...initialBrowseBudget,
+  mountedCards: 120,
+  catalogRequests: 2,
+  totalApiRequests: 6,
+} as const;
+const virtualizedBrowseBudget = {
+  ...appendedBrowseBudget,
+  catalogRequests: 3,
+  totalApiRequests: 7,
 } as const;
 const playbackBudget = {
   playbackDescriptors: 2,
@@ -57,15 +69,16 @@ async function observeMountedCards(page: Page) {
       // consumes resources even if its cards are no longer visible.
       window.__shinemaMaxMountedCards = Math.max(
         window.__shinemaMaxMountedCards,
-        document.querySelectorAll('button[aria-label^="Open Generated movie"]')
-          .length,
+        document.querySelectorAll(
+          '[data-testid="library-feed"] [data-browse-slot]',
+        ).length,
       );
     };
     new MutationObserver(sample).observe(document, {
       subtree: true,
       childList: true,
       attributes: true,
-      attributeFilter: ['aria-label'],
+      attributeFilter: ['data-browse-slot'],
     });
   });
 }
@@ -97,7 +110,9 @@ async function browseCounts(
           Number(url.searchParams.get('offset') ?? 0),
         ) ||
         !!url.searchParams.get('search') ||
-        url.searchParams.get('collection') !== 'movies',
+        url.searchParams.get('collection') !== 'movies' ||
+        url.searchParams.get('library') !== 'movies' ||
+        url.searchParams.get('revision') !== '1',
     ).length,
     mediaRequests: api.requests.filter((path) => path.startsWith('/api/media/'))
       .length,
@@ -106,7 +121,12 @@ async function browseCounts(
 }
 
 test('resource budget enforcement rejects every exceeded ceiling and invalid measurement', () => {
-  for (const budget of [initialBrowseBudget, playbackBudget]) {
+  for (const budget of [
+    initialBrowseBudget,
+    appendedBrowseBudget,
+    virtualizedBrowseBudget,
+    playbackBudget,
+  ]) {
     enforceBudgets(budget, budget);
     for (const [name, maximum] of Object.entries(budget)) {
       expect(() =>
@@ -127,7 +147,7 @@ test('resource budget enforcement rejects every exceeded ceiling and invalid mea
   );
 });
 
-test('10,001-title first/next/back browsing stays within card and request budgets', async ({
+test('10,001-title lazy first/append/back browsing stays within card and request budgets', async ({
   page,
   api,
 }) => {
@@ -135,57 +155,45 @@ test('10,001-title first/next/back browsing stays within card and request budget
   await observeMountedCards(page);
   await page.clock.install();
   await page.goto('/');
-  const cards = page.getByRole('button', {
-    name: /^Open Generated movie/,
-    includeHidden: true,
-  });
-  await expect(cards).toHaveCount(60);
+  const feed = page.getByTestId('library-feed');
+  const slots = feed.locator('[data-browse-slot]');
+  await expect(slots).toHaveCount(60);
+  await expect(feed).toHaveAttribute('data-loaded-count', '60');
   await expect(page.getByText(/10,001 movies/)).toBeVisible();
   await expect(
-    page.getByRole('button', { name: 'Next page', exact: true }),
-  ).toBeEnabled();
+    page.getByRole('button', { name: /Next page|Previous page/ }),
+  ).toHaveCount(0);
   // Advance logical time to expose accidental background polling/prefetch.
   // No elapsed-time assertion or host-speed assumption is involved.
   await page.clock.fastForward(60_000);
   enforceBudgets(await browseCounts(page, api, [0]), initialBrowseBudget);
 
-  await page.getByRole('button', { name: 'Next page', exact: true }).click();
-  await expect(
-    page.getByRole('button', {
-      name: `Open ${mediaFor(60).title}`,
-      exact: true,
-    }),
-  ).toBeVisible();
-  await expect(cards).toHaveCount(60);
-  await expect(
-    page.getByRole('button', { name: 'Previous page', exact: true }),
-  ).toBeEnabled();
+  await revealMovie(page, 61);
+  await expect(feed).toHaveAttribute('data-loaded-count', '120');
+  await expect(slots).toHaveCount(120);
   await page.clock.fastForward(60_000);
-  enforceBudgets(await browseCounts(page, api, [0, 60]), {
-    ...initialBrowseBudget,
-    catalogRequests: 5,
-    totalApiRequests: 11,
-  });
+  enforceBudgets(await browseCounts(page, api, [0, 60]), appendedBrowseBudget);
 
-  await page
-    .getByRole('button', { name: 'Previous page', exact: true })
-    .click();
-  await expect(
-    page.getByRole('button', {
-      name: `Open ${mediaFor(0).title}`,
-      exact: true,
-    }),
-  ).toBeVisible();
-  await expect(cards).toHaveCount(60);
-  await expect(
-    page.getByRole('button', { name: 'Next page', exact: true }),
-  ).toBeEnabled();
+  // Crossing a third batch proves old offscreen cards are unmounted rather
+  // than accumulating one complete DOM page for every scroll gesture.
+  await revealMovie(page, 121);
+  await expect(feed).toHaveAttribute('data-loaded-count', '180');
+  expect(await slots.count()).toBeLessThanOrEqual(120);
   await page.clock.fastForward(60_000);
-  enforceBudgets(await browseCounts(page, api, [0, 60]), {
-    ...initialBrowseBudget,
-    catalogRequests: 6,
-    totalApiRequests: 12,
-  });
+  enforceBudgets(
+    await browseCounts(page, api, [0, 60, 120]),
+    virtualizedBrowseBudget,
+  );
+
+  await revealMovie(page, 0);
+  await expect(feed).toHaveAttribute('data-loaded-count', '180');
+  expect(await slots.count()).toBeLessThanOrEqual(120);
+  await page.clock.fastForward(60_000);
+  // The first batches remain retained; moving back needs no catalogue call.
+  enforceBudgets(
+    await browseCounts(page, api, [0, 60, 120]),
+    virtualizedBrowseBudget,
+  );
 });
 
 test('opening one title bounds StrictMode playback descriptors to that title', async ({
@@ -194,7 +202,7 @@ test('opening one title bounds StrictMode playback descriptors to that title', a
 }) => {
   api.total = 10001;
   await page.goto('/');
-  await page.getByRole('button', { name: 'Next page', exact: true }).click();
+  await revealMovie(page, 61);
   await openMovie(page, 61);
   await pauseDecoded(page);
   const selectedPath = `/api/media/${idFor(61)}/`;

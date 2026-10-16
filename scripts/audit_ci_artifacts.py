@@ -2,6 +2,7 @@
 import re
 import hashlib
 import json
+import math
 import subprocess
 import sys
 import zipfile
@@ -20,6 +21,40 @@ PRIVATE_CONTENT = re.compile(
 )
 FORBIDDEN_SUFFIXES = {'.pem', '.key', '.jks', '.keystore', '.p12', '.pfx', '.sqlite', '.sqlite3', '.mp4', '.mkv', '.webm'}
 REACT_NATIVE_DEBUG_HINT = b"'Debug server host & port for device' in 'Dev settings' to your machine's IP address and the port of the local dev server - e.g. "
+PLAYBACK_VIEWPORTS = {(390, 844), (390, 900), (768, 900), (1100, 900), (1280, 900), (1600, 900)}
+
+
+def valid_feed_appends(records):
+    """Accept only the two generated feed proofs, without arbitrary diagnostics."""
+    if not isinstance(records, list) or len(records) != 2:
+        return False
+    expected_counts = {'series': 70, 'catalog': 75}
+    seen = set()
+    for record in records:
+        if (not isinstance(record, dict) or set(record) != {'resource', 'initialCount', 'count', 'before', 'after'}
+                or not isinstance(record['resource'], str) or record['resource'] not in expected_counts
+                or record['resource'] in seen
+                or type(record['initialCount']) is not int or record['initialCount'] != 60
+                or type(record['count']) is not int or record['count'] != expected_counts[record['resource']]):
+            return False
+        seen.add(record['resource'])
+        for phase in ['before', 'after']:
+            anchors = record[phase]
+            if not isinstance(anchors, dict) or set(anchors) != {'first', 'last'}:
+                return False
+            for rect in anchors.values():
+                if not isinstance(rect, dict) or set(rect) != {'x', 'y', 'width', 'height'}:
+                    return False
+                for key, value in rect.items():
+                    if (type(value) not in {int, float} or not -1000000 <= value <= 1000000
+                            or not math.isfinite(value)
+                            or (key in {'width', 'height'} and not 0 < value <= 10000)):
+                        return False
+        for anchor in ['first', 'last']:
+            for key in ['x', 'y', 'width', 'height']:
+                if abs(record['before'][anchor][key] - record['after'][anchor][key]) > 1:
+                    return False
+    return seen == set(expected_counts)
 
 
 def check(name, content):
@@ -101,8 +136,10 @@ def audit(kind, path):
             if re.search(host_marker, content, re.IGNORECASE):
                 raise SystemExit('Private host/source marker in playback diagnostics')
             if file.suffix == '.png' and (not content.startswith(b'\x89PNG\r\n\x1a\n')
-                    or content[16:24] != (1280).to_bytes(4, 'big') + (900).to_bytes(4, 'big')):
-                raise SystemExit('Playback screenshots must use the declared fixed viewport')
+                    or content[16:24] not in {
+                        width.to_bytes(4, 'big') + height.to_bytes(4, 'big')
+                        for width, height in PLAYBACK_VIEWPORTS}):
+                raise SystemExit('Playback screenshots must use a declared fixed viewport')
             count += 1
         try:
             data = json.loads((path / 'failure.json').read_text(encoding='utf-8'))
@@ -301,13 +338,17 @@ def audit(kind, path):
         data = json.loads((path / 'provenance.json').read_text(encoding='utf-8'))
         allowed = {'schema', 'generatedOnly', 'fixtureCount', 'providersEnabled', 'sourceRevision',
                    'beforeRevision', 'viewport', 'recording', 'methodology', 'checks', 'seeks',
-                   'browser', 'hevcStartupMs', 'assets'}
-        if (set(data) != allowed or data['schema'] != 1 or data['generatedOnly'] is not True
+                   'browser', 'hevcStartupMs', 'feedAppends', 'layoutOracle', 'assets'}
+        if (not isinstance(data, dict) or set(data) != allowed or data['schema'] != 1 or data['generatedOnly'] is not True
                 or data['fixtureCount'] != 1457 or data['providersEnabled'] is not False
-                or not re.fullmatch(r'[a-f0-9]{40}', data['sourceRevision'])
+                or not isinstance(data['sourceRevision'], str) or not re.fullmatch(r'[a-f0-9]{40}', data['sourceRevision'])
                 or data['beforeRevision'] != 'c2d82902fab5fc9e4e16555d5978df943f5ab865'
                 or data['viewport'] != {'width': 1280, 'height': 900}
-                or set(data['assets']) != expected - {'provenance.json'}):
+                or not isinstance(data['assets'], dict) or set(data['assets']) != expected - {'provenance.json'}
+                or not valid_feed_appends(data['feedAppends'])
+                or not isinstance(data['layoutOracle'], dict)
+                or set(data['layoutOracle']) != {'positionAndSizeMutationsRejected'}
+                or data['layoutOracle']['positionAndSizeMutationsRejected'] is not True):
             raise SystemExit('Public fixture provenance is missing or invalid')
         for name, digest in data['assets'].items():
             if digest != hashlib.sha256((path / name).read_bytes()).hexdigest():

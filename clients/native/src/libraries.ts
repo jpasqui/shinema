@@ -12,6 +12,8 @@ import type {
   ContentRegistry,
   Media,
 } from '../../../packages/contracts/index.ts';
+import { normalizeFeedScope } from './feed.ts';
+import type { FeedScope } from './feed.ts';
 
 /** Navigation is a device preference; descriptors are an origin-bound server snapshot. */
 export type LibraryNavigation = {
@@ -57,6 +59,43 @@ export function nativeMediaContentSupport(
     : library;
 }
 
+/** Unsupported registry identities never become a generic video query. */
+export function nativeFeedScope(
+  value: LibraryNavigation & { origin: string },
+): FeedScope | null {
+  if (!navigationContentSupport(value).supported) return null;
+  const library = value.libraries?.libraries.find(
+    (item) => item.id === value.selectedLibraryId && item.visible,
+  );
+  if (value.libraries && value.selectedLibraryId !== null && !library)
+    return null;
+  return normalizeFeedScope({
+    origin: value.origin,
+    libraryId: library?.id ?? null,
+    ...(library && value.libraries
+      ? { revision: value.libraries.revision }
+      : {}),
+    collection: library ? (contentTypeForLibrary(library) ?? 'all') : 'all',
+  });
+}
+
+/** Keep a same-scope saved inventory when its handler is temporarily unavailable. */
+export function snapshotCatalogForActivation(
+  current: LibraryNavigation & { origin: string; catalog: Catalog | null },
+  origin: string,
+  snapshot: LibrarySnapshot,
+): Catalog {
+  if (
+    !navigationContentSupport(snapshot).supported &&
+    origin === current.origin &&
+    snapshot.selectedLibraryId !== null &&
+    snapshot.selectedLibraryId === current.selectedLibraryId &&
+    current.catalog
+  )
+    return scopedCatalog(current.catalog, snapshot.selectedLibraryId);
+  return snapshot.catalog;
+}
+
 export class HttpStatusError extends Error {
   status: number;
   constructor(status: number) {
@@ -99,7 +138,21 @@ export async function loadLibrarySnapshot(
   preferred: string | null,
   previous: Libraries | null,
   request: (origin: string, path: string) => Promise<unknown>,
+  firstPageLimit = 500,
 ): Promise<LibrarySnapshot> {
+  if (
+    !Number.isSafeInteger(firstPageLimit) ||
+    firstPageLimit < 1 ||
+    firstPageLimit > 500
+  )
+    throw new Error('Invalid first library batch size');
+  const firstCatalog = (value: unknown, id?: string) => {
+    const catalog =
+      id === undefined ? parseCatalog(value) : scopedCatalog(value, id);
+    if (catalog.items.length > firstPageLimit)
+      throw new Error('Server exceeded first library batch size');
+    return catalog;
+  };
   let libraries: Libraries;
   try {
     libraries = parseLibraries(await request(origin, '/api/libraries'));
@@ -112,7 +165,9 @@ export async function loadLibrarySnapshot(
     return {
       libraries: null,
       selectedLibraryId: null,
-      catalog: parseCatalog(await request(origin, '/api/catalog?limit=500')),
+      catalog: firstCatalog(
+        await request(origin, `/api/catalog?limit=${firstPageLimit}`),
+      ),
     };
   }
   if (previous && libraries.revision < previous.revision)
@@ -122,10 +177,10 @@ export async function loadLibrarySnapshot(
   const catalog =
     selectedLibraryId === null || !support.supported
       ? { apiVersion: 1 as const, items: [] }
-      : scopedCatalog(
+      : firstCatalog(
           await request(
             origin,
-            `/api/catalog?library=${encodeURIComponent(selectedLibraryId)}&limit=500&revision=${libraries.revision}`,
+            `/api/catalog?library=${encodeURIComponent(selectedLibraryId)}&limit=${firstPageLimit}&revision=${libraries.revision}`,
           ),
           selectedLibraryId,
         );

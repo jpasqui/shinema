@@ -6,6 +6,7 @@ import {
   mediaFor,
   openMovie,
   pauseDecoded,
+  revealMovie,
 } from './fixtures.ts';
 
 for (const driver of ['direct', 'transcode'] as const) {
@@ -170,19 +171,17 @@ test('HLS segment disconnect after decoding reports fatal failure and reopens at
   await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
-test('offline progress survives reload on a large library page and syncs only its selected ID', async ({
+test('offline progress survives reload in a lazy library and syncs only its selected ID', async ({
   page,
   api,
 }) => {
   api.total = 10001;
   await page.goto('/');
+  await expect(page.locator(`[data-browse-id="${idFor(0)}"]`)).toBeVisible();
   await expect(
-    page.getByRole('button', { name: /^Open Generated movie/ }),
-  ).toHaveCount(60);
-  await page.getByRole('button', { name: 'Next page', exact: true }).click();
-  await expect(page.locator('.pagination')).toContainText(
-    '61\u2013120 of 10001',
-  );
+    page.getByRole('button', { name: /Next page|Previous page/ }),
+  ).toHaveCount(0);
+  await revealMovie(page, 61);
   api.failProgress = true;
   await openMovie(page, 61);
   const video = await pauseDecoded(page);
@@ -202,9 +201,6 @@ test('offline progress survives reload on a large library page and syncs only it
       exact: true,
     }),
   ).toBeFocused();
-  await expect(page.locator('.pagination')).toContainText(
-    '61\u2013120 of 10001',
-  );
   const stored = await page.evaluate(() =>
     JSON.parse(localStorage.getItem('shinema.web.cache.v1')!),
   );
@@ -212,7 +208,7 @@ test('offline progress survives reload on a large library page and syncs only it
   expect(api.writes).toEqual([]);
 
   await page.reload();
-  await page.getByRole('button', { name: 'Next page', exact: true }).click();
+  await revealMovie(page, 61);
   await openMovie(page, 61);
   const resumed = await pauseDecoded(page);
   expect(
@@ -238,9 +234,15 @@ test('offline progress survives reload on a large library page and syncs only it
     )
     .toEqual({});
   expect(api.remote.get(idFor(0))).toBeUndefined();
-  await expect(
-    page.getByRole('button', { name: /^Open Generated movie/ }),
-  ).toHaveCount(60);
+  expect(await page.locator('[data-browse-id]').count()).toBeLessThanOrEqual(
+    120,
+  );
+  const renderedIds = await page
+    .locator('[data-browse-id]')
+    .evaluateAll((nodes) =>
+      nodes.map((node) => node.getAttribute('data-browse-id')),
+    );
+  expect(new Set(renderedIds).size).toBe(renderedIds.length);
   expect(
     Math.max(
       ...api.requests

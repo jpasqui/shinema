@@ -87,7 +87,7 @@ Old clients can continue using media-type collection filters. New clients should
 - Configuration changes organize the indexed catalog. They do not move source files, configure a NAS, create credentials or expand the server's approved roots.
 - Only the initial Movies/TV handlers and existing generic video inventory are implemented. Music, audiobook, game and document handlers remain future work. Open IDs and format descriptors do not enable new indexing/playback adapters; all current launch capabilities are false.
 - Navigation visibility is a convenience, not authorization. There is still one development progress profile and no per-user library permissions or synchronized navigation profiles.
-- The native client loads at most the first 500 items per library and states this limit in its footer. It does not yet expose per-client top-navigation editing.
+- The native client appends 48-record batches with a bounded row window and five retained metadata batches. It does not yet expose per-client top-navigation editing. See [loading and browsing](loading-and-browsing.md) for request, cache and focus limits.
 - Host checks and generated fixtures establish configuration and catalog behavior. They do not establish native device playback or remote-control performance.
 
 The lasting product direction is recorded in [design principles](design-principles.md).

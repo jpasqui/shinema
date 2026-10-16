@@ -243,6 +243,70 @@ test('native requests only the selected stable library ID, independent of its la
   );
 });
 
+test('windowed native browsing requests a bounded first batch for configured and legacy servers', async () => {
+  for (const configured of [true, false]) {
+    const paths: string[] = [];
+    const snapshot = await loadLibrarySnapshot(
+      origin,
+      'anime',
+      null,
+      async (_origin, path) => {
+        paths.push(path);
+        if (path === '/api/libraries') {
+          if (!configured) throw new HttpStatusError(404);
+          return libraries;
+        }
+        return catalog;
+      },
+      48,
+    );
+    assert.deepEqual(paths, [
+      '/api/libraries',
+      configured
+        ? '/api/catalog?library=anime&limit=48&revision=2'
+        : '/api/catalog?limit=48',
+    ]);
+    assert.equal(snapshot.selectedLibraryId, configured ? 'anime' : null);
+  }
+  for (const limit of [0, -1, 501, 1.5, Number.NaN]) {
+    let requested = false;
+    await assert.rejects(
+      loadLibrarySnapshot(
+        origin,
+        null,
+        null,
+        async () => {
+          requested = true;
+          return libraries;
+        },
+        limit,
+      ),
+      /batch/,
+    );
+    assert.equal(requested, false);
+  }
+  await assert.rejects(
+    loadLibrarySnapshot(
+      origin,
+      'anime',
+      null,
+      async (_origin, path) =>
+        path === '/api/libraries'
+          ? libraries
+          : {
+              ...catalog,
+              items: Array.from({ length: 49 }, (_, index) => ({
+                ...catalog.items[0],
+                id: index.toString(16).padStart(64, '0'),
+                streamPath: `/api/media/${index.toString(16).padStart(64, '0')}/stream`,
+              })),
+            },
+      48,
+    ),
+    /exceeded/,
+  );
+});
+
 test('an empty library remains selected; all-hidden configuration does not fetch an unscoped catalog', async () => {
   const snapshot = await loadLibrarySnapshot(
     origin,

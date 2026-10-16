@@ -13,9 +13,153 @@ const directory = fileURLToPath(
 );
 const maxFailures = 16;
 const maxScreenshotBytes = 2 * 1024 * 1024;
+// Exact pairs emitted by the tracked Playwright config and responsive tests.
+const screenshotViewports = new Set([
+  '390x844',
+  '390x900',
+  '768x900',
+  '1100x900',
+  '1280x900',
+  '1600x900',
+]);
+const layoutAnchors = new Set([
+  'brand',
+  'header',
+  'navigation',
+  'navigationItems',
+  'navigationPrimary',
+  'navigationSettings',
+  'feature',
+  'title',
+  'toolbar',
+  'search',
+  'searchAction',
+  'refresh',
+  'heading',
+  'card',
+  'poster',
+  'cardTitle',
+  'cardMeta',
+  'featureTitle',
+  'featureMeta',
+  'featureSummary',
+  'featureAction',
+  'metadata',
+  'description',
+  'play',
+  'artwork',
+  'back',
+  'selected',
+  'tail',
+  'intent',
+]);
 
-// Never serialize error messages, stacks, console output, URLs or attachments
-// other than screenshots. They can contain local paths or assertion secrets.
+export function supportedPlaybackScreenshot(bytes: Buffer) {
+  return (
+    bytes.length >= 24 &&
+    bytes.length <= maxScreenshotBytes &&
+    bytes
+      .subarray(0, 8)
+      .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) &&
+    screenshotViewports.has(
+      `${bytes.readUInt32BE(16)}x${bytes.readUInt32BE(20)}`,
+    )
+  );
+}
+
+/** One explicit numeric protocol, never a general attachment/stdout forwarder. */
+export function safeLayoutDiagnostic(bytes: Buffer | undefined) {
+  if (!bytes || !bytes.length || bytes.length > 30 * 1024) return;
+  const number = (value: unknown, minimum = -1000000, maximum = 1000000) =>
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= minimum &&
+    value <= maximum;
+  const integer = (value: unknown, minimum = 0) =>
+    number(value, minimum) && Number.isInteger(value);
+  const object = (value: unknown): value is Record<string, unknown> =>
+    !!value && typeof value === 'object' && !Array.isArray(value);
+  const keys = (value: Record<string, unknown>, names: string[]) =>
+    Object.keys(value).length === names.length &&
+    names.every((name) => Object.hasOwn(value, name));
+  const box = (value: unknown) =>
+    object(value) &&
+    keys(value, ['x', 'y', 'width', 'height']) &&
+    number(value.x) &&
+    number(value.y) &&
+    number(value.width, 0) &&
+    number(value.height, 0);
+  try {
+    const data: unknown = JSON.parse(bytes.toString('utf8'));
+    if (
+      !object(data) ||
+      !keys(data, [
+        'schema',
+        'line',
+        'skin',
+        'width',
+        'omittedSnapshots',
+        'snapshots',
+        'shifts',
+      ]) ||
+      data.schema !== 1 ||
+      !integer(data.line, 1) ||
+      (data.skin !== 'marquee' && data.skin !== 'archive') ||
+      ![0, 390, 1280].includes(Number(data.width)) ||
+      typeof data.width !== 'number' ||
+      !integer(data.omittedSnapshots) ||
+      !Array.isArray(data.snapshots) ||
+      data.snapshots.length > 16 ||
+      !data.snapshots.every(
+        (snapshot: unknown) =>
+          object(snapshot) &&
+          keys(snapshot, ['step', 'scroll', 'anchors']) &&
+          integer(snapshot.step) &&
+          Array.isArray(snapshot.scroll) &&
+          snapshot.scroll.length === 2 &&
+          snapshot.scroll.every((value) => number(value)) &&
+          object(snapshot.anchors) &&
+          Object.entries(snapshot.anchors).every(
+            ([anchor, rect]) => layoutAnchors.has(anchor) && box(rect),
+          ),
+      ) ||
+      !object(data.shifts) ||
+      !keys(data.shifts, ['count', 'cls', 'entries']) ||
+      !integer(data.shifts.count) ||
+      !number(data.shifts.cls, 0) ||
+      !Array.isArray(data.shifts.entries) ||
+      data.shifts.entries.length > 16 ||
+      !data.shifts.entries.every(
+        (entry: unknown) =>
+          object(entry) &&
+          keys(entry, ['value', 'recentInput', 'time', 'sources']) &&
+          number(entry.value, 0, 1) &&
+          typeof entry.recentInput === 'boolean' &&
+          number(entry.time, 0, 1000000000) &&
+          Array.isArray(entry.sources) &&
+          entry.sources.length <= 5 &&
+          entry.sources.every(
+            (source: unknown) =>
+              object(source) &&
+              keys(source, ['anchor', 'kind', 'previous', 'current']) &&
+              typeof source.anchor === 'string' &&
+              (source.anchor === 'other' || layoutAnchors.has(source.anchor)) &&
+              (source.kind === 'text' || source.kind === 'element') &&
+              box(source.previous) &&
+              box(source.current),
+          ),
+      )
+    )
+      return;
+    return JSON.stringify(data);
+  } catch {
+    return;
+  }
+}
+
+// Never serialize error messages, stacks, console output, URLs or arbitrary
+// attachments. Only screenshots and the validated numeric protocol are allowed;
+// other content can contain local paths or assertion secrets.
 export function failureRecord(test: TestCase, result: TestResult) {
   const file = test.location.file.replaceAll('\\', '/').split('/').at(-1) ?? '';
   return {
@@ -63,6 +207,14 @@ export default class PlaybackDiagnostics implements Reporter {
 
   onTestEnd(test: TestCase, result: TestResult) {
     if (result.status === test.expectedStatus) return;
+    const diagnostic = safeLayoutDiagnostic(
+      result.attachments.find(
+        (attachment) =>
+          attachment.name === 'generated-layout-diagnostic' &&
+          attachment.contentType === 'application/json',
+      )?.body,
+    );
+    if (diagnostic) console.log(`GeneratedLayoutDiagnostic ${diagnostic}`);
     if (this.failures.length === maxFailures) {
       this.omittedFailures++;
       return;
@@ -93,13 +245,7 @@ export default class PlaybackDiagnostics implements Reporter {
         const metadata = await stat(screenshot.path);
         if (metadata.size > 0 && metadata.size <= maxScreenshotBytes) {
           const bytes = await readFile(screenshot.path);
-          if (
-            bytes
-              .subarray(0, 8)
-              .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) &&
-            bytes.readUInt32BE(16) === 1280 &&
-            bytes.readUInt32BE(20) === 900
-          ) {
+          if (supportedPlaybackScreenshot(bytes)) {
             await writeFile(join(directory, `failure-${number}.png`), bytes);
             record.screenshot = true;
           }

@@ -28,6 +28,8 @@ import {
 import type { Cache } from './model.ts';
 import { Artwork } from './Artwork.tsx';
 import { MediaPoster } from './MediaPoster.tsx';
+import { AppearanceButton } from './Appearance.tsx';
+import { LibraryFeature, SkinHeader, DetailPresentation } from './skins.tsx';
 import { TopNavigation } from './TopNavigation.tsx';
 import { libraryBrowseCollection, useLibraries } from './libraries.ts';
 import type { TopNavigationDestination } from '../../../packages/contracts/navigation.ts';
@@ -74,10 +76,48 @@ function Poster({ item, large = false }: { item: Media; large?: boolean }) {
   );
 }
 
+function DetailBackdrop({ source }: { source?: string }) {
+  const [loaded, setLoaded] = useState<string>();
+  const [failed, setFailed] = useState<string>();
+  const state = !source
+    ? 'missing'
+    : failed === source
+      ? 'failed'
+      : loaded === source
+        ? 'loaded'
+        : 'loading';
+  return (
+    <div
+      className="detail-backdrop"
+      aria-hidden="true"
+      data-artwork-state={state}
+    >
+      {source && failed !== source ? (
+        <img
+          src={source}
+          alt=""
+          width="1600"
+          height="900"
+          decoding="async"
+          onLoad={() => setLoaded(source)}
+          onError={() => setFailed(source)}
+        />
+      ) : (
+        <div className="detail-artwork-fallback" />
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const libraryNavigation = useLibraries();
   const currentLibraries = useRef(libraryNavigation.document);
   currentLibraries.current = libraryNavigation.document;
+  const librariesReady =
+    libraryNavigation.initialDiscoverySettled &&
+    (libraryNavigation.legacy ||
+      libraryNavigation.document.revision > 0 ||
+      libraryNavigation.status === '');
   const [navigationIntent, setNavigationIntent] = useState<
     'settings' | 'search' | null
   >(null);
@@ -137,6 +177,14 @@ export default function App() {
     [persist],
   );
   const refresh = useCallback(async () => {
+    // Connected browsing owns its bounded feed from the first paint. Its loading
+    // shell must not be replaced by a different catalogue after discovery.
+    if (!demo) {
+      for (const [id, progress] of Object.entries(cache.current.pending))
+        void sync(id, progress);
+      setLoading(false);
+      return;
+    }
     catalogAbort.current?.abort();
     const controller = new AbortController();
     catalogAbort.current = controller;
@@ -359,14 +407,9 @@ export default function App() {
     cards.current[next]?.focus();
   };
   const items = cache.current.catalog?.items ?? [];
-  const fullLibrary =
-    !demo &&
-    (cache.current.catalog?.fullLibrary === true ||
-      libraryNavigation.document.revision > 0 ||
-      items.some((item) => item.collection));
+  const fullLibrary = !demo;
   useEffect(() => {
     if (!navigationIntent || route !== 'library' || !fullLibrary) return;
-    // Deliver after the browse view mounts and installs its event listeners.
     const frame = requestAnimationFrame(() => {
       window.dispatchEvent(new Event(`shinema:library-${navigationIntent}`));
       setNavigationIntent(null);
@@ -386,7 +429,12 @@ export default function App() {
         revision: libraryNavigation.legacy
           ? undefined
           : libraryNavigation.document.revision,
-        collection: libraryBrowseCollection(library),
+        collection: libraryContentSupport(
+          library,
+          libraryNavigation.document.registry,
+        ).supported
+          ? libraryBrowseCollection(library)
+          : library.mediaType,
       });
     }
     showLibrary();
@@ -399,8 +447,8 @@ export default function App() {
     ? supportForMedia(selected)
     : { supported: true, reason: undefined };
   return (
-    <div className="app" data-cache-version={version}>
-      <header className="header">
+    <div className="app" data-cache-version={version} data-route={route}>
+      <SkinHeader>
         <button
           className="brand"
           onClick={showLibrary}
@@ -410,41 +458,43 @@ export default function App() {
         </button>
         <TopNavigation
           libraries={libraryNavigation.document.libraries}
+          librariesReady={librariesReady}
           browsing={route === 'library'}
           activeLibraryId={browseNavigation.libraryId}
           onNavigate={navigate}
+          requestsActive={route === 'requests'}
+          onRequests={
+            demo
+              ? undefined
+              : () => {
+                  setNavigationIntent(null);
+                  guard.current.next();
+                  setOpening(false);
+                  if (route === 'library')
+                    libraryScroll.current = window.scrollY;
+                  setRoute('requests');
+                  window.scrollTo(0, 0);
+                }
+          }
         />
-        <nav aria-label="Requests navigation">
-          <button
-            className={route === 'requests' ? 'nav-link active' : 'nav-link'}
-            aria-current={route === 'requests' ? 'page' : undefined}
-            onClick={() => {
-              setNavigationIntent(null);
-              guard.current.next();
-              setOpening(false);
-              if (route === 'library') libraryScroll.current = window.scrollY;
-              setRoute('requests');
-              window.scrollTo(0, 0);
-            }}
-          >
-            Requests
-          </button>
-        </nav>
         <span className="context-label">
           {demo ? 'Demo library' : 'Connected library'}
         </span>
-      </header>
+        <AppearanceButton />
+      </SkinHeader>
       {storageError && (
         <div className="notice" role="alert">
           Browser storage is unavailable. Resume changes will last for this
           session only.
         </div>
       )}
-      {capabilityNotice && (
-        <p className="notice" role="status">
-          {capabilityNotice}
-        </p>
-      )}
+      <div className="browse-notice-slot" aria-live="polite">
+        {capabilityNotice && (
+          <p className="notice" role="status">
+            {capabilityNotice}
+          </p>
+        )}
+      </div>
       {route === 'requests' ? (
         <Requests onBack={showLibrary} />
       ) : route === 'player' && selected && selectedSupport.supported ? (
@@ -459,16 +509,11 @@ export default function App() {
         />
       ) : (route === 'detail' || route === 'player') && selected ? (
         <main className={`detail${!demo ? ' connected-detail' : ''}`}>
-          {!demo && selected.backdropPath && (
-            <div className="detail-backdrop" aria-hidden="true">
-              <img src={selected.backdropPath} alt="" />
-            </div>
-          )}
+          {!demo && <DetailBackdrop source={selected.backdropPath} />}
           <button ref={back} className="back-button" onClick={showLibrary}>
             &larr; Back to library
           </button>
-          <div className="detail-layout">
-            <Poster item={selected} large />
+          <DetailPresentation artwork={<Poster item={selected} large />}>
             <section className="detail-copy">
               <p className="detail-category">
                 {demo
@@ -479,7 +524,7 @@ export default function App() {
                       ? 'Movie'
                       : 'Library title'}
               </p>
-              <h1>{title(selected)}</h1>
+              <h1 title={title(selected)}>{title(selected)}</h1>
               <div className="metadata">
                 <span>
                   {demo
@@ -512,33 +557,38 @@ export default function App() {
                     ? '\u25b6 Resume'
                     : '\u25b6 Play'}
               </button>
-              {selectedSupport.supported ? (
-                <p className="quiet">
-                  Starts muted &middot; progress saved automatically
-                </p>
-              ) : (
-                <p className="notice" role="status">
-                  {selectedSupport.reason}
-                </p>
-              )}
-              {selected.metadataUrl && (
-                <p className="quiet">
-                  Metadata from{' '}
-                  <a
-                    href={selected.metadataUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    {selected.metadataSource === 'tvmaze' ? 'TVmaze' : 'TMDB'}
-                  </a>
-                  {selected.metadataSource === 'tvmaze' ? ' · CC BY-SA' : ''}
-                </p>
-              )}
+              <p
+                className="quiet"
+                role={selectedSupport.supported ? undefined : 'status'}
+              >
+                {selectedSupport.supported
+                  ? 'Starts muted · progress saved automatically'
+                  : selectedSupport.reason}
+              </p>
+              <p className="quiet metadata-source">
+                {selected.metadataUrl && (
+                  <>
+                    Metadata from{' '}
+                    <a
+                      href={selected.metadataUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {selected.metadataSource === 'tvmaze' ? 'TVmaze' : 'TMDB'}
+                    </a>
+                    {selected.metadataSource === 'tvmaze' ? ' - CC BY-SA' : ''}
+                  </>
+                )}
+              </p>
             </section>
-          </div>
+          </DetailPresentation>
         </main>
       ) : fullLibrary ? (
         <LibraryBrowser
+          libraryNavigation={libraryNavigation}
+          onRefresh={() => {
+            void refresh();
+          }}
           navigation={browseNavigation}
           setNavigation={setBrowseNavigation}
           onSelect={showDetail}
@@ -554,25 +604,17 @@ export default function App() {
                 : 'Browse your saved titles.'}
             </p>
           </div>
-          {featured && (
-            <section className="feature" aria-label="Featured title">
-              <Artwork kind={Math.max(0, artwork(featured))} wide />
-              <div className="feature-shade" />
-              <div className="feature-copy">
-                <p className="feature-label">Featured</p>
-                <h2 title={title(featured)}>{title(featured)}</h2>
-                <p className="feature-meta">
-                  {demo ? 'Generated sample · 1 min' : 'Direct playback'}
-                </p>
-                <button
-                  className="primary"
-                  onClick={() => showDetail(featured, items.indexOf(featured))}
-                >
-                  View details <span aria-hidden="true">&rarr;</span>
-                </button>
-              </div>
-            </section>
-          )}
+          <LibraryFeature
+            item={featured}
+            loading={loading && !featured}
+            demo={demo}
+            progress={
+              featured ? cache.current.progress[featured.id] : undefined
+            }
+            onOpen={() => {
+              if (featured) showDetail(featured, items.indexOf(featured));
+            }}
+          />
           <section className="library-section">
             <div className="section-heading">
               <h2>
@@ -617,13 +659,39 @@ export default function App() {
                 aria-busy="true"
               >
                 {[0, 1, 2].map((i) => (
-                  <div key={i} className="skeleton" />
+                  <div
+                    key={i}
+                    className="media-card media-card--loading skeleton-card"
+                    aria-hidden="true"
+                  >
+                    <div className="poster skeleton" />
+                    <div className="card-copy">
+                      <h3>&nbsp;</h3>
+                      <span>&nbsp;</span>
+                    </div>
+                    <div
+                      className="watch-progress"
+                      style={{ visibility: 'hidden' }}
+                    />
+                  </div>
                 ))}
               </div>
             ) : items.length ? (
               <div className="poster-grid">
                 {items.map((item, index) => {
                   const progress = cache.current.progress[item.id];
+                  const percent =
+                    progress && progress.durationSeconds > 0
+                      ? Math.max(
+                          0,
+                          Math.min(
+                            100,
+                            (progress.positionSeconds /
+                              progress.durationSeconds) *
+                              100,
+                          ),
+                        )
+                      : 0;
                   return (
                     <button
                       key={item.id}
@@ -648,18 +716,18 @@ export default function App() {
                               : item.container.toUpperCase()}
                         </span>
                       </div>
-                      {progress && (
-                        <div
-                          className="watch-progress"
-                          aria-label={`${Math.round((progress.positionSeconds / progress.durationSeconds) * 100)} percent watched`}
-                        >
-                          <div
-                            style={{
-                              width: `${(progress.positionSeconds / progress.durationSeconds) * 100}%`,
-                            }}
-                          />
-                        </div>
-                      )}
+                      <div
+                        className="watch-progress"
+                        style={{ visibility: progress ? 'visible' : 'hidden' }}
+                        aria-hidden={!progress}
+                        aria-label={
+                          progress
+                            ? `${Math.round(percent)} percent watched`
+                            : undefined
+                        }
+                      >
+                        <div style={{ width: `${percent}%` }} />
+                      </div>
                     </button>
                   );
                 })}
