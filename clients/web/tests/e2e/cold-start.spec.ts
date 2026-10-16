@@ -69,6 +69,19 @@ async function coldStartup(
     summary: 0,
     artwork: 0,
   };
+  const phases = {
+    start: Date.now(),
+    entryReleased: 0,
+    descriptorsReleased: 0,
+    complete: 0,
+    descriptors: [] as Array<{
+      received: number;
+      released: number;
+      fulfilled: number;
+      status: number;
+    }>,
+  };
+  let completed = false;
   const descriptorDocument = options.libraries ?? {
     ...defaultLibraries(),
     revision: 7,
@@ -81,13 +94,25 @@ async function coldStartup(
   });
   await page.route('**/api/libraries', async (route) => {
     calls.descriptors++;
+    const phase = {
+      received: Date.now(),
+      released: 0,
+      fulfilled: 0,
+      status: 0,
+    };
+    phases.descriptors.push(phase);
     await descriptors.pending;
-    await route.fulfill(
+    phase.released = Date.now();
+    const failed =
       options.descriptorFailure &&
-        (!options.retryDiscovery || !discoveryRetryReleased)
+      (!options.retryDiscovery || !discoveryRetryReleased);
+    phase.status = failed ? 503 : 200;
+    await route.fulfill(
+      failed
         ? { status: 503, json: { error: 'Synthetic descriptor failure' } }
         : { json: descriptorDocument },
     );
+    phase.fulfilled = Date.now();
   });
   await page.route('**/api/content-registry', async (route) => {
     await descriptors.pending;
@@ -127,6 +152,7 @@ async function coldStartup(
     const beforeMount = await startupTrace(page);
     expect(beforeMount.samples.some((sample) => !sample.meaningful)).toBe(true);
     expect(beforeMount.samples.some((sample) => sample.meaningful)).toBe(false);
+    phases.entryReleased = Date.now();
     entry.release();
     await expect
       .poll(() => calls.descriptors + calls.catalog)
@@ -145,6 +171,7 @@ async function coldStartup(
       ),
     ).toBe(true);
     await options.beforeDescriptors?.(page);
+    phases.descriptorsReleased = Date.now();
     descriptors.release();
     if (options.retryDiscovery) {
       await expect(page.locator('.section-heading')).toContainText(
@@ -314,6 +341,7 @@ async function coldStartup(
         }),
       }),
     );
+    completed = true;
     return trace;
   } finally {
     entry.release();
@@ -321,6 +349,21 @@ async function coldStartup(
     catalog.release();
     summary.release();
     artwork.release();
+    phases.complete = Date.now();
+    await writeFile(
+      info.outputPath('startup-phases.json'),
+      JSON.stringify(phases),
+    );
+    if (!completed) {
+      try {
+        await writeFile(
+          info.outputPath('whole-startup-incomplete.json'),
+          JSON.stringify(await startupTrace(page)),
+        );
+      } catch {
+        /* The phase receipt remains available if the document closed. */
+      }
+    }
   }
 }
 
