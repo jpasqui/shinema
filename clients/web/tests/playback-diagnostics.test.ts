@@ -8,36 +8,117 @@ import type {
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { crc32, deflateSync, inflateSync } from 'node:zlib';
 import PlaybackDiagnostics, {
   failureRecord,
   safeLayoutDiagnostic,
   supportedPlaybackScreenshot,
 } from './e2e/diagnostics-reporter.ts';
 
-function screenshotBytes(width: number, height = 900) {
-  const png = Buffer.alloc(24);
-  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(png);
-  png.writeUInt32BE(width, 16);
-  png.writeUInt32BE(height, 20);
-  return png;
+const supportedViewports = [
+  [390, 844],
+  [390, 900],
+  [768, 900],
+  [1100, 900],
+  [1280, 900],
+] as const;
+
+function pngChunk(type: string, bytes: Buffer) {
+  const chunk = Buffer.alloc(bytes.length + 12);
+  chunk.writeUInt32BE(bytes.length, 0);
+  chunk.write(type, 4, 4, 'ascii');
+  bytes.copy(chunk, 8);
+  chunk.writeUInt32BE(crc32(chunk.subarray(4, -4)), chunk.length - 4);
+  return chunk;
 }
 
-test('playback screenshots accept only exact phone/desktop sizes within the byte bound', () => {
-  for (const width of [390, 1280])
-    assert.equal(supportedPlaybackScreenshot(screenshotBytes(width)), true);
-  for (const [width, height] of [
-    [389, 900],
-    [391, 900],
-    [1279, 900],
-    [1281, 900],
-    [390, 899],
-    [1280, 901],
-    [900, 390],
-  ])
+/** Complete generated grayscale PNG, including CRCs and decodable scanlines. */
+function screenshotBytes(width: number, height = 900, extraTextBytes = 0) {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk('IHDR', header),
+    ...(extraTextBytes
+      ? [
+          pngChunk(
+            'tEXt',
+            Buffer.concat([
+              Buffer.from('Description\0'),
+              Buffer.alloc(extraTextBytes, 65),
+            ]),
+          ),
+        ]
+      : []),
+    pngChunk('IDAT', deflateSync(Buffer.alloc((width + 1) * height))),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+function assertValidPng(bytes: Buffer, width: number, height: number) {
+  assert.deepEqual(
+    bytes.subarray(0, 8),
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+  );
+  assert.equal(bytes.readUInt32BE(16), width);
+  assert.equal(bytes.readUInt32BE(20), height);
+  const imageData: Buffer[] = [];
+  const chunks: string[] = [];
+  let offset = 8;
+  while (offset < bytes.length) {
+    const size = bytes.readUInt32BE(offset);
+    const type = bytes.toString('ascii', offset + 4, offset + 8);
+    const end = offset + size + 12;
+    assert(end <= bytes.length);
     assert.equal(
-      supportedPlaybackScreenshot(screenshotBytes(width, height)),
-      false,
+      bytes.readUInt32BE(end - 4),
+      crc32(bytes.subarray(offset + 4, end - 4)),
     );
+    chunks.push(type);
+    if (type === 'IDAT') imageData.push(bytes.subarray(offset + 8, end - 4));
+    offset = end;
+  }
+  assert.equal(chunks[0], 'IHDR');
+  assert.equal(chunks.at(-1), 'IEND');
+  assert.equal(offset, bytes.length);
+  const decoded = inflateSync(Buffer.concat(imageData));
+  assert.equal(decoded.length, (width + 1) * height);
+  assert(decoded.every((value) => value === 0));
+}
+
+test('playback screenshots accept every exact tracked responsive viewport as a valid PNG', () => {
+  for (const [width, height] of supportedViewports) {
+    const png = screenshotBytes(width, height);
+    assertValidPng(png, width, height);
+    assert.equal(supportedPlaybackScreenshot(png), true, `${width}x${height}`);
+  }
+});
+
+test('playback screenshots reject cross-paired, adjacent and oversized PNGs', () => {
+  const adjacent = supportedViewports.flatMap(([width, height]) => [
+    [width - 1, height],
+    [width + 1, height],
+    [width, height - 1],
+    [width, height + 1],
+  ]);
+  for (const [width, height] of [
+    ...adjacent,
+    [768, 844],
+    [1100, 844],
+    [1280, 844],
+    [844, 390],
+    [900, 1280],
+  ]) {
+    const png = screenshotBytes(width, height);
+    assertValidPng(png, width, height);
+    assert.equal(supportedPlaybackScreenshot(png), false, `${width}x${height}`);
+  }
+  const oversized = screenshotBytes(1280, 900, 2 * 1024 * 1024);
+  assertValidPng(oversized, 1280, 900);
+  assert(oversized.length > 2 * 1024 * 1024);
+  assert.equal(supportedPlaybackScreenshot(oversized), false);
   for (const bytes of [
     Buffer.alloc(0),
     screenshotBytes(390).subarray(0, 23),
@@ -182,12 +263,13 @@ test('playback diagnostic records keep only bounded source-relative failure fiel
   assert(!JSON.stringify(record).includes('Users'));
 });
 
-for (const width of [390, 1280])
-  test(`reporter flushes non-awaited hooks before declaring ${width}px screenshots in the final log`, async () => {
+for (const [width, height] of supportedViewports)
+  test(`reporter retains a real ${width}x${height} screenshot and flushes hooks before its final log`, async () => {
     const temporary = await mkdtemp(join(tmpdir(), 'shinema-reporter-'));
     try {
       const screenshot = join(temporary, 'generated.png');
-      const png = screenshotBytes(width);
+      const png = screenshotBytes(width, height);
+      assertValidPng(png, width, height);
       await writeFile(screenshot, png);
       const reporter = new PlaybackDiagnostics();
       reporter.onBegin();

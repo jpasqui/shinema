@@ -1,9 +1,11 @@
 """Exercise the public-build guard with synthetic data only."""
 import tempfile
+import copy
 import hashlib
 import json
 import random
 import struct
+import subprocess
 import zlib
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -12,6 +14,14 @@ import zipfile
 from pathlib import Path
 
 from audit_ci_artifacts import REACT_NATIVE_DEBUG_HINT, audit, check
+
+
+def generated_png(width, height):
+    def chunk(kind, data):
+        return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
+    rows = (b'\x00' + b'\x00' * width) * height
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 0, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b''))
 
 
 class ArtifactAuditTests(unittest.TestCase):
@@ -117,20 +127,22 @@ class ArtifactAuditTests(unittest.TestCase):
         (path / 'browser-test.log').write_text(
             'Generated-only playback suite: failed\nrunnerErrors=0 omittedFailures=0\n'
             'tests/e2e/playback.spec.ts:10 outcome=failed errors=1 screenshot=failure-1.png\n', encoding='utf-8')
-        png = b'\x89PNG\r\n\x1a\n' + b'\x00' * 8 + width.to_bytes(4, 'big') + height.to_bytes(4, 'big')
+        png = generated_png(width, height)
         (path / 'failure-1.png').write_bytes(png)
         return data
 
-    def test_playback_diagnostics_accept_only_the_two_exact_screenshot_viewports(self):
+    def test_playback_diagnostics_accept_only_the_five_exact_screenshot_viewports(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary)
-            for width, height in [(390, 900), (1280, 900)]:
+            for width, height in [(390, 844), (390, 900), (768, 900), (1100, 900), (1280, 900)]:
                 with self.subTest(width=width, height=height):
                     self.playback_evidence(path, width, height)
                     audit('playback-diagnostics', path)
-            for width, height in [(389, 900), (391, 900), (1279, 900), (1281, 900),
+            for width, height in [(389, 900), (391, 900), (767, 900), (769, 900),
+                                  (1099, 900), (1101, 900), (1279, 900), (1281, 900),
+                                  (390, 843), (390, 845), (768, 844), (1100, 844), (1280, 844),
                                   (390, 899), (390, 901), (1280, 899), (1280, 901),
-                                  (900, 390), (900, 1280)]:
+                                  (900, 390), (900, 1280), (1920, 1080)]:
                 with self.subTest(width=width, height=height):
                     self.playback_evidence(path, width, height)
                     with self.assertRaises(SystemExit):
@@ -431,9 +443,154 @@ class ArtifactAuditTests(unittest.TestCase):
                 'sourceRevision': 'a' * 40, 'beforeRevision': 'c2d82902fab5fc9e4e16555d5978df943f5ab865',
                 'viewport': {'width': 1280, 'height': 900}, 'recording': 'Generated silent recording',
                 'methodology': 'Generated fixtures', 'checks': [], 'seeks': [], 'browser': 'fixture',
-                'hevcStartupMs': 1000, 'assets': assets}
+                'hevcStartupMs': 1000, 'assets': assets,
+                'feedAppends': self.generated_feed_appends(),
+                'layoutOracle': {'positionAndSizeMutationsRejected': True}}
         (path / 'provenance.json').write_text(json.dumps(data), encoding='utf-8')
         return data
+
+    def generated_feed_appends(self):
+        records = []
+        for resource, count in [('series', 70), ('catalog', 75)]:
+            anchors = {'first': {'x': 48.25, 'y': 450.5, 'width': 180, 'height': 320},
+                       'last': {'x': 1050.25, 'y': 4800.5, 'width': 180, 'height': 320}}
+            records.append({'resource': resource, 'initialCount': 60, 'count': count,
+                            'before': anchors, 'after': copy.deepcopy(anchors)})
+        return records
+
+    def test_public_provenance_uses_the_real_emitter_metric_projection(self):
+        probe_result = SimpleNamespace(returncode=0, stdout=json.dumps({
+            'streams': [{'codec_type': 'video', 'width': 1280, 'height': 900}],
+            'format': {'duration': '60'}}).encode())
+        public_keys = {'methodology', 'checks', 'seeks', 'browser', 'hevcStartupMs', 'feedAppends', 'layoutOracle'}
+        program = '''
+import { readFileSync } from 'node:fs';
+const { publicFixtureMetrics } = await import(process.argv[1]);
+process.stdout.write(JSON.stringify(publicFixtureMetrics(JSON.parse(readFileSync(0, 'utf8')))));
+'''
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            data = self.generated_evidence(path)
+            result = {key: data[key] for key in public_keys}
+            result['privateDiagnostic'] = '/volume1/generated-private-marker'
+            result['futureMetric'] = {'unapproved': 'synthetic-only'}
+            produced = subprocess.run(
+                ['node', '--input-type=module', '-e', program,
+                 Path(__file__).with_name('public-fixture-provenance.mjs').resolve().as_uri()],
+                input=json.dumps(result), capture_output=True, text=True, timeout=10, check=True)
+            metrics = json.loads(produced.stdout)
+            self.assertEqual(set(metrics), public_keys)
+            self.assertEqual(metrics, {key: data[key] for key in public_keys})
+            self.assertNotIn('generated-private-marker', produced.stdout)
+            (path / 'provenance.json').write_text(json.dumps({**data, **metrics}))
+            # Producer-shaped metrics pass the same strict gate used before upload.
+            with patch('audit_ci_artifacts.subprocess.run', return_value=probe_result):
+                audit('public-fixtures', path)
+
+    @patch('audit_ci_artifacts.subprocess.run')
+    def test_public_feed_metrics_reject_malformed_or_extended_producer_shapes(self, probe):
+        probe.return_value = SimpleNamespace(returncode=0, stdout=json.dumps({
+            'streams': [{'codec_type': 'video', 'width': 1280, 'height': 900}],
+            'format': {'duration': '60'}}).encode())
+        records = self.generated_feed_appends()
+        mutations = [
+            {'feedAppends': None}, {'feedAppends': {}}, {'feedAppends': []},
+            {'feedAppends': records[:1]}, {'feedAppends': records + records[:1]},
+            {'feedAppends': [records[0], records[0]]}, {'feedAppends': [None, records[1]]},
+            {'layoutOracle': None}, {'layoutOracle': []}, {'layoutOracle': {}},
+            {'layoutOracle': {'positionAndSizeMutationsRejected': False}},
+            {'layoutOracle': {'positionAndSizeMutationsRejected': 1}},
+            {'layoutOracle': {'positionAndSizeMutationsRejected': 'true'}},
+            {'layoutOracle': {'positionAndSizeMutationsRejected': True, 'raw': 'unapproved'}},
+            {'unapprovedMetric': 'synthetic-only'},
+        ]
+        for field, values in {
+            'resource': [None, [], 'unknown'], 'initialCount': [True, 60.0, 59, 61],
+            'count': [True, 70.0, 69, 71, 1458], 'before': [None, {}, []],
+            'after': [None, {}, []], 'raw': ['unapproved'],
+        }.items():
+            for value in values:
+                changed = copy.deepcopy(records)
+                changed[0][field] = value
+                mutations.append({'feedAppends': changed})
+        for field in records[0]:
+            changed = copy.deepcopy(records)
+            del changed[0][field]
+            mutations.append({'feedAppends': changed})
+        for phase in ['before', 'after']:
+            for anchors in [{'first': records[0][phase]['first']},
+                            {**records[0][phase], 'extra': records[0][phase]['first']}]:
+                changed = copy.deepcopy(records)
+                changed[0][phase] = anchors
+                mutations.append({'feedAppends': changed})
+            for anchor in ['first', 'last']:
+                for value in [None, {}, [], {'x': 1, 'y': 2, 'width': 3, 'height': 4, 'raw': 0}]:
+                    changed = copy.deepcopy(records)
+                    changed[0][phase][anchor] = value
+                    mutations.append({'feedAppends': changed})
+                for key in ['x', 'y', 'width', 'height']:
+                    changed = copy.deepcopy(records)
+                    del changed[0][phase][anchor][key]
+                    mutations.append({'feedAppends': changed})
+                    for value in [True, '1', None, float('nan'), float('inf'), -float('inf'), 10 ** 1000, -1000001, 1000001]:
+                        changed = copy.deepcopy(records)
+                        changed[0][phase][anchor][key] = value
+                        mutations.append({'feedAppends': changed})
+                    if key in {'width', 'height'}:
+                        for value in [0, -1, 10001]:
+                            changed = copy.deepcopy(records)
+                            changed[0][phase][anchor][key] = value
+                            mutations.append({'feedAppends': changed})
+        moved = copy.deepcopy(records)
+        moved[0]['after']['last']['y'] += 1.01
+        mutations.append({'feedAppends': moved})
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            original = self.generated_evidence(path)
+            for mutation in mutations:
+                with self.subTest(fields=list(mutation)):
+                    data = {**original, **mutation}
+                    (path / 'provenance.json').write_text(json.dumps(data), encoding='utf-8')
+                    with self.assertRaisesRegex(SystemExit, 'Public fixture provenance is missing or invalid'):
+                        audit('public-fixtures', path)
+            for field in ['feedAppends', 'layoutOracle']:
+                data = dict(original)
+                del data[field]
+                (path / 'provenance.json').write_text(json.dumps(data), encoding='utf-8')
+                with self.assertRaisesRegex(SystemExit, 'Public fixture provenance is missing or invalid'):
+                    audit('public-fixtures', path)
+
+    @patch('audit_ci_artifacts.subprocess.run')
+    def test_public_feed_metrics_allow_exact_finite_bounds_and_one_pixel_tolerance(self, probe):
+        probe.return_value = SimpleNamespace(returncode=0, stdout=json.dumps({
+            'streams': [{'codec_type': 'video', 'width': 1280, 'height': 900}],
+            'format': {'duration': '60'}}).encode())
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            data = self.generated_evidence(path)
+            data['feedAppends'].reverse()
+            for record in data['feedAppends']:
+                for phase in ['before', 'after']:
+                    record[phase]['first'] = {'x': -1000000, 'y': 1000000, 'width': 10000, 'height': 0.5}
+                for key in ['x', 'y', 'width', 'height']:
+                    record['after']['last'][key] += 1
+            (path / 'provenance.json').write_text(json.dumps(data), encoding='utf-8')
+            audit('public-fixtures', path)
+
+    @patch('audit_ci_artifacts.subprocess.run')
+    def test_public_feed_metrics_reject_private_diagnostics_before_probe(self, probe):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            for field in ['feedAppends', 'layoutOracle']:
+                data = self.generated_evidence(path)
+                target = data[field][0] if field == 'feedAppends' else data[field]
+                marker = '/volume1/generated-private-marker'
+                target['privateDiagnostic'] = marker
+                (path / 'provenance.json').write_text(json.dumps(data), encoding='utf-8')
+                with self.assertRaises(SystemExit) as caught:
+                    audit('public-fixtures', path)
+                self.assertNotIn(marker, str(caught.exception))
+            probe.assert_not_called()
 
     @patch('audit_ci_artifacts.subprocess.run')
     def test_public_fixture_screenshots_keep_the_desktop_viewport(self, probe):

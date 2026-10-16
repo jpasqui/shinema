@@ -13,6 +13,14 @@ const directory = fileURLToPath(
 );
 const maxFailures = 16;
 const maxScreenshotBytes = 2 * 1024 * 1024;
+// Exact pairs emitted by the tracked Playwright config and responsive tests.
+const screenshotViewports = new Set([
+  '390x844',
+  '390x900',
+  '768x900',
+  '1100x900',
+  '1280x900',
+]);
 const layoutAnchors = new Set([
   'brand',
   'header',
@@ -52,8 +60,9 @@ export function supportedPlaybackScreenshot(bytes: Buffer) {
     bytes
       .subarray(0, 8)
       .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) &&
-    [390, 1280].includes(bytes.readUInt32BE(16)) &&
-    bytes.readUInt32BE(20) === 900
+    screenshotViewports.has(
+      `${bytes.readUInt32BE(16)}x${bytes.readUInt32BE(20)}`,
+    )
   );
 }
 

@@ -20,6 +20,7 @@ import { chromium } from '../clients/web/node_modules/playwright/index.mjs';
 import { expect } from '../clients/web/node_modules/@playwright/test/index.mjs';
 import { createServer } from '../clients/web/node_modules/vite/dist/node/index.js';
 import { browserDiagnostics } from './browser-diagnostics.mjs';
+import { publicFixtureMetrics } from './public-fixture-provenance.mjs';
 
 const root = resolve('.');
 const local = join(root, '.local');
@@ -761,7 +762,7 @@ try {
           viewport: { width: 1280, height: 900 },
           recording:
             'Silent, untrimmed generated workload; desktop Chromium, not a Shield benchmark',
-          ...result,
+          ...publicFixtureMetrics(result),
           assets,
         },
         null,
