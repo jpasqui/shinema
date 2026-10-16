@@ -31,6 +31,13 @@ mod state_files;
 mod subtitles;
 
 #[cfg(test)]
+mod performance_budgets;
+
+#[cfg(not(test))]
+type EntryIndex = BTreeMap<String, Entry>;
+#[cfg(test)]
+use performance_budgets::EntryIndex;
+#[cfg(test)]
 mod performance_tests;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -103,7 +110,7 @@ pub struct Library {
     directory: Option<cap_std::fs::Dir>,
     remote: Option<SshConfig>,
     remote_transfers: Arc<tokio::sync::Semaphore>,
-    entries: BTreeMap<String, Entry>,
+    entries: EntryIndex,
     series_entries: BTreeMap<String, String>,
     database: Mutex<Connection>,
     playback: playback::Engine,
@@ -252,6 +259,8 @@ impl Library {
         }
         catalog::replace_index(&mut db, entries.values().map(|entry| entry.media.clone()))?;
         let directory = cap_std::fs::Dir::open_ambient_dir(&root, cap_std::ambient_authority())?;
+        #[cfg(test)]
+        let entries = EntryIndex::from(entries);
         Ok(Arc::new(Self {
             root: Some(root),
             directory: Some(directory),
@@ -385,6 +394,8 @@ impl Library {
             "INSERT INTO scan_summary VALUES (?1,?2,?3)",
             params![scan.files_seen, scan.ignored_files, scan.links_skipped],
         )?;
+        #[cfg(test)]
+        let entries = EntryIndex::from(entries);
         Ok(Arc::new(Self {
             root: None,
             directory: None,
@@ -554,11 +565,7 @@ async fn series(
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
     {
         let sid = row["id"].as_str().unwrap_or_default();
-        if let Some(entry) = library
-            .series_entries
-            .get(sid)
-            .and_then(|id| library.entries.get(id))
-        {
+        if let Some(entry) = series_representative(&library, sid) {
             let mut item = entry.media.clone();
             item.title = row["title"].as_str().unwrap_or_default().to_string();
             pending |= library.metadata.overlay(&mut item, true, false);
@@ -583,6 +590,16 @@ async fn series(
     value["metadataPending"] = pending.into();
     Ok(Json(value))
 }
+
+fn series_representative<'a>(library: &'a Library, id: &str) -> Option<&'a Entry> {
+    #[cfg(test)]
+    crate::performance_budgets::record_representative_lookup();
+    library
+        .series_entries
+        .get(id)
+        .and_then(|id| library.entries.get(id))
+}
+
 async fn seasons(
     State(library): State<Arc<Library>>,
     ApiPath(id): ApiPath<String>,

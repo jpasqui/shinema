@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "budgetVersion": 1,
+  "fixtureId": "catalog-v1-120000",
+  "limits": {
+    "moviesFirst": {"maxRows": 60, "maxWireBytes": 24000, "maxStatements": 3, "maxFullscanSteps": 0, "maxSorts": 0, "maxVmSteps": 1000, "maxEntryVisits": 0, "maxRepresentativeLookups": 0},
+    "moviesDeep": {"maxRows": 60, "maxWireBytes": 24000, "maxStatements": 3, "maxFullscanSteps": 0, "maxSorts": 0, "maxVmSteps": 500000, "maxEntryVisits": 0, "maxRepresentativeLookups": 0},
+    "movieSearch": {"maxRows": 60, "maxWireBytes": 24000, "maxStatements": 3, "maxFullscanSteps": 0, "maxSorts": 0, "maxVmSteps": 2000000, "maxEntryVisits": 0, "maxRepresentativeLookups": 0},
+    "episodesPage": {"maxRows": 20, "maxWireBytes": 14000, "maxStatements": 3, "maxFullscanSteps": 0, "maxSorts": 0, "maxVmSteps": 1000, "maxEntryVisits": 0, "maxRepresentativeLookups": 0},
+    "seriesPage": {"maxRows": 60, "maxWireBytes": 14000, "maxStatements": 2, "maxFullscanSteps": 1000, "maxSorts": 0, "maxVmSteps": 10000, "maxEntryVisits": 0, "maxRepresentativeLookups": 60}
+  },
+  "resources": {
+    "metadataProcesses": 4,
+    "codecJobs": 2,
+    "segmentBytes": 16777216,
+    "segmentCacheBytes": 536870912,
+    "segmentCacheEntries": 4096,
+    "probeCacheEntries": 4096,
+    "probeDatabasePages": 8192
+  }
+}
