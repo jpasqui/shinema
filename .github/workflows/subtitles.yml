@@ -27,9 +27,6 @@ jobs:
       - run: cargo +1.94.0 test --workspace --locked generated_embedded_formats -- --ignored --nocapture
       - name: Synthetic subtitle browser smoke
         id: subtitle-smoke
-        env:
-          SHINEMA_SUBTITLE_TEST_FAILURE: '1'
-          SHINEMA_SUBTITLE_WRITE_EVIDENCE: '0'
         run: node scripts/subtitle-smoke.mjs
       - name: Audit subtitle failure diagnostics
         id: audit-subtitle-diagnostics
