@@ -16,11 +16,12 @@ from pathlib import Path
 from audit_ci_artifacts import REACT_NATIVE_DEBUG_HINT, audit, check
 
 
-def generated_png(width, height):
+def generated_png(width, height, extra_text_bytes=0):
     def chunk(kind, data):
         return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
     rows = (b'\x00' + b'\x00' * width) * height
-    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 0, 0, 0, 0))
+    padding = chunk(b'tEXt', b'Description\x00' + b'A' * extra_text_bytes) if extra_text_bytes else b''
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 0, 0, 0, 0)) + padding
             + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b''))
 
 
@@ -131,10 +132,10 @@ class ArtifactAuditTests(unittest.TestCase):
         (path / 'failure-1.png').write_bytes(png)
         return data
 
-    def test_playback_diagnostics_accept_only_the_five_exact_screenshot_viewports(self):
+    def test_playback_diagnostics_accept_only_the_six_exact_screenshot_viewports(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary)
-            for width, height in [(390, 844), (390, 900), (768, 900), (1100, 900), (1280, 900)]:
+            for width, height in [(390, 844), (390, 900), (768, 900), (1100, 900), (1280, 900), (1600, 900)]:
                 with self.subTest(width=width, height=height):
                     self.playback_evidence(path, width, height)
                     audit('playback-diagnostics', path)
@@ -142,7 +143,8 @@ class ArtifactAuditTests(unittest.TestCase):
                                   (1099, 900), (1101, 900), (1279, 900), (1281, 900),
                                   (390, 843), (390, 845), (768, 844), (1100, 844), (1280, 844),
                                   (390, 899), (390, 901), (1280, 899), (1280, 901),
-                                  (900, 390), (900, 1280), (1920, 1080)]:
+                                  (1599, 900), (1601, 900), (1600, 899), (1600, 901), (1600, 844),
+                                  (900, 390), (900, 1280), (900, 1600), (1920, 1080)]:
                 with self.subTest(width=width, height=height):
                     self.playback_evidence(path, width, height)
                     with self.assertRaises(SystemExit):
@@ -151,7 +153,7 @@ class ArtifactAuditTests(unittest.TestCase):
     def test_playback_diagnostics_reject_truncated_and_non_png_screenshot_headers(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary)
-            for width in (390, 1280):
+            for width in (390, 1280, 1600):
                 self.playback_evidence(path, width)
                 png = (path / 'failure-1.png').read_bytes()
                 for length in (1, 7, 8, 16, 20, 23):
@@ -164,6 +166,17 @@ class ArtifactAuditTests(unittest.TestCase):
                         (path / 'failure-1.png').write_bytes(signature + png[8:])
                         with self.assertRaises(SystemExit):
                             audit('playback-diagnostics', path)
+
+    def test_playback_tv_screenshot_keeps_the_existing_two_megabyte_bound(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            self.playback_evidence(path, 1600, 900)
+            png = generated_png(1600, 900, extra_text_bytes=2 * 1024 * 1024)
+            self.assertTrue(png.endswith(b'IEND\xaeB`\x82'))
+            self.assertGreater(len(png), 2 * 1024 * 1024)
+            (path / 'failure-1.png').write_bytes(png)
+            with self.assertRaisesRegex(SystemExit, 'file exceeds its bound'):
+                audit('playback-diagnostics', path)
 
     def test_playback_diagnostics_are_bounded_allowlisted_and_source_relative(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -194,7 +207,7 @@ class ArtifactAuditTests(unittest.TestCase):
     def test_playback_diagnostics_reject_private_markers_without_echoing_them(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary)
-            for width in (390, 1280):
+            for width in (390, 1280, 1600):
                 for marker in [b'C:/Users/fixture/private', b'/Users/fixture/private', b'/tmp/fixture',
                                b'ghp_' + b'x' * 36, b'https://fixture:password@example.invalid/', b'/volume1/fixture']:
                     with self.subTest(width=width, marker=marker):

@@ -43,6 +43,8 @@ export function useLibraries() {
   const [preferences, setPreferences] = useState(readPreferences);
   const [status, setStatus] = useState('Loading libraries…');
   const [legacy, setLegacy] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
+  const [initialDiscoverySettled, setInitialDiscoverySettled] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const generation = useRef(0);
   const confirmedRevision = useRef(document.revision);
@@ -58,7 +60,9 @@ export function useLibraries() {
   useEffect(() => {
     const ticket = ++generation.current;
     const controller = new AbortController();
-    void fetch('/api/libraries', { signal: controller.signal })
+    void fetch('/api/libraries', {
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]),
+    })
       .then(async (response) => {
         if (response.status === 404) {
           if (confirmedRevision.current > 0)
@@ -66,6 +70,7 @@ export function useLibraries() {
           if (ticket !== generation.current) return;
           setDocument(defaultLibraries());
           setLegacy(true);
+          setUnavailable(false);
           setStatus('Using default libraries on an older server.');
           return;
         }
@@ -77,6 +82,7 @@ export function useLibraries() {
         setDocument(next);
         confirmedRevision.current = next.revision;
         setLegacy(false);
+        setUnavailable(false);
         setStatus('');
         try {
           localStorage.setItem(descriptorKey, JSON.stringify(next));
@@ -87,8 +93,13 @@ export function useLibraries() {
         }
       })
       .catch(() => {
-        if (ticket === generation.current)
+        if (ticket === generation.current) {
+          setUnavailable(true);
           setStatus('Server unavailable. Saved library navigation is shown.');
+        }
+      })
+      .finally(() => {
+        if (ticket === generation.current) setInitialDiscoverySettled(true);
       });
     return () => {
       ++generation.current;
@@ -110,6 +121,8 @@ export function useLibraries() {
     savePreferences,
     status,
     legacy,
+    unavailable,
+    initialDiscoverySettled,
     reload: () => setRefresh((value) => value + 1),
   };
 }

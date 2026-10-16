@@ -32,11 +32,13 @@ function destinationValue(destination: TopNavigationDestination): string {
 
 export function TopNavigation({
   libraries,
+  librariesReady = true,
   browsing,
   activeLibraryId,
   onNavigate,
 }: {
   libraries: readonly LibraryDescriptor[];
+  librariesReady?: boolean;
   browsing: boolean;
   activeLibraryId?: string;
   onNavigate: (destination: TopNavigationDestination) => void;
@@ -124,6 +126,13 @@ export function TopNavigation({
     setInvalid(false);
   };
   const entries = visibleTopNavigation(preferences, libraries);
+  // Discovery may reveal a saved target after the first paint. Its physical
+  // slot belongs to the local order even while the target is unavailable.
+  // Canonical visibility still decides whether it is an actionable button.
+  const available = new Set(entries.map((entry) => entry.id));
+  const slots = orderedTopNavigation(preferences).filter(
+    (entry) => entry.visible,
+  );
   const activeEntry = browsing
     ? (entries.find(
         (entry) =>
@@ -135,16 +144,32 @@ export function TopNavigation({
     <>
       <nav className="top-navigation" aria-label="Main navigation">
         <div className="top-navigation-items">
-          {entries.map((entry) => (
-            <button
-              key={entry.id}
-              className={`nav-link${entry.id === activeEntry?.id ? ' active' : ''}`}
-              aria-current={entry.id === activeEntry?.id ? 'page' : undefined}
-              onClick={() => onNavigate(entry.destination)}
-            >
-              {entry.label}
-            </button>
-          ))}
+          {slots.map((entry) =>
+            available.has(entry.id) ? (
+              <button
+                key={entry.id}
+                data-navigation-slot={entry.id}
+                className={`nav-link${entry.id === activeEntry?.id ? ' active' : ''}`}
+                aria-current={entry.id === activeEntry?.id ? 'page' : undefined}
+                disabled={
+                  entry.destination.kind === 'library' && !librariesReady
+                }
+                onClick={() => {
+                  if (entry.destination.kind !== 'library' || librariesReady)
+                    onNavigate(entry.destination);
+                }}
+              >
+                {entry.label}
+              </button>
+            ) : (
+              <span
+                key={entry.id}
+                className="nav-link navigation-placeholder"
+                data-navigation-slot={entry.id}
+                aria-hidden="true"
+              />
+            ),
+          )}
         </div>
         <button
           ref={settingsButton}

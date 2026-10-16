@@ -34,6 +34,7 @@ import {
 } from './browse.ts';
 import type { BrowseNavigation, PageCache, PageValue } from './browse.ts';
 import { LazyFeed, feedWindow } from './lazyFeed.ts';
+import { collectionSlots } from './collectionSlots.ts';
 import type { FeedItem } from './lazyFeed.ts';
 import { clock } from './model.ts';
 
@@ -212,6 +213,33 @@ export function LibraryBrowser({
       libraryNavigation.legacy,
       ready,
     );
+  const collectionsReady = libraryNavigation.initialDiscoverySettled && ready;
+  // Once cached destinations have been shown during an outage, reconnecting
+  // must not move the surviving controls. Removed destinations become inert
+  // slots; an explicit local navigation edit releases that reservation.
+  const fallbackCollections = useRef<{
+    preferences: typeof libraryNavigation.preferences;
+    ids: string[];
+  } | null>(null);
+  if (
+    fallbackCollections.current?.preferences !== libraryNavigation.preferences
+  )
+    fallbackCollections.current = null;
+  if (
+    collectionsReady &&
+    libraryNavigation.unavailable &&
+    !fallbackCollections.current
+  )
+    fallbackCollections.current = {
+      preferences: libraryNavigation.preferences,
+      ids: visible.map((descriptor) => descriptor.id),
+    };
+  const collectionPositions = collectionSlots(
+    visible,
+    libraryNavigation.preferences,
+    collectionsReady,
+    fallbackCollections.current?.ids,
+  );
   const identity = browseIdentity(navigation);
   const session = useMemo(
     () => (enabled ? sessionFor(navigation) : idleSession),
@@ -273,7 +301,7 @@ export function LibraryBrowser({
       : INITIAL_SLOTS);
   const loading = enabled
     ? state.loading || (state.total === null && !state.error)
-    : !ready;
+    : !ready && !libraryNavigation.initialDiscoverySettled;
   const firstVisibleRow = Math.max(
     0,
     Math.floor((viewport.scroll - geometry.top) / geometry.stride),
@@ -613,38 +641,58 @@ export function LibraryBrowser({
     <div className="library-shell" onFocusCapture={cancelPendingFocus}>
       <aside className="library-sidebar">
         <p>YOUR LIBRARY</p>
-        <nav aria-label="Collections">
-          {visible.map((descriptor) => (
-            <button
-              key={descriptor.id}
-              className={
-                descriptor.id === library?.id
-                  ? 'collection-link active'
-                  : 'collection-link'
-              }
-              onClick={() =>
-                replace({
-                  libraryId: libraryNavigation.legacy
-                    ? undefined
-                    : descriptor.id,
-                  revision: libraryNavigation.legacy
-                    ? undefined
-                    : libraryNavigation.document.revision,
-                  collection: libraryContentSupport(
-                    descriptor,
-                    libraryNavigation.document.registry,
-                  ).supported
-                    ? libraryBrowseCollection(descriptor)
-                    : descriptor.mediaType,
-                  series: null,
-                  season: null,
-                  search: '',
-                })
-              }
-            >
-              {descriptor.name}
-            </button>
-          ))}
+        <nav
+          aria-label="Collections"
+          aria-busy={!libraryNavigation.initialDiscoverySettled}
+        >
+          {collectionPositions.map(({ id, descriptor }, position) =>
+            descriptor ? (
+              <button
+                key={id}
+                data-collection-slot={id}
+                data-collection-position={position}
+                className={
+                  descriptor.id === library?.id
+                    ? 'collection-link active'
+                    : 'collection-link'
+                }
+                onClick={() =>
+                  replace({
+                    libraryId: libraryNavigation.legacy
+                      ? undefined
+                      : descriptor.id,
+                    revision: libraryNavigation.legacy
+                      ? undefined
+                      : libraryNavigation.document.revision,
+                    collection: libraryContentSupport(
+                      descriptor,
+                      libraryNavigation.document.registry,
+                    ).supported
+                      ? libraryBrowseCollection(descriptor)
+                      : descriptor.mediaType,
+                    series: null,
+                    season: null,
+                    search: '',
+                  })
+                }
+              >
+                {descriptor.name}
+              </button>
+            ) : (
+              <span
+                key={id}
+                data-collection-slot={
+                  libraryNavigation.preferences.order.includes(id) ||
+                  fallbackCollections.current?.ids.includes(id)
+                    ? id
+                    : undefined
+                }
+                data-collection-position={position}
+                className="collection-link collection-placeholder"
+                aria-hidden="true"
+              />
+            ),
+          )}
         </nav>
         <button
           className="text-button"
@@ -783,15 +831,17 @@ export function LibraryBrowser({
               <span className="title-count">{state.total ?? '—'}</span>
             </h2>
             <span className="quiet" role="status">
-              {loading
-                ? 'Loading.'
-                : state.error
-                  ? 'Browsing interrupted'
-                  : !library
-                    ? 'No visible libraries'
-                    : !support.supported
-                      ? 'Unavailable'
-                      : 'Connected'}
+              {libraryNavigation.unavailable
+                ? 'Library discovery unavailable'
+                : loading
+                  ? 'Loading.'
+                  : state.error
+                    ? 'Browsing interrupted'
+                    : !library
+                      ? 'No visible libraries'
+                      : !support.supported
+                        ? 'Unavailable'
+                        : 'Connected'}
             </span>
           </div>
           <div className="browse-notice-slot" aria-live="polite">
@@ -930,7 +980,9 @@ export function LibraryBrowser({
                   ? library && !support.supported
                     ? 'This content type is unavailable.'
                     : 'Choose a visible library.'
-                  : 'Loading libraries.'
+                  : libraryNavigation.initialDiscoverySettled
+                    ? 'Library discovery is unavailable. Refresh to retry.'
+                    : 'Loading libraries.'
                 : state.loading
                   ? 'Loading more titles.'
                   : state.error

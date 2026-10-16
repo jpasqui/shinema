@@ -467,10 +467,40 @@ footer > span:first-child {
 .library-sidebar > p {
   display: none;
 }
+.library-sidebar > .text-button {
+  display: grid;
+  align-items: center;
+  inline-size: 180px;
+  max-inline-size: 100%;
+  min-inline-size: 0;
+  block-size: 44px;
+  line-height: 20px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .library-sidebar nav {
   flex-direction: row;
   gap: 28px;
   padding: 0;
+  min-block-size: 44px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.library-sidebar nav::-webkit-scrollbar {
+  display: none;
+}
+.library-sidebar nav[aria-busy='true'] .collection-placeholder::after {
+  content: '';
+  display: block;
+  inline-size: 60%;
+  block-size: 8px;
+  background: var(--color-elevated);
+  border-radius: 3px;
+}
+.library-sidebar .collection-link:focus-visible {
+  outline-offset: -3px;
 }
 .collection-link {
   position: relative;
@@ -1233,11 +1263,20 @@ html[data-motion='reduced'] .media-card .poster {
 .collection-link {
   inline-size: 180px;
   min-inline-size: 0;
-  flex: 0 1 180px;
+  flex: 0 0 180px;
   line-height: 20px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+@media (max-width: 560px) {
+  .library-sidebar nav {
+    gap: 16px;
+  }
+  .collection-link {
+    inline-size: 96px;
+    flex-basis: 96px;
+  }
 }
 .feature-copy h2 {
   block-size: 2.04em;
@@ -1452,8 +1491,8 @@ html[data-motion='reduced'] .media-card .poster {
   pointer-events: none;
 }
 .browse-notice-slot > .notice {
-  flex: 0 1 auto;
-  max-block-size: 52px;
+  flex: 0 0 52px;
+  block-size: 52px;
   overflow: auto;
   margin: 0;
   padding: 8px 12px;
@@ -1493,7 +1532,7 @@ html[data-motion='reduced'] .media-card .poster {
   inset: 104px 24px auto;
   max-inline-size: 760px;
   margin-inline: auto;
-  max-block-size: 96px;
+  block-size: 96px;
   overflow: auto;
 }
 .detail-category {

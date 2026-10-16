@@ -21,6 +21,7 @@ const supportedViewports = [
   [768, 900],
   [1100, 900],
   [1280, 900],
+  [1600, 900],
 ] as const;
 
 function pngChunk(type: string, bytes: Buffer) {
@@ -108,6 +109,7 @@ test('playback screenshots reject cross-paired, adjacent and oversized PNGs', ()
     [768, 844],
     [1100, 844],
     [1280, 844],
+    [1600, 844],
     [844, 390],
     [900, 1280],
   ]) {

@@ -20,6 +20,7 @@ const screenshotViewports = new Set([
   '768x900',
   '1100x900',
   '1280x900',
+  '1600x900',
 ]);
 const layoutAnchors = new Set([
   'brand',

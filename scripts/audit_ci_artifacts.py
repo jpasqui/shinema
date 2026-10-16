@@ -21,7 +21,7 @@ PRIVATE_CONTENT = re.compile(
 )
 FORBIDDEN_SUFFIXES = {'.pem', '.key', '.jks', '.keystore', '.p12', '.pfx', '.sqlite', '.sqlite3', '.mp4', '.mkv', '.webm'}
 REACT_NATIVE_DEBUG_HINT = b"'Debug server host & port for device' in 'Dev settings' to your machine's IP address and the port of the local dev server - e.g. "
-PLAYBACK_VIEWPORTS = {(390, 844), (390, 900), (768, 900), (1100, 900), (1280, 900)}
+PLAYBACK_VIEWPORTS = {(390, 844), (390, 900), (768, 900), (1100, 900), (1280, 900), (1600, 900)}
 
 
 def valid_feed_appends(records):

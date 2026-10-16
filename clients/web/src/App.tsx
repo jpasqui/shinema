@@ -111,6 +111,11 @@ export default function App() {
   const libraryNavigation = useLibraries();
   const currentLibraries = useRef(libraryNavigation.document);
   currentLibraries.current = libraryNavigation.document;
+  const librariesReady =
+    libraryNavigation.initialDiscoverySettled &&
+    (libraryNavigation.legacy ||
+      libraryNavigation.document.revision > 0 ||
+      libraryNavigation.status === '');
   const [navigationIntent, setNavigationIntent] = useState<
     'settings' | 'search' | null
   >(null);
@@ -447,6 +452,7 @@ export default function App() {
         </button>
         <TopNavigation
           libraries={libraryNavigation.document.libraries}
+          librariesReady={librariesReady}
           browsing={route === 'library'}
           activeLibraryId={browseNavigation.libraryId}
           onNavigate={navigate}
