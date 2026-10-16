@@ -14,7 +14,7 @@ import {AppearancePersistence,defaultPreferences,focusScrollOffset,prefersReduce
 import type {AppearancePreferences} from './preferences.ts';
 import {NativeDetail,NativeHeader,NativeLibrary,NativePlayerChrome,NativeUnavailable} from './skins.tsx';
 import {nativeSkinLayout} from './skin-layout.ts';
-import {libraryEntryTarget,libraryFocusOffset} from './library-focus.ts';
+import {canEnterLibraryGrid,libraryEntryTarget,libraryFocusOffset} from './library-focus.ts';
 import {FEED_BATCH_SIZE,NativeFeed,clampFeedAnchor,feedScrollAnchor,parseFeedBatch,parseFeedCatalog,restoreFeedAnchor} from './feed.ts';
 import {HttpStatusError,loadLibrarySnapshot,visibleLibraries as visibleLibraryDescriptors,nativeFeedScope,navigationContentSupport,nativeMediaContentSupport,snapshotCatalogForActivation} from './libraries.ts';
 import {NativeActivity,StartupHydration} from './lifecycle.ts';
@@ -221,6 +221,7 @@ export default function App(){
   }
   useEffect(()=>{setHeaderCursor(current=>Math.min(current,visibleLibraries.length+(route==='library'?2:1)));},[visibleLibraries.length,route]);
   useEffect(()=>{setRenderAnchor(current=>clampFeedAnchor(current,feedSnapshot.known,totalItems));},[feedSnapshot.known,totalItems]);
+  useEffect(()=>{if(route==='library'&&feedSnapshot.known&&totalItems===0)setHeaderFocused(true);},[route,feedSnapshot.known,totalItems]);
 
   function revealFocus(top:number,focusHeight:number){
     const y=focusScrollOffset(sceneOffset.current,top,focusHeight,viewportHeight);
@@ -455,7 +456,7 @@ export default function App(){
     if(route==='library'){
       if(headerFocused){
         revealLibraryFocus();
-        if(key.code===20&&librarySupport.supported&&totalItems>0)setHeaderFocused(false);
+        if(key.code===20&&canEnterLibraryGrid(librarySupport.supported,feedSnapshot.known,totalItems))setHeaderFocused(false);
         else if([21,22].includes(key.code))setHeaderCursor(current=>moveHeaderCursor(visibleLibraries.length,current,key.code===21?-1:1,true));
         else if([23,66].includes(key.code) && key.repeat===0){const target=headerTarget(visibleLibraries.length,headerCursor,true);if(target?.type==='library'){const library=visibleLibraries[target.index];if(library)chooseLibrary(library);}else if(target?.type==='appearance')openAppearance();else if(target?.type==='requests')void openRequests();else if(target?.type==='server')openServer();}
         return;

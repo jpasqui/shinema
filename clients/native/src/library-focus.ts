@@ -1,5 +1,14 @@
 import { focusScrollOffset } from './preferences.ts';
 
+/** Unknown totals still have load/retry slots; a confirmed empty feed has none. */
+export function canEnterLibraryGrid(
+  supported: boolean,
+  known: boolean,
+  total: number,
+): boolean {
+  return supported && (!known || total > 0);
+}
+
 /** A new library opens on its feature/header. Background work cannot steal D-pad intent. */
 export function libraryEntryTarget(
   fromLibrary: boolean,

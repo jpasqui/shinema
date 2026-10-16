@@ -1,10 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  canEnterLibraryGrid,
   libraryEntryTarget,
   libraryFocusOffset,
 } from '../src/library-focus.ts';
 import { NativeActivity } from '../src/lifecycle.ts';
+import { NativeFeed, feedSlotCount } from '../src/feed.ts';
 import {
   nativeSkinLayout,
   nativeReservedGeometry,
@@ -13,6 +15,54 @@ import {
   defaultTheme,
   archiveTheme,
 } from '../../../packages/design-tokens/theme.ts';
+
+test('D-pad can reach an unknown catalogue Retry slot, then respects authoritative empty state', async () => {
+  const feed = new NativeFeed({
+    origin: 'https://media.example.test',
+    libraryId: 'cinema',
+    revision: 2,
+    collection: 'movies',
+  });
+  const reachable = () => {
+    const { known, total } = feed.snapshot();
+    return canEnterLibraryGrid(true, known, total);
+  };
+  assert.ok(feedSlotCount(feed.snapshot().known, feed.snapshot().total) > 0);
+  assert.equal(reachable(), true, 'initial loading slots accept Down');
+  await feed.load(
+    0,
+    async () => {
+      throw new Error('Synthetic offline response');
+    },
+    0,
+  );
+  assert.ok(feed.errorAt(0));
+  assert.equal(feed.snapshot().known, false);
+  assert.equal(feed.snapshot().total, 0);
+  assert.equal(
+    reachable(),
+    true,
+    'failed first page remains reachable for Retry',
+  );
+  assert.equal(canEnterLibraryGrid(false, false, 0), false);
+  const empty = {
+    apiVersion: 1,
+    items: [],
+    offset: 0,
+    limit: 48,
+    total: 0,
+    nextOffset: null,
+  };
+  assert.equal(await feed.load(0, async () => empty, 0, true), true);
+  assert.equal(feed.snapshot().known, true);
+  assert.equal(feedSlotCount(feed.snapshot().known, feed.snapshot().total), 0);
+  assert.equal(
+    reachable(),
+    false,
+    'confirmed empty view keeps navigation in the header',
+  );
+  assert.equal(canEnterLibraryGrid(true, true, 96), true);
+});
 
 test('new library entry reveals its feature; same-scope refresh preserves the browsing region', () => {
   assert.equal(libraryEntryTarget(false, true, true), 'header');
