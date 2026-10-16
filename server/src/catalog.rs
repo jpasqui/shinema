@@ -280,14 +280,12 @@ pub(crate) fn page(
         format!("WHERE {}", filters.join(" AND "))
     };
     let total: u32 = if let Some(column) = cached_total {
-        db.query_row(&format!("SELECT {column} FROM catalog_totals"), [], |row| {
-            row.get(0)
-        })?
+        scalar(db, &format!("SELECT {column} FROM catalog_totals"), [])?
     } else {
-        db.query_row(
+        scalar(
+            db,
             &format!("SELECT count(*) FROM media_catalog {predicate}"),
             rusqlite::params_from_iter(values.iter()),
-            |row| row.get(0),
         )?
     };
     let offset = query.offset.unwrap_or(0);
@@ -301,10 +299,25 @@ pub(crate) fn page(
         })?
         .map(|row| Ok(serde_json::from_str::<Media>(&row?)?))
         .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+    #[cfg(test)]
+    crate::performance_budgets::record_statement(&statement);
     let next = offset.saturating_add(items.len() as u32);
+    let full_library: bool = scalar(db, "SELECT tv>0 OR movies>0 FROM catalog_totals", [])?;
     Ok(
-        serde_json::json!({"apiVersion":1,"fullLibrary":db.query_row("SELECT tv>0 OR movies>0 FROM catalog_totals",[],|r|r.get::<_,bool>(0))?,"items":items,"total":total,"offset":offset,"limit":limit,"nextOffset":if next<total {Some(next)} else {None}}),
+        serde_json::json!({"apiVersion":1,"fullLibrary":full_library,"items":items,"total":total,"offset":offset,"limit":limit,"nextOffset":if next<total {Some(next)} else {None}}),
     )
+}
+
+fn scalar<T: rusqlite::types::FromSql>(
+    db: &Connection,
+    sql: &str,
+    values: impl rusqlite::Params,
+) -> rusqlite::Result<T> {
+    let mut statement = db.prepare(sql)?;
+    let value = statement.query_row(values, |row| row.get(0))?;
+    #[cfg(test)]
+    crate::performance_budgets::record_statement(&statement);
+    Ok(value)
 }
 
 fn page_sql(predicate: &str, fixed_series: bool) -> String {
@@ -330,12 +343,12 @@ pub(crate) fn series(
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(60);
     let total: u32 = if search.is_empty() {
-        db.query_row("SELECT series FROM catalog_totals", [], |row| row.get(0))?
+        scalar(db, "SELECT series FROM catalog_totals", [])?
     } else {
-        db.query_row(
+        scalar(
+            db,
             "SELECT count(*) FROM series_catalog WHERE (?1='' OR instr(search_text,?1)>0)",
             [&search],
-            |row| row.get(0),
         )?
     };
     let mut statement=db.prepare("SELECT series_json FROM series_catalog WHERE (?1='' OR instr(search_text,?1)>0) ORDER BY title COLLATE NOCASE,id LIMIT ?2 OFFSET ?3")?;
@@ -345,6 +358,8 @@ pub(crate) fn series(
         })?
         .map(|row| Ok(serde_json::from_str::<serde_json::Value>(&row?)?))
         .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+    #[cfg(test)]
+    crate::performance_budgets::record_statement(&statement);
     let next = offset.saturating_add(items.len() as u32);
     Ok(
         serde_json::json!({"items":items,"total":total,"offset":offset,"limit":limit,"nextOffset":if next<total{Some(next)}else{None}}),

@@ -436,6 +436,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn metadata_budget_bounds_real_child_processes() {
+        assert!(
+            METADATA_PROCESS_LIMIT as u64
+                <= crate::performance_budgets::resource_limit("metadataProcesses")
+        );
         let budget = Arc::new(Semaphore::new(METADATA_PROCESS_LIMIT));
         let (_, profile) = profile_workload(Some(budget.clone()), 12, 50).await;
         assert!(profile.peak <= METADATA_PROCESS_LIMIT);

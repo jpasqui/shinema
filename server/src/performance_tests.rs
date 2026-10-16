@@ -2,7 +2,7 @@
 use super::*;
 use std::{hint::black_box, time::Instant};
 
-fn fixture(movies: u32, shows: u32, episodes: u32) -> (tempfile::TempDir, Arc<Library>) {
+pub(super) fn fixture(movies: u32, shows: u32, episodes: u32) -> (tempfile::TempDir, Arc<Library>) {
     assert!(std::env::var_os("SHINEMA_TMDB_TOKEN_FILE").is_none());
     assert!(std::env::var("SHINEMA_TVMAZE").is_err());
     let temp = tempfile::tempdir().unwrap();
@@ -62,7 +62,13 @@ fn measure(mut operation: impl FnMut(), samples: usize) -> serde_json::Value {
         times.push(started.elapsed().as_secs_f64() * 1000.0);
     }
     times.sort_by(f64::total_cmp);
-    serde_json::json!({"samples":samples,"medianMs":times[samples / 2],"p95Ms":times[(samples * 95 / 100).min(samples - 1)]})
+    let middle = samples / 2;
+    let median = if samples.is_multiple_of(2) {
+        (times[middle - 1] + times[middle]) / 2.0
+    } else {
+        times[middle]
+    };
+    serde_json::json!({"medianMs":median,"p95Ms":times[(samples * 95).div_ceil(100) - 1]})
 }
 
 #[test]
@@ -79,9 +85,10 @@ fn browse_benchmark() {
         .values()
         .find_map(|entry| entry.media.classification.series_id.clone())
         .unwrap();
+    let mut metrics = serde_json::Map::new();
     for (name, query) in [
         (
-            "movies-first",
+            "moviesFirst",
             catalog::CatalogQuery {
                 collection: Some("movies".into()),
                 limit: Some(60),
@@ -89,7 +96,7 @@ fn browse_benchmark() {
             },
         ),
         (
-            "movies-deep",
+            "moviesDeep",
             catalog::CatalogQuery {
                 collection: Some("movies".into()),
                 offset: Some(90_000),
@@ -98,7 +105,7 @@ fn browse_benchmark() {
             },
         ),
         (
-            "movie-search",
+            "movieSearch",
             catalog::CatalogQuery {
                 collection: Some("movies".into()),
                 search: Some("Film 090".into()),
@@ -107,7 +114,7 @@ fn browse_benchmark() {
             },
         ),
         (
-            "episodes-page",
+            "episodesPage",
             catalog::CatalogQuery {
                 collection: Some("tv".into()),
                 series: Some(sid),
@@ -132,7 +139,7 @@ fn browse_benchmark() {
             },
             30,
         );
-        println!("{name}: {result}");
+        metrics.insert(name.into(), result);
     }
     let result = measure(
         || {
@@ -151,7 +158,7 @@ fn browse_benchmark() {
         },
         30,
     );
-    println!("series-page: {result}");
+    metrics.insert("seriesPage".into(), result);
     let db = library.database.lock().unwrap();
     let pages: u64 = db
         .query_row("PRAGMA page_count", [], |row| row.get(0))
@@ -159,27 +166,21 @@ fn browse_benchmark() {
     let page_bytes: u64 = db
         .query_row("PRAGMA page_size", [], |row| row.get(0))
         .unwrap();
-    println!("catalogSqliteBytes: {}", pages * page_bytes);
-    println!(
-        "workload: 100000 movies + 1000 series * 20 episodes; 60 rows/page; 3 warmups; concurrency 1; memory SQLite; metadata providers disabled"
-    );
-}
-
-#[test]
-fn series_representatives_preserve_the_first_media_id_without_full_page_scans() {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let _runtime = runtime.enter();
-    let (_temp, library) = fixture(30, 10, 3);
-    assert_eq!(library.series_entries.len(), 10);
-    for (sid, id) in &library.series_entries {
-        let former = library
-            .entries
-            .values()
-            .find(|entry| entry.media.classification.series_id.as_ref() == Some(sid))
-            .unwrap();
-        assert_eq!(&former.media.id, id);
+    let report = serde_json::json!({
+        "schemaVersion":1,
+        "fixtureId":"catalog-v1-120000",
+        "workload":{
+            "movies":100000,"series":1000,"episodesPerSeries":20,
+            "pageSize":60,"deepOffset":90000,"warmups":3,"samples":30,"concurrency":1
+        },
+        "metrics":metrics,
+        "sqliteBytes":pages * page_bytes,
+        "sqliteVersion":rusqlite::version()
+    });
+    if let Some(path) = std::env::var_os("SHINEMA_BENCH_OUTPUT") {
+        // The caller controls the output path; no source, media, or host paths
+        // are included in this synthetic report.
+        fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }
+    println!("{report}");
 }
