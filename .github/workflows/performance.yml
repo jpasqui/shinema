@@ -1,0 +1,66 @@
+name: Performance regression protection
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: performance-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  performance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      RUSTUP_TOOLCHAIN: '1.94.0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.14.0'
+      - run: rustup toolchain install 1.94.0 --profile minimal
+      - name: Verify audit, comparison and hardware-analysis guards
+        run: |
+          python3 scripts/test_performance_report.py
+          python3 scripts/test_run_performance.py
+          node --test scripts/test_hardware_performance.mjs
+      - name: Build both sources and measure the same release workload
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        shell: bash
+        run: |
+          if [[ -z "$BASE_SHA" || "$BASE_SHA" == 0000000000000000000000000000000000000000 ]]; then
+            BASE_SHA="$(git rev-parse HEAD^ 2>/dev/null || true)"
+          fi
+          if [[ -n "$BASE_SHA" ]]; then
+            python3 scripts/run_performance.py --head "$HEAD_SHA" --base "$BASE_SHA"
+          else
+            python3 scripts/run_performance.py --head "$HEAD_SHA"
+          fi
+          echo "PERF_BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
+      - name: Audit aggregate reports and generate canonical summary
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          if [[ -n "$PERF_BASE_SHA" ]]; then
+            python3 scripts/performance_report.py ci-artifacts/performance --expected-head "$HEAD_SHA" --expected-base "$PERF_BASE_SHA"
+          else
+            python3 scripts/performance_report.py ci-artifacts/performance --expected-head "$HEAD_SHA"
+          fi
+      - name: Publish advisory comparison in the job summary
+        run: cat ci-artifacts/performance/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain audited synthetic aggregates
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shinema-performance-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ci-artifacts/performance/
+          if-no-files-found: error
+          retention-days: 30

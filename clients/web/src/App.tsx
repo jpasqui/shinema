@@ -31,6 +31,7 @@ import { MediaPoster } from './MediaPoster.tsx';
 import { TopNavigation } from './TopNavigation.tsx';
 import { libraryBrowseCollection, useLibraries } from './libraries.ts';
 import type { TopNavigationDestination } from '../../../packages/contracts/navigation.ts';
+import { SubtitleControls } from './SubtitleControls.tsx';
 
 const storageKey = 'shinema.web.cache.v1';
 const demo = import.meta.env.VITE_DEMO_MODE === 'true';
@@ -797,7 +798,11 @@ function Player({
       event.preventDefault();
       snapshot();
       back();
-    } else if (event.target instanceof HTMLInputElement) return;
+    } else if (
+      event.target instanceof HTMLInputElement ||
+      event.target instanceof HTMLSelectElement
+    )
+      return;
     else if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
       event.preventDefault();
       seek(
@@ -939,6 +944,7 @@ function Player({
           {muted ? 'Enable audio' : 'Mute'}
         </button>
       </div>
+      <SubtitleControls key={item.id} mediaId={item.id} video={video} />
       <div className="now-playing">
         <div>
           <h1>{title(item)}</h1>

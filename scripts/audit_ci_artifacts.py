@@ -196,6 +196,63 @@ def audit(kind, path):
             raise SystemExit('Library diagnostic log is missing or invalid')
         if log != '\n'.join(lines) + '\n':
             raise SystemExit('Library diagnostic log contains unexpected content')
+    elif kind == 'subtitle-diagnostics':
+        if path.is_symlink() or not path.is_dir():
+            raise SystemExit('Subtitle diagnostics require an ordinary directory')
+        files = list(path.iterdir())
+        if not 2 <= len(files) <= 3:
+            raise SystemExit('Subtitle diagnostic file count exceeds its bound')
+        contents = {}
+        for file in files:
+            if (file.is_symlink() or not file.is_file()
+                    or file.name not in {'failure.json', 'browser-test.log', 'failure.png'}):
+                raise SystemExit('Unexpected file in subtitle diagnostics')
+            limit = 2 * 1024 * 1024 if file.suffix == '.png' else 64 * 1024
+            if not 0 < file.stat().st_size <= limit:
+                raise SystemExit('Subtitle diagnostic file exceeds its bound')
+            content = file.read_bytes()
+            check(file.name, content)
+            # Compressed PNGs can contain a short drive-root string by chance;
+            # match distinctive host markers there, and every drive root in text.
+            host_marker = (rb'[A-Z]:[\\/]+Users[\\/]|/(?:Users|home|tmp|var|mnt)/|id_ed25519|known_hosts'
+                           if file.suffix == '.png' else rb'[A-Z]:[\\/]|/(?:Users|home|tmp|var|mnt)/|id_ed25519|known_hosts')
+            if re.search(host_marker, content, re.IGNORECASE):
+                raise SystemExit('Private host/source marker in subtitle diagnostics')
+            if file.suffix == '.png' and (not content.startswith(b'\x89PNG\r\n\x1a\n')
+                    or content[16:24] != (1280).to_bytes(4, 'big') + (1080).to_bytes(4, 'big')):
+                raise SystemExit('Subtitle screenshots must use the declared fixed viewport')
+            contents[file.name] = content
+            count += 1
+        try:
+            data = json.loads(contents['failure.json'].decode('utf-8'))
+        except (KeyError, ValueError):
+            raise SystemExit('Subtitle diagnostic summary is missing or invalid')
+        phases = ('fixtures', 'server-startup', 'browser-startup', 'subtitle-playback',
+                  'direct-playback', 'discovery-recovery', 'discovery-cancellation')
+        if (not isinstance(data, dict)
+                or set(data) != {'schema', 'generatedOnly', 'status', 'phase', 'source', 'line',
+                                 'completedChecks', 'pageErrors', 'serverState', 'screenshot'}
+                or type(data['schema']) is not int or data['schema'] != 1
+                or data['generatedOnly'] is not True or data['status'] != 'failed'
+                or data['phase'] not in phases or data['source'] != 'scripts/subtitle-smoke.mjs'
+                or type(data['line']) is not int or not 0 <= data['line'] <= 1000000
+                or type(data['completedChecks']) is not int or not 0 <= data['completedChecks'] <= 64
+                or type(data['pageErrors']) is not int or not 0 <= data['pageErrors'] <= 100
+                or data['serverState'] not in ('not-started', 'starting', 'running', 'exited')
+                or type(data['screenshot']) is not bool):
+            raise SystemExit('Subtitle diagnostic summary is missing or invalid')
+        expected = {'failure.json', 'browser-test.log'}
+        if data['screenshot']:
+            expected.add('failure.png')
+        if set(contents) != expected:
+            raise SystemExit('Subtitle diagnostic screenshot does not match the summary')
+        log = (f"Generated-only subtitle smoke: failed\n"
+               f"{data['source']}:{data['line']} phase={data['phase']}\n"
+               f"completedChecks={data['completedChecks']} pageErrors={data['pageErrors']} "
+               f"serverState={data['serverState']} "
+               f"screenshot={'failure.png' if data['screenshot'] else 'unavailable'}\n")
+        if contents['browser-test.log'] != log.encode('utf-8'):
+            raise SystemExit('Subtitle diagnostic log contains unexpected content')
     elif kind == 'public-fixtures':
         expected = {'before-movies.png', 'before-series.png', 'after-movies.png',
                     'after-series.png', 'interactions.webm', 'provenance.json'}
@@ -256,7 +313,7 @@ def audit(kind, path):
             if digest != hashlib.sha256((path / name).read_bytes()).hexdigest():
                 raise SystemExit('Public fixture evidence hash mismatch')
     else:
-        raise SystemExit('Expected web, android, diagnostics, playback-diagnostics, libraries-diagnostics or public-fixtures')
+        raise SystemExit('Expected web, android, diagnostics, playback-diagnostics, libraries-diagnostics, subtitle-diagnostics or public-fixtures')
     print(f'Audited {count} allowlisted files: no forbidden content or unexpected files detected.')
 
 

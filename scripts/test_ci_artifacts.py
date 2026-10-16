@@ -386,6 +386,217 @@ class ArtifactAuditTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, 'ordinary directory'):
                 audit('libraries-diagnostics', path / 'missing')
 
+    def subtitle_png(self, width=1280, height=1080):
+        def chunk(kind, data):
+            return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
+        rows = (b'\x00' + b'\x00' * width) * height
+        return (b'\x89PNG\r\n\x1a\n'
+                + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 0, 0, 0, 0))
+                + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b''))
+
+    def subtitle_evidence(self, path, **changes):
+        data = {'schema': 1, 'generatedOnly': True, 'status': 'failed',
+                'phase': 'fixtures', 'source': 'scripts/subtitle-smoke.mjs',
+                'line': 0, 'completedChecks': 0, 'pageErrors': 0,
+                'serverState': 'not-started', 'screenshot': False}
+        data.update(changes)
+        (path / 'failure.json').write_text(json.dumps(data), encoding='utf-8')
+        log = (f"Generated-only subtitle smoke: failed\n"
+               f"{data['source']}:{data['line']} phase={data['phase']}\n"
+               f"completedChecks={data['completedChecks']} pageErrors={data['pageErrors']} "
+               f"serverState={data['serverState']} "
+               f"screenshot={'failure.png' if data['screenshot'] else 'unavailable'}\n")
+        (path / 'browser-test.log').write_bytes(log.encode('utf-8'))
+        if data['screenshot']:
+            (path / 'failure.png').write_bytes(self.subtitle_png())
+        return data
+
+    def test_subtitle_diagnostics_allow_startup_failure_without_screenshot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            self.subtitle_evidence(path)
+            audit('subtitle-diagnostics', path)
+
+    def test_subtitle_diagnostics_allow_fixed_screenshot_and_bounded_counters(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            self.subtitle_evidence(path, phase='direct-playback', line=1000000,
+                                   completedChecks=64, pageErrors=100,
+                                   serverState='running', screenshot=True)
+            audit('subtitle-diagnostics', path)
+
+    def test_subtitle_diagnostics_allow_only_declared_phases_and_server_states(self):
+        phases = ['fixtures', 'server-startup', 'browser-startup', 'subtitle-playback',
+                  'direct-playback', 'discovery-recovery', 'discovery-cancellation']
+        for phase in phases:
+            for state in ['not-started', 'starting', 'running', 'exited']:
+                with self.subTest(phase=phase, state=state), tempfile.TemporaryDirectory() as temporary:
+                    path = Path(temporary)
+                    self.subtitle_evidence(path, phase=phase, serverState=state)
+                    audit('subtitle-diagnostics', path)
+
+    def test_subtitle_diagnostics_reject_empty_and_oversized_files(self):
+        for name, limit in [('failure.json', 65536), ('browser-test.log', 65536),
+                            ('failure.png', 2 * 1024 * 1024)]:
+            for size in [0, limit + 1]:
+                with self.subTest(name=name, size=size), tempfile.TemporaryDirectory() as temporary:
+                    path = Path(temporary)
+                    self.subtitle_evidence(path, screenshot=True)
+                    (path / name).write_bytes(b'x' * size)
+                    with self.assertRaises(SystemExit):
+                        audit('subtitle-diagnostics', path)
+
+    def test_subtitle_diagnostics_reject_extra_media_trace_and_directory_entries(self):
+        for name in ['extra.json', 'fixture.mp4', 'fixture.mkv', 'recording.webm',
+                     'trace.zip', 'error-context.md', '.env.local']:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary)
+                self.subtitle_evidence(path)
+                (path / name).write_bytes(b'generated fixture')
+                with self.assertRaises(SystemExit):
+                    audit('subtitle-diagnostics', path)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            self.subtitle_evidence(path)
+            (path / 'failure.png').mkdir()
+            with self.assertRaises(SystemExit):
+                audit('subtitle-diagnostics', path)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            self.subtitle_evidence(path, screenshot=True)
+            (path / 'extra.json').write_text('{}')
+            with self.assertRaises(SystemExit):
+                audit('subtitle-diagnostics', path)
+
+    def test_subtitle_diagnostics_require_exact_summary_and_screenshot_files(self):
+        for name in ['failure.json', 'browser-test.log', 'failure.png']:
+            with self.subTest(missing=name), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary)
+                self.subtitle_evidence(path, screenshot=True)
+                (path / name).unlink()
+                with self.assertRaises(SystemExit):
+                    audit('subtitle-diagnostics', path)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            self.subtitle_evidence(path)
+            (path / 'failure.png').write_bytes(self.subtitle_png())
+            with self.assertRaises(SystemExit):
+                audit('subtitle-diagnostics', path)
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(SystemExit):
+                audit('subtitle-diagnostics', Path(temporary))
+
+    def test_subtitle_diagnostics_reject_wrong_screenshot_format_or_dimensions(self):
+        for image in [b'not a PNG', b'\x89PNG\r\n\x1a\n',
+                      self.subtitle_png(1280, 900), self.subtitle_png(640, 1080)]:
+            with self.subTest(bytes=len(image)), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary)
+                self.subtitle_evidence(path, screenshot=True)
+                (path / 'failure.png').write_bytes(image)
+                with self.assertRaises(SystemExit):
+                    audit('subtitle-diagnostics', path)
+
+    def test_subtitle_diagnostics_require_exact_field_schema_and_types(self):
+        invalid = [
+            ('schema', 2), ('schema', True), ('schema', 1.0), ('schema', '1'),
+            ('generatedOnly', False), ('generatedOnly', 1), ('generatedOnly', 'true'),
+            ('status', 'passed'), ('status', []), ('phase', 'unknown'), ('phase', []),
+            ('source', 'scripts/another-smoke.mjs'), ('source', []),
+            ('serverState', 'unknown'), ('serverState', {}),
+            ('screenshot', 0), ('screenshot', 'false'), ('screenshot', None),
+        ]
+        for field, limit in [('line', 1000000), ('completedChecks', 64), ('pageErrors', 100)]:
+            invalid.extend((field, value) for value in [-1, limit + 1, True, 0.5, '0', None])
+        for field, value in invalid:
+            with self.subTest(field=field, value=value), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary)
+                self.subtitle_evidence(path, **{field: value})
+                with self.assertRaises(SystemExit):
+                    audit('subtitle-diagnostics', path)
+        for summary in [None, [], {}, {'extra': 'value'}, b'\xff', b'{']:
+            with self.subTest(summary=summary), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary)
+                self.subtitle_evidence(path)
+                (path / 'failure.json').write_bytes(
+                    summary if isinstance(summary, bytes) else json.dumps(summary).encode('utf-8'))
+                with self.assertRaises(SystemExit):
+                    audit('subtitle-diagnostics', path)
+        for change in ['missing', 'extra']:
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary)
+                summary = self.subtitle_evidence(path)
+                if change == 'missing':
+                    del summary['line']
+                else:
+                    summary['message'] = 'unexpected field'
+                (path / 'failure.json').write_text(json.dumps(summary), encoding='utf-8')
+                with self.assertRaises(SystemExit):
+                    audit('subtitle-diagnostics', path)
+
+    def test_subtitle_diagnostics_reject_raw_or_mismatched_logs(self):
+        for extra in [b'Unexpected raw error stack\n', b'\n', b'\xff']:
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary)
+                self.subtitle_evidence(path)
+                with (path / 'browser-test.log').open('ab') as output:
+                    output.write(extra)
+                with self.assertRaises(SystemExit):
+                    audit('subtitle-diagnostics', path)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            self.subtitle_evidence(path)
+            log = path / 'browser-test.log'
+            log.write_bytes(log.read_bytes().replace(b'\n', b'\r\n'))
+            with self.assertRaises(SystemExit):
+                audit('subtitle-diagnostics', path)
+
+    def test_subtitle_diagnostics_reject_private_markers_without_echoing_them(self):
+        markers = [b'C:/Users/fixture/private', b'C:\\Users\\fixture\\private',
+                   b'/Users/fixture/private', b'/home/fixture', b'/tmp/fixture',
+                   b'/var/fixture', b'/mnt/fixture', b'id_ed25519', b'known_hosts',
+                   b'ghp_' + b'x' * 36, b'https://fixture:password@example.invalid/',
+                   b'192.168.2.3', b'/volume1/fixture']
+        for name in ['failure.png', 'failure.json', 'browser-test.log']:
+            for marker in markers:
+                with self.subTest(name=name, marker=marker), tempfile.TemporaryDirectory() as temporary:
+                    path = Path(temporary)
+                    self.subtitle_evidence(path, screenshot=True)
+                    with (path / name).open('ab') as output:
+                        output.write(marker)
+                    with self.assertRaises(SystemExit) as caught:
+                        audit('subtitle-diagnostics', path)
+                    self.assertNotIn(marker.decode(), str(caught.exception))
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            self.subtitle_evidence(path)
+            with (path / 'browser-test.log').open('ab') as output:
+                output.write(b'Q:/fixture')
+            with self.assertRaises(SystemExit):
+                audit('subtitle-diagnostics', path)
+
+    def test_subtitle_diagnostics_require_ordinary_directory_and_reject_symlinks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            path = base / 'evidence'
+            path.mkdir()
+            self.subtitle_evidence(path, screenshot=True)
+            target = base / 'generated.png'
+            (path / 'failure.png').rename(target)
+            link = path / 'failure.png'
+            try:
+                link.symlink_to(target)
+            except (OSError, NotImplementedError):
+                self.skipTest('Symbolic links are unavailable on this host')
+            with self.assertRaises(SystemExit):
+                audit('subtitle-diagnostics', path)
+            directory_link = base / 'linked-evidence'
+            directory_link.symlink_to(path, target_is_directory=True)
+            with self.assertRaises(SystemExit):
+                audit('subtitle-diagnostics', directory_link)
+            for ordinary in [base / 'missing', target]:
+                with self.subTest(path=ordinary.name), self.assertRaises(SystemExit):
+                    audit('subtitle-diagnostics', ordinary)
+
     def generated_evidence(self, path):
         png = b'\x89PNG\r\n\x1a\n' + b'\x00' * 8 + (1280).to_bytes(4, 'big') + (900).to_bytes(4, 'big')
         assets = {}

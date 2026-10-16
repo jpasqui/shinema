@@ -31,6 +31,10 @@ use tokio::{
 const SEGMENT_SECONDS: f64 = 6.0;
 const MAX_SEGMENT: usize = 16 * 1024 * 1024;
 const CACHE_BYTES: u64 = 512 * 1024 * 1024;
+const CODEC_JOBS: usize = 2;
+const CACHE_ENTRIES: usize = 4096;
+const PROBE_CACHE_ENTRIES: u64 = 4096;
+const PROBE_DATABASE_PAGES: u64 = 8192;
 fn segment_count(duration: f64) -> u32 {
     let full = (duration / SEGMENT_SECONDS).floor() as u32;
     let remainder = duration - f64::from(full) * SEGMENT_SECONDS;
@@ -152,7 +156,7 @@ impl Engine {
                 | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )
         .map_err(io::Error::other)?;
-        probes.execute_batch("PRAGMA auto_vacuum=INCREMENTAL;PRAGMA max_page_count=8192;CREATE TABLE IF NOT EXISTS probes(identity TEXT PRIMARY KEY,data TEXT,used INTEGER);").map_err(io::Error::other)?;
+        probes.execute_batch(&format!("PRAGMA auto_vacuum=INCREMENTAL;PRAGMA max_page_count={PROBE_DATABASE_PAGES};CREATE TABLE IF NOT EXISTS probes(identity TEXT PRIMARY KEY,data TEXT,used INTEGER);")).map_err(io::Error::other)?;
         let mut cache = BTreeMap::new();
         for entry in fs::read_dir(&directory)? {
             let entry = entry?;
@@ -179,7 +183,7 @@ impl Engine {
             directory,
             origin: Mutex::new("http://127.0.0.1:8787".into()),
             metadata: AsyncMutex::new(BTreeMap::new()),
-            jobs: Semaphore::new(2),
+            jobs: Semaphore::new(CODEC_JOBS),
             locks: (0..64).map(|_| AsyncMutex::new(())).collect(),
             cache: Mutex::new(cache),
             clock: AtomicU64::new(1),
@@ -192,7 +196,7 @@ impl Engine {
     }
     pub fn statistics(&self) -> serde_json::Value {
         let cache = self.cache.lock().expect("Cache lock");
-        serde_json::json!({"activeCodecJobs":2-self.jobs.available_permits(),"cachedSegments":cache.len(),"cachedBytes":cache.values().map(|v|v.bytes).sum::<u64>(),"cacheLimitBytes":self.cache_limit})
+        serde_json::json!({"activeCodecJobs":CODEC_JOBS-self.jobs.available_permits(),"cachedSegments":cache.len(),"cachedBytes":cache.values().map(|v|v.bytes).sum::<u64>(),"cacheLimitBytes":self.cache_limit})
     }
     pub fn set_origin(&self, bind: std::net::SocketAddr) {
         if bind.ip().is_loopback() {
@@ -312,6 +316,10 @@ impl Engine {
             .lock()
             .await
             .insert(fingerprint.into(), value.clone());
+        self.remember_probe(fingerprint, &value)?;
+        Ok(value)
+    }
+    fn remember_probe(&self, fingerprint: &str, value: &Playback) -> io::Result<()> {
         let db = self
             .probes
             .lock()
@@ -320,15 +328,15 @@ impl Engine {
             "INSERT OR REPLACE INTO probes VALUES (?1,?2,?3)",
             rusqlite::params![
                 fingerprint,
-                serde_json::to_string(&value)?,
+                serde_json::to_string(value)?,
                 self.clock.fetch_add(1, Ordering::Relaxed)
             ],
         )
         .map_err(io::Error::other)?;
-        db.execute("DELETE FROM probes WHERE identity IN (SELECT identity FROM probes ORDER BY used LIMIT max((SELECT count(*) FROM probes)-4096,0))",[]).map_err(io::Error::other)?;
+        db.execute("DELETE FROM probes WHERE identity IN (SELECT identity FROM probes ORDER BY used LIMIT max((SELECT count(*) FROM probes)-?1,0))",[PROBE_CACHE_ENTRIES]).map_err(io::Error::other)?;
         db.execute_batch("PRAGMA incremental_vacuum(64)")
             .map_err(io::Error::other)?;
-        Ok(value)
+        Ok(())
     }
     pub fn playlist(duration: f64, id: &str) -> String {
         let count = segment_count(duration);
@@ -350,7 +358,7 @@ impl Engine {
             .sum::<u64>()
             .saturating_add(incoming)
             > self.cache_limit
-            || cache.len() >= 4096
+            || cache.len() >= CACHE_ENTRIES
         {
             let Some(name) = cache
                 .iter()
@@ -483,7 +491,7 @@ impl Engine {
             .sum::<u64>()
             .saturating_add(bytes.len() as u64)
             > self.cache_limit
-            || cache.len() >= 4096
+            || cache.len() >= CACHE_ENTRIES
         {
             let victim = cache
                 .iter()
@@ -598,6 +606,82 @@ pub fn segment_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn deterministic_codec_and_probe_cache_resource_budgets() {
+        let limit = crate::performance_budgets::resource_limit;
+        assert!(CODEC_JOBS as u64 <= limit("codecJobs"));
+        assert!(MAX_SEGMENT as u64 <= limit("segmentBytes"));
+        assert!(CACHE_BYTES <= limit("segmentCacheBytes"));
+        assert!(CACHE_ENTRIES as u64 <= limit("segmentCacheEntries"));
+        assert!(PROBE_CACHE_ENTRIES <= limit("probeCacheEntries"));
+        assert!(PROBE_DATABASE_PAGES <= limit("probeDatabasePages"));
+        let temp = tempfile::tempdir().unwrap();
+        let engine = Engine::new(temp.path()).unwrap();
+        assert!(engine.cache_limit <= limit("segmentCacheBytes"));
+        let jobs = (0..CODEC_JOBS)
+            .map(|_| engine.jobs.try_acquire().unwrap())
+            .collect::<Vec<_>>();
+        assert!(engine.jobs.try_acquire().is_err());
+        assert_eq!(engine.statistics()["activeCodecJobs"], CODEC_JOBS);
+        drop(jobs);
+        assert_eq!(engine.jobs.available_permits(), CODEC_JOBS);
+
+        // Fill the real persistent probe table in one transaction, then exercise
+        // the same insertion/eviction path as successful ffprobe processing.
+        // No media, codec process, provider, or remote source is involved.
+        {
+            let mut db = engine.probes.lock().unwrap();
+            let pages: u64 = db
+                .query_row("PRAGMA max_page_count", [], |row| row.get(0))
+                .unwrap();
+            assert!(pages <= limit("probeDatabasePages"));
+            let transaction = db.transaction().unwrap();
+            for index in 0..PROBE_CACHE_ENTRIES {
+                transaction
+                    .execute(
+                        "INSERT INTO probes VALUES (?1,'{}',?2)",
+                        rusqlite::params![format!("synthetic-{index:06}"), index],
+                    )
+                    .unwrap();
+            }
+            transaction.commit().unwrap();
+        }
+        engine
+            .clock
+            .store(PROBE_CACHE_ENTRIES + 1, Ordering::Relaxed);
+        let value = Playback {
+            duration_seconds: 60.0,
+            mode: "direct".into(),
+            stream_path: "/api/media/synthetic/stream".into(),
+        };
+        engine.remember_probe("synthetic-new", &value).unwrap();
+        let db = engine.probes.lock().unwrap();
+        let rows: u64 = db
+            .query_row("SELECT count(*) FROM probes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, PROBE_CACHE_ENTRIES);
+        let oldest: u64 = db
+            .query_row(
+                "SELECT count(*) FROM probes WHERE identity='synthetic-000000'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(oldest, 0);
+        let data: String = db
+            .query_row(
+                "SELECT data FROM probes WHERE identity='synthetic-new'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&data).unwrap()["durationSeconds"],
+            60.0
+        );
+    }
+
     #[test]
     fn startup_recovers_owned_dead_writer_temporary_files_only() {
         let temp = tempfile::tempdir().unwrap();

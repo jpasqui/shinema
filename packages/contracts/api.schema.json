@@ -269,6 +269,94 @@
         }
       }
     },
+    "SubtitleTrack": {
+      "type": "object",
+      "required": [
+        "id",
+        "label",
+        "default",
+        "source"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,80}$"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "language": {
+          "type": "string",
+          "pattern": "^[a-zA-Z]{2,3}(?:-[a-zA-Z0-9]{2,8}){0,3}$"
+        },
+        "default": {
+          "type": "boolean"
+        },
+        "source": {
+          "enum": [
+            "embedded",
+            "external"
+          ]
+        },
+        "contentPath": {
+          "type": "string",
+          "pattern": "^/api/media/[a-f0-9]{64}/subtitles/[a-z0-9-]{1,80}\\.vtt$"
+        },
+        "unsupportedReason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "contentPath"
+          ],
+          "not": {
+            "required": [
+              "unsupportedReason"
+            ]
+          }
+        },
+        {
+          "required": [
+            "unsupportedReason"
+          ],
+          "not": {
+            "required": [
+              "contentPath"
+            ]
+          }
+        }
+      ]
+    },
+    "Subtitles": {
+      "type": "object",
+      "required": [
+        "tracks"
+      ],
+      "properties": {
+        "tracks": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/SubtitleTrack"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        }
+      }
+    },
     "LibraryDescriptor": {
       "type": "object",
       "required": ["id", "name", "visible", "order"],
