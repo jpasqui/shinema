@@ -41,8 +41,14 @@ button:disabled {
   letter-spacing: -1.7px;
 }
 .brand::after {
-  content: '.';
+  --brand-dot-offset: 10px;
+  content: '';
   color: var(--color-accent);
+  background: radial-gradient(
+    circle 2px at 3px calc(50% + var(--brand-dot-offset)),
+    currentColor 98%,
+    transparent 100%
+  );
 }
 .nav-link {
   font-size: 16px;
@@ -1649,6 +1655,7 @@ html[data-motion='reduced'] .media-card .poster {
     line-height: 36px;
   }
   .header:has(.top-navigation) > .brand::after {
+    --brand-dot-offset: 8px;
     block-size: 36px;
     line-height: 36px;
   }
@@ -1688,6 +1695,7 @@ html[data-motion='reduced'] .media-card .poster {
     line-height: 36px;
   }
   .brand::after {
+    --brand-dot-offset: 8px;
     block-size: 36px;
     line-height: 36px;
   }
