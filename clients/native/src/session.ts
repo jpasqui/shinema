@@ -136,12 +136,13 @@ export async function syncProgress(
   state: StateIO,
   send: (origin: string, id: string, value: Progress) => Promise<void>,
 ): Promise<void> {
-  if (!guard.current(destination, state.read().origin)) return;
+  const initial = state.read();
+  // Each App.save creates a fresh immutable value. Its identity owns this
+  // request even when a later save returns to the same position and duration.
+  if (!guard.current(destination, initial.origin) || initial.pending[id] !== value) return;
   await send(destination.origin, id, value);
-  if (!guard.current(destination, state.read().origin)) return;
   const current = state.read();
-  const pending = current.pending[id];
-  if (pending?.positionSeconds !== value.positionSeconds || pending?.durationSeconds !== value.durationSeconds) return;
+  if (!guard.current(destination, current.origin) || current.pending[id] !== value) return;
   const next = {...current.pending};
   delete next[id];
   state.write({...current, pending: next});
@@ -156,13 +157,21 @@ export async function resolveResume(
   load: (origin: string, id: string) => Promise<unknown>,
 ): Promise<{progress: Progress | null; local: boolean} | null> {
   const saved = read();
-  let progress: Progress | null = saved.progress[id] ?? null;
+  const initial = saved.pending[id] ?? saved.progress[id] ?? null;
+  let progress: Progress | null = initial;
   let local = Boolean(saved.pending[id]);
   if (!local) {
     try { progress = parseProgress(await load(ticket.origin, id)); }
     catch { local = true; }
   }
-  if (!guard.currentPlayback(ticket, read().origin)) return null;
+  const current = read();
+  if (!guard.currentPlayback(ticket, current.origin)) return null;
+  if (current.pending[id]) return {progress: current.pending[id], local: true};
+  // A save can be acknowledged while the GET waits. Pending may already be
+  // empty, but a fresh selected-title value still supersedes that old response.
+  if (current.progress[id] !== saved.progress[id])
+    return {progress: current.progress[id] ?? initial, local: true};
+  if (local) progress = current.progress[id] ?? initial;
   return {progress, local};
 }
 
