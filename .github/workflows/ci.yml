@@ -65,6 +65,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - run: node clients/web/node_modules/playwright/cli.js install --with-deps chromium
+      - name: Mocked Radarr and Sonarr request flow
+        run: node scripts/requests-smoke.mjs
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Isolated client playback regressions
         id: playback-regressions

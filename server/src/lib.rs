@@ -25,6 +25,7 @@ mod libraries;
 mod metadata;
 mod playback;
 mod request_boundary;
+pub mod requests;
 mod ssh;
 mod web;
 pub use catalog::Classification;
@@ -516,7 +517,12 @@ pub fn router(library: Arc<Library>) -> Router {
     router_at(library, "127.0.0.1:8787".parse().expect("Loopback literal"))
 }
 pub fn router_at(library: Arc<Library>, bind: std::net::SocketAddr) -> Router {
-    configured_router(library, bind, std::env::var("SHINEMA_ADMIN_TOKEN").ok())
+    configured_router(
+        library,
+        bind,
+        std::env::var("SHINEMA_ADMIN_TOKEN").ok(),
+        requests::Engine::disabled(),
+    )
 }
 
 /// Explicit operator configuration for embedders and isolated synthetic tests.
@@ -526,6 +532,20 @@ pub fn router_with_admin_token(library: Arc<Library>, token: Option<String>) -> 
         library,
         "127.0.0.1:8787".parse().expect("Loopback literal"),
         token,
+        requests::Engine::disabled(),
+    )
+}
+
+pub fn router_at_with_requests(
+    library: Arc<Library>,
+    bind: std::net::SocketAddr,
+    requests: Arc<requests::Engine>,
+) -> Router {
+    configured_router(
+        library,
+        bind,
+        std::env::var("SHINEMA_ADMIN_TOKEN").ok(),
+        requests,
     )
 }
 
@@ -533,6 +553,7 @@ fn configured_router(
     library: Arc<Library>,
     bind: std::net::SocketAddr,
     token: Option<String>,
+    requests: Arc<requests::Engine>,
 ) -> Router {
     library.playback.set_origin(bind);
     library.subtitles.set_origin(bind);
@@ -560,9 +581,10 @@ fn configured_router(
         .route("/api/media/{id}/progress", get(progress).put(save_progress))
         .layer(DefaultBodyLimit::max(4096))
         .fallback(static_web)
-        .layer(axum::middleware::from_fn(request_boundary::guard))
         .layer(Extension(libraries::ManagementAccess::new(token)))
         .with_state(library)
+        .merge(requests::router(requests, bind))
+        .layer(axum::middleware::from_fn(request_boundary::guard))
 }
 
 async fn libraries_public(

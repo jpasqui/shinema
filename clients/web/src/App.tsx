@@ -31,6 +31,7 @@ import { MediaPoster } from './MediaPoster.tsx';
 import { TopNavigation } from './TopNavigation.tsx';
 import { libraryBrowseCollection, useLibraries } from './libraries.ts';
 import type { TopNavigationDestination } from '../../../packages/contracts/navigation.ts';
+import { Requests } from './Requests.tsx';
 import { SubtitleControls } from './SubtitleControls.tsx';
 
 const storageKey = 'shinema.web.cache.v1';
@@ -83,9 +84,9 @@ export default function App() {
   const cache = useRef<Cache>(empty());
   const [version, render] = useState(0);
   const [browseNavigation, setBrowseNavigation] = useState(initialBrowse);
-  const [route, setRoute] = useState<'library' | 'detail' | 'player'>(
-    'library',
-  );
+  const [route, setRoute] = useState<
+    'library' | 'detail' | 'player' | 'requests'
+  >('library');
   const [selected, setSelected] = useState<Media | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -312,7 +313,11 @@ export default function App() {
   }, [route]);
   useEffect(() => {
     const key = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape' && route === 'detail') {
+      if (
+        !event.defaultPrevented &&
+        event.key === 'Escape' &&
+        (route === 'detail' || route === 'requests')
+      ) {
         event.preventDefault();
         showLibrary();
       }
@@ -409,6 +414,22 @@ export default function App() {
           activeLibraryId={browseNavigation.libraryId}
           onNavigate={navigate}
         />
+        <nav aria-label="Requests navigation">
+          <button
+            className={route === 'requests' ? 'nav-link active' : 'nav-link'}
+            aria-current={route === 'requests' ? 'page' : undefined}
+            onClick={() => {
+              setNavigationIntent(null);
+              guard.current.next();
+              setOpening(false);
+              if (route === 'library') libraryScroll.current = window.scrollY;
+              setRoute('requests');
+              window.scrollTo(0, 0);
+            }}
+          >
+            Requests
+          </button>
+        </nav>
         <span className="context-label">
           {demo ? 'Demo library' : 'Connected library'}
         </span>
@@ -424,7 +445,9 @@ export default function App() {
           {capabilityNotice}
         </p>
       )}
-      {route === 'player' && selected && selectedSupport.supported ? (
+      {route === 'requests' ? (
+        <Requests onBack={showLibrary} />
+      ) : route === 'player' && selected && selectedSupport.supported ? (
         <Player
           item={selected}
           progress={resume}

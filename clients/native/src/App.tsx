@@ -10,10 +10,11 @@ import {SessionGuard,StorageQueue,ProgressQueue,connectValidated,persistThenSync
 import type {ConnectionStamp} from './session.ts';
 import {HttpStatusError,loadLibrarySnapshot,visibleLibraries,navigationContentSupport,nativeMediaContentSupport} from './libraries.ts';
 import LibrariesNavigation from './LibrariesNavigation.tsx';
+import {Requests} from './Requests.tsx';
 import {SubtitleController,SubtitleClock,SUBTITLE_SEEK_RECOVERY_MS,emptySubtitles,subtitleAt} from './subtitles.ts';
 
-const Host=NativeModules.ShinemaHost as {readState:()=>Promise<string>;stageState:(value:string)=>Promise<void>;writeState:(value:string)=>Promise<void>;finish:()=>void};
-type Route='setup'|'library'|'detail'|'player';
+const Host=NativeModules.ShinemaHost as {readState:()=>Promise<string>;stageState:(value:string)=>Promise<void>;writeState:(value:string)=>Promise<void>;finish:()=>void;setRequestNavigation:(enabled:boolean)=>void};
+type Route='setup'|'library'|'detail'|'player'|'requests';
 type Key={code:number;action:number;repeat:number};
 const disabledTextTrack={type:SelectedTrackType.DISABLED};
 const deviceLanguages=()=>{try{return [Intl.DateTimeFormat().resolvedOptions().locale];}catch{return [];}};
@@ -44,6 +45,8 @@ export default function App(){
   const session=useRef(new SessionGuard());const handler=useRef<(key:Key)=>void>(()=>{});
   const saveCurrent=useRef<()=>Promise<void>>(async()=>{});const persistQueue=useRef(new StorageQueue());
   const syncQueue=useRef(new ProgressQueue());
+  const requestsBack=useRef<()=>void>(()=>{});
+  const [requestsFocused,setRequestsFocused]=useState(false);
   const items=stored.catalog?.items??[];const selected=items[cursor];
   const libraries=visibleLibraries(stored.libraries);
   const librarySupport=navigationContentSupport(stored);
@@ -78,6 +81,11 @@ export default function App(){
   ];
   const subtitleStatus=subtitles.status==='loading'?'Loading subtitle tracks…':subtitles.status==='error'?'Subtitles unavailable. Open Subtitles to retry.':subtitles.content==='loading'?'Loading subtitle text…':subtitles.content==='error'?'Subtitle text failed. Open Subtitles to retry or choose Off.':subtitles.selected?`Subtitles: ${subtitles.tracks.find(track=>track.id===subtitles.selected)?.label??'selected'}`:subtitles.tracks.length?'Subtitles: Off':'No subtitle tracks';
 
+  useEffect(()=>{
+    Host.setRequestNavigation(route==='requests');
+    return()=>Host.setRequestNavigation(false);
+  },[route]);
+
   function update(value:Stored){store.current=value;setStored(value);}
   function acceptCatalog(value:Stored){
     const switched=value.origin!==store.current.origin || value.selectedLibraryId!==store.current.selectedLibraryId;
@@ -89,7 +97,12 @@ export default function App(){
     if(!item)return;
     const support=nativeMediaContentSupport(item,store.current);
     if(!support.supported){setMessage(support.reason??'This content is not supported on this device.');return;}
+    setNavigationFocus(null);setRequestsFocused(false);
     session.current.cancelConnection();setBusy(false);setRoute('detail');
+  }
+  function openRequests(){
+    if(session.current.isSwitchCommitting()){setMessage('Finishing library update. Try again in a moment.');return;}
+    setNavigationFocus(null);setRequestsFocused(true);session.current.cancelConnection();session.current.invalidatePlayback();setBusy(false);setRoute('requests');
   }
   function persist():Promise<void>{
     // Sample when this queue slot executes, so an old snapshot cannot overwrite
@@ -129,7 +142,7 @@ export default function App(){
       },{libraries:snapshot.libraries,selectedLibraryId:snapshot.selectedLibraryId});
       if(!result)return;
       const {catalog,stamp}=result;
-      setRoute('library');setNavigationFocus(null);
+      setRoute('library');setNavigationFocus(null);setRequestsFocused(false);
       setMessage(!navigationContentSupport(snapshot).supported?'':catalog.items.length?'Library ready.':snapshot.libraries && snapshot.selectedLibraryId===null?'No libraries are visible. Update visibility in the server library settings.':'This library is empty.');
       for(const [id,pending] of Object.entries(store.current.pending))if(catalog.items.some(item=>item.id===id))void flush(id,pending,stamp);
     }catch{
@@ -140,6 +153,7 @@ export default function App(){
   }
 
   function chooseLibrary(id:string){
+    setRequestsFocused(false);
     if(id===store.current.selectedLibraryId && !busy){session.current.cancelConnection();setNavigationFocus(null);return;}
     void connect(store.current.origin,id);
   }
@@ -180,6 +194,7 @@ export default function App(){
     if(back){
       if(route==='player' && subtitleMenu){if(!backHeld.current){backHeld.current=true;setSubtitleMenu(false);}return;}
       if(backHeld.current)return;backHeld.current=true;session.current.invalidatePlayback();
+      if(route==='requests'){requestsBack.current();return;}
       if(route==='setup'){session.current.cancelConnection();setBusy(false);}
       const destination=backDestination(route,Boolean(store.current.catalog));
       if(route==='player'){subtitleController.current.cancel();stopCaption();setPaused(true);void save();activeItem.current=null;activeDestination.current=null;setLoading(false);}
@@ -187,6 +202,9 @@ export default function App(){
       else {setRoute(destination);setBusy(false);}
       return;
     }
+    // Request controls use native focus/Pressable handling. Never let their
+    // Select/Menu keys fall through to the library, server or player actions.
+    if(route==='requests')return;
     if(route==='setup'){
       if(key.code===19)input.current?.focus();
       else if((key.code===23 || key.code===66) && !busy)void connect(originText);
@@ -196,11 +214,17 @@ export default function App(){
     if(route==='library'){
       if(navigationFocus!==null){
         if(key.code===21 || key.code===22)setNavigationFocus(current=>move(current??0,key.code===21?-1:1,libraries.length));
-        else if(key.code===20)setNavigationFocus(null);
+        else if(key.code===20){setNavigationFocus(null);setRequestsFocused(true);}
         else if((key.code===23 || key.code===66) && key.repeat===0){const library=libraries[navigationFocus];if(library)chooseLibrary(library.id);}
         return;
       }
-      if(key.code===19 && cursor<4 && libraries.length){setNavigationFocus(Math.max(0,libraries.findIndex(library=>library.id===stored.selectedLibraryId)));return;}
+      if(requestsFocused){
+        if(key.code===19 && libraries.length){setRequestsFocused(false);setNavigationFocus(Math.max(0,libraries.findIndex(library=>library.id===stored.selectedLibraryId)));}
+        else if(key.code===20 && librarySupport.supported && items.length)setRequestsFocused(false);
+        else if((key.code===23 || key.code===66) && key.repeat===0)openRequests();
+        return;
+      }
+      if(key.code===19 && cursor%8<4){setRequestsFocused(true);return;}
       const direction=({21:-1,22:1,19:-4,20:4} as Record<number,number>)[key.code];
       if(direction!==undefined)setCursor(current=>move(current,direction,items.length));
       else if((key.code===23 || key.code===66) && key.repeat===0 && selected)openDetails();
@@ -251,7 +275,8 @@ export default function App(){
     </>:<>
       <Text style={styles.brand}>Shinema</Text>
       {route==='library'?<LibrariesNavigation libraries={libraries} selectedId={stored.selectedLibraryId} focusedIndex={navigationFocus} onSelect={chooseLibrary}/>:null}
-      {route==='setup'?<View key="setup" style={styles.detail}>
+      {route==='library'?<View style={styles.toolbar}><Pressable accessibilityRole="button" accessibilityState={{selected:requestsFocused}} style={[styles.button,styles.toolbarButton,requestsFocused&&styles.focus]} onFocus={()=>{setNavigationFocus(null);setRequestsFocused(true);}} onPress={openRequests}><Text style={styles.buttonText}>Requests</Text></Pressable></View>:null}
+      {route==='requests'?<Requests key={stored.origin} origin={stored.origin} backHandler={requestsBack} onBack={()=>setRoute('library')} />:route==='setup'?<View key="setup" style={styles.detail}>
         <Text style={styles.title}>Connect your library</Text><Text style={styles.text}>HTTPS server address</Text>
         <TextInput ref={input} style={styles.input} value={originText} onChangeText={setOriginText} autoCapitalize="none" autoCorrect={false} keyboardType="url" onSubmitEditing={()=>{input.current?.blur();void connect(originText);}} returnKeyType="done" />
         {button(busy?'Connecting...':'Connect',()=>{input.current?.blur();if(!busy)void connect(originText);})}
@@ -265,16 +290,18 @@ export default function App(){
         <Text style={styles.title}>{selected.title}</Text><Text style={styles.text}>{selected.container.toUpperCase()}  /  {Math.round(selected.sizeBytes/1048576)} MiB</Text>
         <Text style={styles.text}>{remembered && remembered.positionSeconds<remembered.durationSeconds-3?`Resume from ${Math.floor(remembered.positionSeconds)} seconds`:'Ready to play'}</Text>
         {button(busy?'Checking resume...':'Play',()=>void play())}<Text style={styles.text}>Select: play   Back: library</Text>
-      </View>:<View key="library" style={styles.grid}>
+      </View>:<View key="library">
+        <View style={styles.grid}>
         {Array.from({length:8},(_,slot)=>{
           const index=pageFor(cursor)*8+slot;const item=items[index];
-          return <Pressable key={slot} style={[styles.card,{width:(width-94)/4},cursor===index&&navigationFocus===null&&styles.focus]} onPress={()=>{if(item){setCursor(index);setNavigationFocus(null);openDetails(item);}}}>
+          return <Pressable key={slot} style={[styles.card,{width:(width-94)/4},cursor===index&&navigationFocus===null&&!requestsFocused&&styles.focus]} onPress={()=>{if(item){setCursor(index);setNavigationFocus(null);openDetails(item);}}}>
             {item?<><View style={[styles.cover,{backgroundColor:`hsl(${parseInt(item.id.slice(0,4),16)%360},35%,25%)`}]}><Text style={styles.initials}>{item.title.slice(0,2).toUpperCase()}</Text></View><Text style={styles.cardTitle} numberOfLines={1}>{item.title}</Text><Text style={styles.small}>{nativeMediaContentSupport(item,stored).supported?item.container.toUpperCase():'Unsupported'}{stored.progress[item.id]?`  ${Math.floor(stored.progress[item.id].positionSeconds)} s`:''}</Text></>:null}
           </Pressable>;
         })}
+        </View>
       </View>}
-      <Text style={styles.notice}>{message}</Text>
-      {route==='library'?<Text style={styles.footer}>{items.length?`${cursor+1} / ${items.length}${stored.catalog?.nextOffset!==null && stored.catalog?.nextOffset!==undefined?` of ${stored.catalog.total}`:''}  `:''}{libraries.length?'Up: libraries   ':''}Arrows: browse   Select: open   Back: exit   Menu: server</Text>:null}
+      {route!=='requests'?<Text style={styles.notice}>{message}</Text>:null}
+      {route==='library'?<Text style={styles.footer}>{items.length?`${cursor+1} / ${items.length}${stored.catalog?.nextOffset!==null && stored.catalog?.nextOffset!==undefined?` of ${stored.catalog.total}`:''}  `:''}Up from first row: Requests{libraries.length?' / Up again: libraries':''}   Arrows: browse   Select: open   Back: exit   Menu: server</Text>:null}
     </>}
   </View>;
 }
@@ -282,6 +309,8 @@ export default function App(){
 const styles=StyleSheet.create({
   shell:{flex:1,backgroundColor:'#101621',padding:28},brand:{color:'#7ce8cb',fontSize:28,fontWeight:'700',marginBottom:14},
   grid:{flexDirection:'row',flexWrap:'wrap',gap:10},card:{height:177,padding:6,borderWidth:3,borderColor:'transparent',backgroundColor:'#1c2739',borderRadius:8},focus:{borderColor:'#7ce8cb'},
+  toolbar:{flexDirection:'row',justifyContent:'flex-end',marginBottom:12},
+  toolbarButton:{borderWidth:3,borderColor:'transparent'},
   cover:{height:115,alignItems:'center',justifyContent:'center',borderRadius:4},initials:{fontSize:38,color:'#e6f6f2',fontWeight:'600'},cardTitle:{fontSize:17,color:'#fff',marginTop:6},small:{fontSize:12,color:'#b9c9df'},
   detail:{gap:18,paddingTop:20,maxWidth:780},title:{fontSize:30,fontWeight:'600',color:'#fff'},text:{fontSize:18,color:'#c9d5e5'},notice:{color:'#9fe6d8',fontSize:15,marginTop:12},footer:{color:'#afbdd0',fontSize:14,marginTop:10},
   button:{backgroundColor:'#7ce8cb',padding:14,borderRadius:6,alignSelf:'flex-start'},buttonText:{fontSize:20,fontWeight:'600',color:'#101621'},input:{backgroundColor:'#24334b',color:'#fff',fontSize:20,padding:14,borderRadius:6},
