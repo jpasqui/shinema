@@ -7,7 +7,14 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { createServer as createSocket } from 'node:net';
 import { join, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -35,6 +42,36 @@ const includeBefore = process.env.SHINEMA_LIBRARIES_SKIP_BEFORE !== '1';
 const token = randomBytes(32).toString('hex');
 const pause = Number(process.env.SHINEMA_EVIDENCE_PAUSE_MS ?? 2400);
 assert(Number.isFinite(pause) && pause >= 0 && pause <= 10000);
+function gitText(args) {
+  const result = spawnSync('git', args, {
+    cwd: root,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+}
+const captureRevision = gitText(['rev-parse', 'HEAD']);
+const capturedFiles = gitText([
+  'ls-files',
+  'clients/web/src',
+  'packages/contracts',
+  'packages/design-tokens',
+  'server/src',
+]).split(/\r?\n/);
+async function sourceSnapshot() {
+  return Object.fromEntries(
+    await Promise.all(
+      capturedFiles.map(async (file) => [
+        file,
+        createHash('sha256')
+          .update(await readFile(join(root, file)))
+          .digest('hex'),
+      ]),
+    ),
+  );
+}
+const capturedSources = await sourceSnapshot();
 const report = {
   status: 'running',
   methodology:
@@ -45,6 +82,10 @@ const report = {
     'Browser evidence does not establish TV/device validation.',
   baselineRevision: beforeRevision,
   baselineIncluded: includeBefore,
+  sourceRevision: captureRevision,
+  trackedTreeClean:
+    gitText(['status', '--porcelain', '--untracked-files=no']) === '',
+  sourceSha256: capturedSources,
   checks: [],
   evidence: [],
 };
@@ -351,11 +392,44 @@ async function verifyTopNavigation() {
       .getByRole('navigation', { name: 'Main navigation' })
       .getByRole('button', { name: 'Discover', exact: true }),
   ).toBeVisible();
-  await page
-    .getByRole('navigation', { name: 'Main navigation' })
-    .getByRole('button', { name: 'Discover', exact: true })
-    .click();
-  await expect(page.locator('#library-search')).toBeFocused();
+  // Returning from detail restores the saved card while the browse page loads.
+  // Hold that response until search has focus, then require it to stay there.
+  const browsePattern = `${new URL(page.url()).origin}/api/catalog?*`;
+  let releaseBrowse;
+  let heldBrowse = 0;
+  const browseGate = new Promise((resolve) => {
+    releaseBrowse = resolve;
+  });
+  const holdBrowse = async (route) => {
+    heldBrowse++;
+    await browseGate;
+    await route.continue();
+  };
+  await page.route(browsePattern, holdBrowse);
+  try {
+    await page
+      .getByRole('navigation', { name: 'Main navigation' })
+      .getByRole('button', { name: 'Discover', exact: true })
+      .click();
+    await expect.poll(() => heldBrowse).toBeGreaterThan(0);
+    await expect(page.locator('#library-search')).toBeFocused();
+    const resumed = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === '/api/catalog' && response.ok(),
+    );
+    releaseBrowse();
+    await resumed;
+    await expect(page.locator('.section-heading [role="status"]')).toHaveText(
+      'Connected',
+    );
+    await expect(page.locator('#library-search')).toBeFocused();
+  } finally {
+    releaseBrowse();
+    await page.unroute(browsePattern, holdBrowse);
+  }
+  check(
+    'A delayed browse response cannot steal focus from an explicit search destination',
+  );
   await step(
     'AFTER · Your top bar, your destination',
     '“Library” is now “Discover” and opens search. Supported destinations stay inside the app.',
@@ -901,6 +975,19 @@ try {
   else report.recordingConversion = 'WebM retained; MP4 conversion unavailable';
   if (previousOrigin === undefined) delete process.env.SHINEMA_API_ORIGIN;
   else process.env.SHINEMA_API_ORIGIN = previousOrigin;
+  assert.equal(
+    gitText(['rev-parse', 'HEAD']),
+    captureRevision,
+    'Capture revision changed during the run',
+  );
+  assert.deepEqual(
+    await sourceSnapshot(),
+    capturedSources,
+    'Rendered/server source changed during the run',
+  );
+  check(
+    'Capture head and rendered/server source hashes remain unchanged throughout the run',
+  );
   report.status = 'passed';
   console.log(
     `Configurable libraries smoke passed (${report.checks.length} checks). Evidence: ${evidence}`,

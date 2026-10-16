@@ -162,9 +162,16 @@ export function LibraryBrowser({
   const [search, setSearch] = useState(navigation.search);
   const libraries = useLibraries();
   const [settings, setSettings] = useState(false);
+  const restoreFocus = useRef(true);
   useEffect(() => {
-    const open = () => setSettings(true);
-    const search = () => document.getElementById('library-search')?.focus();
+    const open = () => {
+      restoreFocus.current = false;
+      setSettings(true);
+    };
+    const search = () => {
+      restoreFocus.current = false;
+      document.getElementById('library-search')?.focus();
+    };
     window.addEventListener('shinema:library-settings', open);
     window.addEventListener('shinema:library-search', search);
     return () => {
@@ -243,8 +250,16 @@ export function LibraryBrowser({
     setFocus(0);
     window.scrollTo(0, 0);
   };
+  // Roving tab state still follows new/shrunken pages without moving DOM focus.
+  // Keep these before Back restoration so a saved card wins on remount.
+  useLayoutEffect(() => setFocus(0), [path]);
+  useLayoutEffect(
+    () => setFocus((current) => (current >= rows.length ? 0 : current)),
+    [rows.length],
+  );
   useLayoutEffect(() => {
-    if (!rows.length) return;
+    if (!rows.length || !restoreFocus.current) return;
+    restoreFocus.current = false;
     const index = rows.findIndex(
       (item) => 'id' in item && item.id === navigation.focusId,
     );
@@ -317,7 +332,10 @@ export function LibraryBrowser({
         </nav>
         <button
           className="text-button"
-          onClick={() => setSettings((value) => !value)}
+          onClick={() => {
+            restoreFocus.current = false;
+            setSettings((value) => !value);
+          }}
         >
           Library settings
         </button>
@@ -368,6 +386,9 @@ export function LibraryBrowser({
             </label>
             <input
               id="library-search"
+              onFocus={() => {
+                restoreFocus.current = false;
+              }}
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               maxLength={200}
