@@ -1,3 +1,6 @@
+export * from './libraries.ts';
+export * from './navigation.ts';
+import { validLibraryId } from './libraries.ts';
 export type Media = {
   id: string;
   title: string;
@@ -5,6 +8,7 @@ export type Media = {
   sizeBytes: number;
   streamPath: string;
   collection?: 'tv' | 'movies';
+  libraryId?: string;
   seriesId?: string;
   seriesTitle?: string;
   season?: number;
@@ -35,6 +39,7 @@ export type Catalog = {
 export type Series = {
   id: string;
   title: string;
+  libraryId?: string;
   episodes: number;
   seasons: number;
   posterPath?: string;
@@ -96,6 +101,8 @@ export function parseCatalog(value: unknown): Catalog {
       !['tv', 'movies'].includes(String(item.collection))
     )
       throw new Error('Invalid collection');
+    if (item.libraryId !== undefined && !validLibraryId(item.libraryId))
+      throw new Error('Invalid library identity');
     if (
       item.seriesId !== undefined &&
       (typeof item.seriesId !== 'string' ||
@@ -275,6 +282,8 @@ export function parseSeriesPage(value: unknown): SeriesPage {
         !/^\/api\/media\/[a-f0-9]{64}\/poster$/.test(item.posterPath))
     )
       throw new Error('Invalid series poster');
+    if (item.libraryId !== undefined && !validLibraryId(item.libraryId))
+      throw new Error('Invalid series library identity');
     validateProvenance(item);
     ids.add(item.id);
   }
@@ -287,6 +296,7 @@ export function parseSeriesPage(value: unknown): SeriesPage {
     return {
       id: item.id,
       title: item.fileTitle ?? 'Saved series',
+      ...(item.libraryId !== undefined ? { libraryId: item.libraryId } : {}),
       episodes: item.episodes,
       seasons: item.seasons,
     };

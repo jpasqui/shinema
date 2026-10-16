@@ -26,6 +26,9 @@ import {
 import type { Cache } from './model.ts';
 import { Artwork } from './Artwork.tsx';
 import { MediaPoster } from './MediaPoster.tsx';
+import { TopNavigation } from './TopNavigation.tsx';
+import { useLibraries } from './libraries.ts';
+import type { TopNavigationDestination } from '../../../packages/contracts/navigation.ts';
 
 const storageKey = 'shinema.web.cache.v1';
 const demo = import.meta.env.VITE_DEMO_MODE === 'true';
@@ -68,6 +71,10 @@ function Poster({ item, large = false }: { item: Media; large?: boolean }) {
 }
 
 export default function App() {
+  const libraryNavigation = useLibraries();
+  const [navigationIntent, setNavigationIntent] = useState<
+    'settings' | 'search' | null
+  >(null);
   const cache = useRef<Cache>(empty());
   const [version, render] = useState(0);
   const [browseNavigation, setBrowseNavigation] = useState(initialBrowse);
@@ -227,6 +234,7 @@ export default function App() {
     [persist, sync],
   );
   const showDetail = (item: Media, index: number) => {
+    setNavigationIntent(null);
     guard.current.next();
     setOpening(false);
     libraryScroll.current = window.scrollY;
@@ -236,6 +244,7 @@ export default function App() {
     window.scrollTo(0, 0);
   };
   const showLibrary = useCallback(() => {
+    setNavigationIntent(null);
     guard.current.next();
     setOpening(false);
     setRoute('library');
@@ -310,6 +319,35 @@ export default function App() {
     !demo &&
     (cache.current.catalog?.fullLibrary === true ||
       items.some((item) => item.collection));
+  useEffect(() => {
+    if (!navigationIntent || route !== 'library' || !fullLibrary) return;
+    // Deliver after the browse view mounts and installs its event listeners.
+    const frame = requestAnimationFrame(() => {
+      window.dispatchEvent(new Event(`shinema:library-${navigationIntent}`));
+      setNavigationIntent(null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [navigationIntent, route, fullLibrary]);
+  const navigate = (destination: TopNavigationDestination) => {
+    setNavigationIntent(null);
+    if (destination.kind === 'library') {
+      const library = libraryNavigation.document.libraries.find(
+        (item) => item.id === destination.libraryId && item.visible,
+      );
+      if (!library) return;
+      setBrowseNavigation({
+        ...initialBrowse(),
+        libraryId: libraryNavigation.legacy ? undefined : library.id,
+        revision: libraryNavigation.legacy
+          ? undefined
+          : libraryNavigation.document.revision,
+        collection: library.mediaType === 'mixed' ? 'all' : library.mediaType,
+      });
+    }
+    showLibrary();
+    if (destination.kind === 'settings' || destination.kind === 'search')
+      setNavigationIntent(destination.kind);
+  };
   const featured =
     items.find((item) => item.title.includes('Orbit')) ?? items[0];
   return (
@@ -322,14 +360,12 @@ export default function App() {
         >
           Shinema
         </button>
-        <nav aria-label="Main navigation">
-          <button
-            className={route === 'library' ? 'nav-link active' : 'nav-link'}
-            onClick={showLibrary}
-          >
-            Library
-          </button>
-        </nav>
+        <TopNavigation
+          libraries={libraryNavigation.document.libraries}
+          browsing={route === 'library'}
+          activeLibraryId={browseNavigation.libraryId}
+          onNavigate={navigate}
+        />
         <span className="context-label">
           {demo ? 'Demo library' : 'Connected library'}
         </span>

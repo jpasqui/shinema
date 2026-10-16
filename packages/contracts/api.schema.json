@@ -117,6 +117,10 @@
         "metadataExpiresAt": {
           "type": "integer",
           "minimum": 0
+        },
+        "libraryId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,47}$"
         }
       }
     },
@@ -208,6 +212,179 @@
         "streamPath": {
           "type": "string",
           "pattern": "^/api/media/[a-f0-9]{64}/(stream|hls/index\\.m3u8)$"
+        }
+      }
+    },
+    "LibraryDescriptor": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "mediaType",
+        "visible",
+        "order"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,47}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "mediaType": {
+          "enum": [
+            "movies",
+            "tv",
+            "mixed"
+          ]
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "order": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        }
+      }
+    },
+    "Libraries": {
+      "type": "object",
+      "required": [
+        "version",
+        "revision",
+        "libraries"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "libraries": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/LibraryDescriptor"
+          }
+        }
+      }
+    },
+    "LibraryConfiguration": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/LibraryDescriptor"
+        },
+        {
+          "type": "object",
+          "required": [
+            "sourceFolders"
+          ],
+          "properties": {
+            "sourceFolders": {
+              "type": "array",
+              "maxItems": 64,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "description": "An approved relative folder selector, including . for the local source root; never an absolute path."
+              }
+            }
+          }
+        }
+      ]
+    },
+    "TopNavigationDestination": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "browse",
+                "search",
+                "settings"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "libraryId"
+          ],
+          "properties": {
+            "kind": {
+              "const": "library"
+            },
+            "libraryId": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,47}$"
+            }
+          }
+        }
+      ]
+    },
+    "TopNavigationPreferences": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "entries"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "entries": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "label",
+              "destination",
+              "order",
+              "visible"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,47}$"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "destination": {
+                "$ref": "#/$defs/TopNavigationDestination"
+              },
+              "order": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10000
+              },
+              "visible": {
+                "type": "boolean"
+              }
+            }
+          }
         }
       }
     }

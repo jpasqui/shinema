@@ -68,6 +68,11 @@ jobs:
       - name: Isolated client playback regressions
         id: playback-regressions
         run: npm --prefix clients/web run test:playback
+      - name: Configurable library and navigation regressions
+        run: node scripts/libraries-smoke.mjs
+        env:
+          SHINEMA_LIBRARIES_SKIP_BEFORE: '1'
+          SHINEMA_EVIDENCE_PAUSE_MS: '0'
       - name: Audit playback failure diagnostics
         id: audit-playback-diagnostics
         if: failure() && steps.playback-regressions.outcome == 'failure'

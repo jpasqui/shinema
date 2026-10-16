@@ -15,6 +15,8 @@ pub(crate) const CONTAINERS: &[&str] = &[
 #[serde(rename_all = "camelCase")]
 pub struct Classification {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub library_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub collection: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub series_id: Option<String>,
@@ -98,6 +100,7 @@ pub(crate) fn classify(relative: &Path) -> Classification {
     });
     let season = season.filter(|n| *n <= 10000);
     Classification {
+        library_id: None,
         collection: Some(kind),
         series_id: Some(id),
         series_title: Some(text(series)),
@@ -111,18 +114,48 @@ pub(crate) fn replace_index(
     items: impl Iterator<Item = Media>,
 ) -> rusqlite::Result<()> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS media_catalog(id TEXT PRIMARY KEY,title TEXT NOT NULL,collection TEXT,series_id TEXT,series_title TEXT,season INTEGER,episode INTEGER,media_json TEXT NOT NULL); CREATE TABLE IF NOT EXISTS catalog_totals(total INTEGER,tv INTEGER,movies INTEGER,series INTEGER); CREATE TABLE IF NOT EXISTS series_catalog(id TEXT PRIMARY KEY,title TEXT NOT NULL,search_text TEXT NOT NULL,series_json TEXT NOT NULL); CREATE INDEX IF NOT EXISTS series_order ON series_catalog(title COLLATE NOCASE,id); CREATE INDEX IF NOT EXISTS media_order ON media_catalog((CASE WHEN series_id IS NULL THEN title ELSE series_title END) COLLATE NOCASE,season,episode,title COLLATE NOCASE,id); CREATE INDEX IF NOT EXISTS media_collection_order ON media_catalog(collection,(CASE WHEN series_id IS NULL THEN title ELSE series_title END) COLLATE NOCASE,season,episode,title COLLATE NOCASE,id); CREATE INDEX IF NOT EXISTS media_series_order ON media_catalog(series_id,season,episode,title COLLATE NOCASE,id);")?;
+    for table in ["media_catalog", "series_catalog"] {
+        let found: bool = db.query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name='library_id')"
+            ),
+            [],
+            |row| row.get(0),
+        )?;
+        if !found {
+            db.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN library_id TEXT"))?;
+        }
+    }
+    db.execute_batch("CREATE INDEX IF NOT EXISTS media_library_order ON media_catalog(library_id,(CASE WHEN series_id IS NULL THEN title ELSE series_title END) COLLATE NOCASE,season,episode,title COLLATE NOCASE,id); CREATE INDEX IF NOT EXISTS series_library_order ON series_catalog(library_id,title COLLATE NOCASE,id);")?;
     let transaction = db.transaction()?;
     transaction.execute("DELETE FROM media_catalog", [])?;
-    transaction.execute("DELETE FROM series_catalog", [])?;
-    transaction.execute("DELETE FROM catalog_totals", [])?;
+    update_membership(&transaction, items)?;
+    transaction.commit()
+}
+
+/// Apply membership and classification to the existing index atomically. Media
+/// and progress IDs are retained and no source storage is read during this edit.
+pub(crate) fn update_membership(
+    db: &Connection,
+    items: impl Iterator<Item = Media>,
+) -> rusqlite::Result<()> {
+    db.execute("DELETE FROM series_catalog", [])?;
+    db.execute("DELETE FROM catalog_totals", [])?;
+    db.execute("DELETE FROM library_membership", [])?;
     let mut totals = [0_u32; 3];
     let mut shows = std::collections::BTreeMap::<
         String,
-        (String, u32, std::collections::BTreeSet<u32>, Option<String>),
+        (
+            String,
+            u32,
+            std::collections::BTreeSet<u32>,
+            Option<String>,
+            Option<String>,
+        ),
     >::new();
     {
         let mut statement =
-            transaction.prepare("INSERT INTO media_catalog VALUES (?1,?2,?3,?4,?5,?6,?7,?8)")?;
+            db.prepare("INSERT INTO media_catalog(id,title,collection,series_id,series_title,season,episode,media_json,library_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(id) DO UPDATE SET title=excluded.title,collection=excluded.collection,series_id=excluded.series_id,series_title=excluded.series_title,season=excluded.season,episode=excluded.episode,media_json=excluded.media_json,library_id=excluded.library_id")?;
         for item in items {
             totals[0] += 1;
             if item.classification.collection.as_deref() == Some("tv") {
@@ -137,6 +170,7 @@ pub(crate) fn replace_index(
                         0,
                         Default::default(),
                         None,
+                        item.classification.library_id.clone(),
                     )
                 });
                 show.1 += 1;
@@ -148,6 +182,10 @@ pub(crate) fn replace_index(
                 }
             }
             let json = serde_json::to_string(&item).expect("Media serialization");
+            db.execute(
+                "INSERT INTO library_membership(media_id,library_id) VALUES(?1,?2)",
+                params![item.id, item.classification.library_id],
+            )?;
             statement.execute(params![
                 item.id,
                 item.title,
@@ -156,31 +194,37 @@ pub(crate) fn replace_index(
                 item.classification.series_title,
                 item.classification.season,
                 item.classification.episode,
-                json
+                json,
+                item.classification.library_id,
             ])?;
         }
     }
-    transaction.execute(
+    db.execute(
         "INSERT INTO catalog_totals VALUES (?1,?2,?3,?4)",
         params![totals[0], totals[1], totals[2], shows.len() as u32],
     )?;
-    for (id, (title, episodes, seasons, poster)) in shows {
+    for (id, (title, episodes, seasons, poster, library_id)) in shows {
         let mut value =
             serde_json::json!({"id":id,"title":title,"episodes":episodes,"seasons":seasons.len()});
         if let Some(path) = poster {
             value["posterPath"] = path.into();
         }
-        transaction.execute(
-            "INSERT INTO series_catalog VALUES (?1,?2,?3,?4)",
-            params![id, title, title.to_lowercase(), value.to_string()],
+        if let Some(id) = &library_id {
+            value["libraryId"] = id.clone().into();
+        }
+        db.execute(
+            "INSERT INTO series_catalog(id,title,search_text,series_json,library_id) VALUES (?1,?2,?3,?4,?5)",
+            params![id, title, title.to_lowercase(), value.to_string(), library_id],
         )?;
     }
-    transaction.commit()
+    Ok(())
 }
 
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CatalogQuery {
+    pub library: Option<String>,
+    pub revision: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub collection: Option<String>,
     pub series: Option<String>,
@@ -192,9 +236,16 @@ pub struct CatalogQuery {
 impl CatalogQuery {
     pub(crate) fn validate(&self) -> Result<(), &'static str> {
         if self
-            .collection
+            .library
             .as_deref()
-            .is_some_and(|s| !["all", "tv", "movies"].contains(&s))
+            .is_some_and(|id| !crate::libraries::valid_id(id))
+            || self
+                .revision
+                .is_some_and(|revision| revision > 9_007_199_254_740_991)
+            || self
+                .collection
+                .as_deref()
+                .is_some_and(|s| !["all", "tv", "movies"].contains(&s))
             || self.series.as_deref().is_some_and(|s| {
                 s.len() != 64
                     || !s
@@ -222,6 +273,10 @@ pub(crate) fn page(
     query.validate()?;
     let mut filters = Vec::new();
     let mut values = Vec::<rusqlite::types::Value>::new();
+    if let Some(library) = query.library {
+        filters.push("library_id=?".to_string());
+        values.push(library.into());
+    }
     if let Some(collection) = query.collection.filter(|s| s != "all") {
         filters.push("collection=?".to_string());
         values.push(collection.into());
@@ -262,7 +317,7 @@ pub(crate) fn page(
         .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
     let next = offset.saturating_add(items.len() as u32);
     Ok(
-        serde_json::json!({"apiVersion":1,"fullLibrary":db.query_row("SELECT tv>0 OR movies>0 FROM catalog_totals",[],|r|r.get::<_,bool>(0))?,"items":items,"total":total,"offset":offset,"limit":limit,"nextOffset":if next<total {Some(next)} else {None}}),
+        serde_json::json!({"apiVersion":1,"fullLibrary":true,"items":items,"total":total,"offset":offset,"limit":limit,"nextOffset":if next<total {Some(next)} else {None}}),
     )
 }
 
@@ -278,15 +333,23 @@ pub(crate) fn series(
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(60);
     let total: u32 = db.query_row(
-        "SELECT count(*) FROM series_catalog WHERE (?1='' OR instr(search_text,?1)>0)",
-        [&search],
+        "SELECT count(*) FROM series_catalog WHERE (?1='' OR instr(search_text,?1)>0) AND (?2 IS NULL OR library_id=?2) AND (?3 IS NULL OR id=?3) AND (?4 IS NULL OR ?4='all' OR ?4='tv')",
+        params![search, query.library, query.series, query.collection],
         |row| row.get(0),
     )?;
-    let mut statement=db.prepare("SELECT series_json FROM series_catalog WHERE (?1='' OR instr(search_text,?1)>0) ORDER BY title COLLATE NOCASE,id LIMIT ?2 OFFSET ?3")?;
+    let mut statement=db.prepare("SELECT series_json FROM series_catalog WHERE (?1='' OR instr(search_text,?1)>0) AND (?2 IS NULL OR library_id=?2) AND (?3 IS NULL OR id=?3) AND (?4 IS NULL OR ?4='all' OR ?4='tv') ORDER BY title COLLATE NOCASE,id LIMIT ?5 OFFSET ?6")?;
     let items = statement
-        .query_map(params![search, limit, offset], |row| {
-            row.get::<_, String>(0)
-        })?
+        .query_map(
+            params![
+                search,
+                query.library,
+                query.series,
+                query.collection,
+                limit,
+                offset
+            ],
+            |row| row.get::<_, String>(0),
+        )?
         .map(|row| Ok(serde_json::from_str::<serde_json::Value>(&row?)?))
         .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
     let next = offset.saturating_add(items.len() as u32);

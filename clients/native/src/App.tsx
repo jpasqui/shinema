@@ -8,6 +8,8 @@ import {fresh,recover,move,pageFor} from './domain.ts';
 import type {Stored} from './domain.ts';
 import {SessionGuard,StorageQueue,ProgressQueue,connectValidated,persistThenSync,syncProgress,resolveResume,backDestination} from './session.ts';
 import type {ConnectionStamp} from './session.ts';
+import {HttpStatusError,loadLibrarySnapshot,visibleLibraries} from './libraries.ts';
+import LibrariesNavigation from './LibrariesNavigation.tsx';
 
 const Host=NativeModules.ShinemaHost as {readState:()=>Promise<string>;stageState:(value:string)=>Promise<void>;writeState:(value:string)=>Promise<void>;finish:()=>void};
 type Route='setup'|'library'|'detail'|'player';
@@ -17,7 +19,7 @@ async function request(origin:string,path:string,method='GET',value?:Progress):P
   const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),5000);
   try{
     const response=await fetch(origin+path,{method,signal:controller.signal,headers:value?{'Content-Type':'application/json'}:undefined,body:value?JSON.stringify(value):undefined});
-    if(!response.ok)throw new Error('Server request failed');
+    if(!response.ok)throw new HttpStatusError(response.status);
     return response.status===204?null:await response.json();
   }finally{clearTimeout(timeout);}
 }
@@ -25,6 +27,7 @@ async function request(origin:string,path:string,method='GET',value?:Progress):P
 export default function App(){
   const {width}=useWindowDimensions();const [stored,setStored]=useState<Stored>(fresh());const store=useRef(stored);
   const [route,setRoute]=useState<Route>('setup');const [cursor,setCursor]=useState(0);const [originText,setOriginText]=useState(fresh().origin);
+  const [navigationFocus,setNavigationFocus]=useState<number|null>(null);
   const [message,setMessage]=useState('Enter your server address.');const [busy,setBusy]=useState(false);const [paused,setPaused]=useState(false);
   const [clock,setClock]=useState(0);const [duration,setDuration]=useState(0);const [loading,setLoading]=useState(true);
   const video=useRef<VideoRef>(null);const input=useRef<React.ComponentRef<typeof TextInput>>(null);const position=useRef(0);const total=useRef(0);
@@ -35,15 +38,19 @@ export default function App(){
   const saveCurrent=useRef<()=>Promise<void>>(async()=>{});const persistQueue=useRef(new StorageQueue());
   const syncQueue=useRef(new ProgressQueue());
   const items=stored.catalog?.items??[];const selected=items[cursor];
-  const source=useMemo(()=>({uri:stored.origin+(selected?.streamPath??'')}),[stored.origin,selected?.streamPath]);
+  const libraries=visibleLibraries(stored.libraries);
+  const playbackItem=route==='player'?activeItem.current:null;
+  const playbackOrigin=activeDestination.current?.origin;
+  const source=useMemo(()=>({uri:(playbackOrigin??stored.origin)+(playbackItem?.streamPath??'')}),[playbackOrigin,stored.origin,playbackItem?.streamPath]);
 
   function update(value:Stored){store.current=value;setStored(value);}
   function acceptCatalog(value:Stored){
-    const switched=value.origin!==store.current.origin;
+    const switched=value.origin!==store.current.origin || value.selectedLibraryId!==store.current.selectedLibraryId;
     update(value);
     setCursor(current=>switched?0:Math.min(current,Math.max(0,(value.catalog?.items.length??0)-1)));
   }
   function openDetails(){
+    if(session.current.isSwitchCommitting()){setMessage('Finishing library update. Try again in a moment.');return;}
     session.current.cancelConnection();setBusy(false);setRoute('detail');
   }
   function persist():Promise<void>{
@@ -69,19 +76,23 @@ export default function App(){
   }
   saveCurrent.current=()=>save();
 
-  async function connect(raw:string){
+  async function connect(raw:string,selection?:string){
     let origin:string;try{origin=serverOrigin(raw);}catch{setMessage('Enter an HTTPS address without a path or credentials.');return;}
     const attempt=session.current.beginConnection();setBusy(true);setMessage('Loading library...');
     setOriginText(origin);
     try{
-      const result=await connectValidated(session.current,attempt,origin,value=>request(value,'/api/catalog'),{
+      const current=store.current;
+      const sameOrigin=origin===current.origin;
+      const snapshot=await loadLibrarySnapshot(origin,selection??(sameOrigin?current.selectedLibraryId:null),sameOrigin?current.libraries:null,request);
+      const result=await connectValidated(session.current,attempt,origin,async()=>snapshot.catalog,{
         read:()=>store.current,write:acceptCatalog,persist,queue:persistQueue.current,
         stageDisk:value=>Host.stageState(JSON.stringify(value)),
         writeDisk:value=>Host.writeState(JSON.stringify(value)),
-      });
+      },{libraries:snapshot.libraries,selectedLibraryId:snapshot.selectedLibraryId});
       if(!result)return;
       const {catalog,stamp}=result;
-      setRoute('library');setMessage(catalog.items.length?'Library ready.':'No supported files were found.');
+      setRoute('library');setNavigationFocus(null);
+      setMessage(catalog.items.length?'Library ready.':snapshot.libraries && snapshot.selectedLibraryId===null?'No libraries are visible. Update visibility in the server library settings.':'This library is empty.');
       for(const [id,pending] of Object.entries(store.current.pending))if(catalog.items.some(item=>item.id===id))void flush(id,pending,stamp);
     }catch{
       if(!session.current.currentAttempt(attempt))return;
@@ -90,9 +101,14 @@ export default function App(){
     }finally{if(session.current.currentAttempt(attempt))setBusy(false);}
   }
 
+  function chooseLibrary(id:string){
+    if(id===store.current.selectedLibraryId && !busy){session.current.cancelConnection();setNavigationFocus(null);return;}
+    void connect(store.current.origin,id);
+  }
+
   async function play(){
     if(!selected || busy)return;
-    if(session.current.isSwitchCommitting()){setMessage('Finishing server switch. Try Play again in a moment.');return;}
+    if(session.current.isSwitchCommitting()){setMessage('Finishing library update. Try Play again in a moment.');return;}
     const item=selected;const ticket=session.current.beginPlayback(store.current.origin);
     setBusy(true);setMessage('Checking resume position...');
     const result=await resolveResume(session.current,ticket,item.id,()=>store.current,(origin,id)=>request(origin,`/api/media/${id}/progress`));
@@ -136,6 +152,13 @@ export default function App(){
     }
     if(key.code===82 && route!=='player'){session.current.cancelConnection();setBusy(false);setRoute('setup');setMessage('Edit server address, then connect.');return;}
     if(route==='library'){
+      if(navigationFocus!==null){
+        if(key.code===21 || key.code===22)setNavigationFocus(current=>move(current??0,key.code===21?-1:1,libraries.length));
+        else if(key.code===20)setNavigationFocus(null);
+        else if((key.code===23 || key.code===66) && key.repeat===0){const library=libraries[navigationFocus];if(library)chooseLibrary(library.id);}
+        return;
+      }
+      if(key.code===19 && cursor<4 && libraries.length){setNavigationFocus(Math.max(0,libraries.findIndex(library=>library.id===stored.selectedLibraryId)));return;}
       const direction=({21:-1,22:1,19:-4,20:4} as Record<number,number>)[key.code];
       if(direction!==undefined)setCursor(current=>move(current,direction,items.length));
       else if((key.code===23 || key.code===66) && key.repeat===0 && selected)openDetails();
@@ -150,7 +173,7 @@ export default function App(){
   const button=(label:string,action:()=>void)=><Pressable style={styles.button} onPress={action}><Text style={styles.buttonText}>{label}</Text></Pressable>;
   const remembered=selected?stored.progress[selected.id]:undefined;
   return <View style={styles.shell}>
-    {route==='player' && selected?<>
+    {route==='player' && playbackItem?<>
       <Video ref={video} style={StyleSheet.absoluteFill} source={source} paused={paused} resizeMode="contain" playInBackground={false} playWhenInactive={false} progressUpdateInterval={1000}
         onLoad={event=>{
           total.current=event.duration;setDuration(event.duration);setLoading(false);
@@ -160,15 +183,16 @@ export default function App(){
         onSeek={event=>{waitingSeek.current=false;position.current=event.currentTime;setClock(event.currentTime);}}
         onProgress={event=>{
           if(waitingSeek.current)return;position.current=event.currentTime;setClock(event.currentTime);
-          if(Date.now()-lastSave.current>=5000){lastSave.current=Date.now();void save(selected);}
+          if(Date.now()-lastSave.current>=5000){lastSave.current=Date.now();void save(playbackItem);}
         }}
         onBuffer={event=>setLoading(event.isBuffering)}
-        onEnd={()=>{position.current=total.current;void save(selected);setPaused(true);setMessage('Finished. Press Back to return.');}}
+        onEnd={()=>{position.current=total.current;void save(playbackItem);setPaused(true);setMessage('Finished. Press Back to return.');}}
         onError={()=>{setLoading(false);setPaused(true);setMessage('Playback failed. This slice directly plays device-supported files only. Press Back.');}}
       />
-      <View style={styles.overlay}><Text style={styles.title}>{selected.title}</Text><Text style={styles.text}>{loading?'Loading...':paused?'Paused':'Playing'}  {Math.floor(clock)} / {Math.floor(duration)} s</Text><Text style={styles.text}>Select: pause / play   Left / Right: seek   Back: details</Text>{message?<Text style={styles.notice}>{message}</Text>:null}</View>
+      <View style={styles.overlay}><Text style={styles.title}>{playbackItem.title}</Text><Text style={styles.text}>{loading?'Loading...':paused?'Paused':'Playing'}  {Math.floor(clock)} / {Math.floor(duration)} s</Text><Text style={styles.text}>Select: pause / play   Left / Right: seek   Back: details</Text>{message?<Text style={styles.notice}>{message}</Text>:null}</View>
     </>:<>
       <Text style={styles.brand}>Shinema</Text>
+      {route==='library'?<LibrariesNavigation libraries={libraries} selectedId={stored.selectedLibraryId} focusedIndex={navigationFocus} onSelect={chooseLibrary}/>:null}
       {route==='setup'?<View key="setup" style={styles.detail}>
         <Text style={styles.title}>Connect your library</Text><Text style={styles.text}>HTTPS server address</Text>
         <TextInput ref={input} style={styles.input} value={originText} onChangeText={setOriginText} autoCapitalize="none" autoCorrect={false} keyboardType="url" onSubmitEditing={()=>{input.current?.blur();void connect(originText);}} returnKeyType="done" />
@@ -181,13 +205,13 @@ export default function App(){
       </View>:<View key="library" style={styles.grid}>
         {Array.from({length:8},(_,slot)=>{
           const index=pageFor(cursor)*8+slot;const item=items[index];
-          return <Pressable key={slot} style={[styles.card,{width:(width-94)/4},cursor===index&&styles.focus]} onPress={()=>{if(item){setCursor(index);openDetails();}}}>
+          return <Pressable key={slot} style={[styles.card,{width:(width-94)/4},cursor===index&&navigationFocus===null&&styles.focus]} onPress={()=>{if(item){setCursor(index);setNavigationFocus(null);openDetails();}}}>
             {item?<><View style={[styles.cover,{backgroundColor:`hsl(${parseInt(item.id.slice(0,4),16)%360},35%,25%)`}]}><Text style={styles.initials}>{item.title.slice(0,2).toUpperCase()}</Text></View><Text style={styles.cardTitle} numberOfLines={1}>{item.title}</Text><Text style={styles.small}>{item.container.toUpperCase()}{stored.progress[item.id]?`  ${Math.floor(stored.progress[item.id].positionSeconds)} s`:''}</Text></>:null}
           </Pressable>;
         })}
       </View>}
       <Text style={styles.notice}>{message}</Text>
-      {route==='library'?<Text style={styles.footer}>{items.length?`${cursor+1} / ${items.length}  `:''}Arrows: browse   Select: details   Back: exit   Menu: server</Text>:null}
+      {route==='library'?<Text style={styles.footer}>{items.length?`${cursor+1} / ${items.length}${stored.catalog?.nextOffset!==null && stored.catalog?.nextOffset!==undefined?` of ${stored.catalog.total}`:''}  `:''}{libraries.length?'Up: libraries   ':''}Arrows: browse   Select: open   Back: exit   Menu: server</Text>:null}
     </>}
   </View>;
 }

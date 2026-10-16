@@ -18,6 +18,9 @@ import {
 } from './browse.ts';
 import type { BrowseNavigation, PageCache, PageValue } from './browse.ts';
 import { clock } from './model.ts';
+import { visibleLibraries } from '../../../packages/contracts/index.ts';
+import { useLibraries } from './libraries.ts';
+import { LibrarySettings } from './LibrarySettings.tsx';
 
 const cacheKey = 'shinema.web.browse.v1';
 function usePage<T extends PageValue>(
@@ -81,6 +84,8 @@ function usePage<T extends PageValue>(
           signal: request.signal,
           priority: 'high',
         });
+        if (response.status === 409)
+          window.dispatchEvent(new Event('shinema:libraries-refresh'));
         if (!response.ok) throw new Error('Browse request failed');
         const value = pageParser(path)(await response.json()) as T;
         if (!current || ticket !== generation) return;
@@ -155,8 +160,68 @@ export function LibraryBrowser({
     loaded.current = true;
   }
   const [search, setSearch] = useState(navigation.search);
+  const libraries = useLibraries();
+  const [settings, setSettings] = useState(false);
+  useEffect(() => {
+    const open = () => setSettings(true);
+    const search = () => document.getElementById('library-search')?.focus();
+    window.addEventListener('shinema:library-settings', open);
+    window.addEventListener('shinema:library-search', search);
+    return () => {
+      window.removeEventListener('shinema:library-settings', open);
+      window.removeEventListener('shinema:library-search', search);
+    };
+  }, []);
+  const visible = visibleLibraries(
+    libraries.document.libraries,
+    libraries.preferences,
+  );
+  const active =
+    libraries.document.libraries.find(
+      (item) => item.id === navigation.libraryId && item.visible,
+    ) ??
+    visible.find((item) => item.id === navigation.collection) ??
+    visible[0];
+  useEffect(() => {
+    if (!active) return;
+    const collection = active.mediaType === 'mixed' ? 'all' : active.mediaType;
+    const libraryId = libraries.legacy ? undefined : active.id;
+    const revision = libraries.legacy ? undefined : libraries.document.revision;
+    if (
+      navigation.libraryId !== libraryId ||
+      navigation.revision !== revision ||
+      navigation.collection !== collection
+    )
+      setNavigation({
+        ...navigation,
+        libraryId,
+        revision,
+        collection,
+        series: null,
+        season: null,
+        offset: 0,
+        search: '',
+        focusId: null,
+        scroll: 0,
+      });
+  }, [
+    active?.id,
+    active?.mediaType,
+    libraries.document.revision,
+    libraries.legacy,
+    navigation,
+    setNavigation,
+  ]);
   const [refresh, setRefresh] = useState(0);
-  const path = browsePath(navigation);
+  const path =
+    !active || (libraries.document.revision === 0 && !libraries.legacy)
+      ? null
+      : browsePath({
+          ...navigation,
+          libraryId: libraries.legacy ? undefined : active.id,
+          revision: libraries.legacy ? undefined : libraries.document.revision,
+          collection: active.mediaType === 'mixed' ? 'all' : active.mediaType,
+        });
   const page = usePage<Catalog | SeriesPage>(path, cache);
   const summary = usePage<LibrarySummary>('/api/library', cache);
   const seasonCache = usePage<Seasons>(
@@ -171,7 +236,7 @@ export function LibraryBrowser({
   useEffect(() => {
     if (refresh) window.dispatchEvent(new Event('online'));
   }, [refresh]);
-  const rows = page.value?.items ?? [];
+  const rows = active ? (page.value?.items ?? []) : [];
   const shows = navigation.collection === 'tv' && !navigation.series;
   const replace = (value: Partial<BrowseNavigation>) => {
     setNavigation({ ...navigation, ...value, focusId: null, scroll: 0 });
@@ -223,49 +288,67 @@ export function LibraryBrowser({
       <aside className="library-sidebar">
         <p>YOUR LIBRARY</p>
         <nav aria-label="Collections">
-          <button
-            className={
-              navigation.collection === 'movies'
-                ? 'collection-link active'
-                : 'collection-link'
-            }
-            onClick={() =>
-              replace({
-                collection: 'movies',
-                series: null,
-                season: null,
-                offset: 0,
-                search: '',
-              })
-            }
-          >
-            Movies
-          </button>
-          <button
-            className={
-              navigation.collection === 'tv'
-                ? 'collection-link active'
-                : 'collection-link'
-            }
-            onClick={() =>
-              replace({
-                collection: 'tv',
-                series: null,
-                season: null,
-                offset: 0,
-                search: '',
-              })
-            }
-          >
-            TV shows
-          </button>
+          {visible.map((item) => (
+            <button
+              key={item.id}
+              className={
+                active?.id === item.id
+                  ? 'collection-link active'
+                  : 'collection-link'
+              }
+              onClick={() =>
+                replace({
+                  libraryId: libraries.legacy ? undefined : item.id,
+                  revision: libraries.legacy
+                    ? undefined
+                    : libraries.document.revision,
+                  collection:
+                    item.mediaType === 'mixed' ? 'all' : item.mediaType,
+                  series: null,
+                  season: null,
+                  offset: 0,
+                  search: '',
+                })
+              }
+            >
+              {item.name}
+            </button>
+          ))}
         </nav>
+        <button
+          className="text-button"
+          onClick={() => setSettings((value) => !value)}
+        >
+          Library settings
+        </button>
       </aside>
       <main className="full-library">
+        {settings && (
+          <LibrarySettings
+            document={libraries.document}
+            preferences={libraries.preferences}
+            onPreferences={libraries.savePreferences}
+            onSaved={() => {
+              cache.current = {};
+              window.dispatchEvent(new Event('shinema:libraries-refresh'));
+            }}
+            onClose={() => setSettings(false)}
+          />
+        )}
+        {libraries.status && (
+          <p className="notice" role="status">
+            {libraries.status}
+          </p>
+        )}
+        {!active && (
+          <p className="empty-state">
+            No libraries are visible. Open Library settings to change this
+            browser’s navigation.
+          </p>
+        )}
         <div className="page-title">
           <h1>
-            {navigation.series?.title ??
-              (navigation.collection === 'tv' ? 'TV shows' : 'Movies')}
+            {navigation.series?.title ?? active?.name ?? 'Your libraries'}
           </h1>
           <p>
             {summary.value
@@ -309,7 +392,7 @@ export function LibraryBrowser({
                 replace({ series: null, season: null, offset: 0, search: '' })
               }
             >
-              &larr; All TV shows
+              &larr; All {active?.name ?? 'series'}
             </button>
             <label>
               Season{' '}

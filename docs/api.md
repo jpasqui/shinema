@@ -9,6 +9,9 @@ The unauthenticated development server accepts only `localhost` or literal loopb
 | `GET /health` | Status, API version, active codec jobs and bounded-cache statistics |
 | `GET /api/catalog` | A bounded page: API version, items, total, offset, limit and nextOffset |
 | `GET /api/library` | Total media, TV, Movies and series counts |
+| `GET /api/libraries` | Versioned library descriptors: stable ID, display name, media type, order and visibility |
+| `GET /api/admin/libraries` | Operator-authorized library configuration and approved relative source choices |
+| `PUT /api/admin/libraries` | Operator-authorized configuration update with revision conflict checking |
 | `GET /api/series` | Paged series titles, episode counts and season counts |
 | `GET /api/series/{id}/seasons` | Season numbers and episode counts |
 | `GET /api/media/{id}/playback` | Full source duration, direct/transcode mode and its exact playback path |
@@ -28,7 +31,7 @@ Progress has finite `positionSeconds` and `durationSeconds`; position must be be
 Supported range forms are `bytes=start-end`, `bytes=start-`, and `bytes=-suffix`. Invalid, multiple and unsatisfiable ranges receive 416 and `Content-Range: bytes */size`. The original range endpoint does not implement multipart ranges or conditional `If-Range` validation. Compatibility playback is a separate full-duration HLS path. Files are opened for reading relative to a directory capability and streamed in chunks; they are not loaded entirely into memory.
 
 
-Catalog filters are `collection=all|tv|movies`, an opaque `series` ID, integer `season`, literal `search`, `offset` and `limit`. Limit is 1–500; the web browser uses 60. The legacy default is a first page of 500, with `total` and `nextOffset` explicitly reporting the rest. The index itself has no 500-item or eight-directory-depth truncation. `/api/series` supports paged literal search. SQL values are bound parameters.
+Catalog filters are a stable `library` ID, `collection=all|tv|movies`, an opaque `series` ID, integer `season`, literal `search`, `offset` and `limit`. Limit is 1-500; the web browser uses 60. The legacy default is a first page of 500, with `total` and `nextOffset` explicitly reporting the rest. The index itself has no 500-item or eight-directory-depth truncation. `/api/series` supports library-scoped paged literal search. SQL values are bound parameters. The older `collection` filter describes media type independently of library labels. See [libraries and navigation](libraries.md) for descriptor contracts, operator authorization, approved folder matching, migration and client preferences.
 
 Media optionally includes `collection`, `seriesId`, `seriesTitle`, `season` and `episode`. TV grouping uses the top-level series folder and S01E02-style filenames, with a Season N folder fallback. Unknown episode numbers stay unknown; they are not fabricated. MP4, M4V, MKV, WebM, AVI, TS, M2TS, MOV, MPG, MPEG, WMV and VOB are indexed. Non-video sidecars are not presented as videos. SSH source IDs include an opaque source/root namespace; source paths, hostnames and credentials are not returned.
 

@@ -1,7 +1,7 @@
 use axum::{
     Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Path as ApiPath, Query, State},
+    extract::{DefaultBodyLimit, Extension, Path as ApiPath, Query, State},
     http::{HeaderMap, Method, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
@@ -10,7 +10,7 @@ use rusqlite::{Connection, OpenFlags, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -20,6 +20,7 @@ use tokio_util::io::ReaderStream;
 
 mod cache_lease;
 mod catalog;
+mod libraries;
 mod metadata;
 mod playback;
 mod request_boundary;
@@ -100,6 +101,7 @@ pub struct Library {
     remote: Option<SshConfig>,
     remote_transfers: Arc<tokio::sync::Semaphore>,
     entries: BTreeMap<String, Entry>,
+    source_folders: BTreeSet<String>,
     database: Mutex<Connection>,
     playback: playback::Engine,
     metadata: Arc<metadata::Engine>,
@@ -207,7 +209,8 @@ impl Library {
             return Err("State overlaps media root".into());
         }
         let mut entries = BTreeMap::new();
-        Self::scan(&root, &mut entries)?;
+        let mut source_folders = BTreeSet::from([".".to_string()]);
+        Self::scan(&root, &mut entries, &mut source_folders)?;
         state_files::validate(&state)?;
         let playback = playback::Engine::new(&state)?;
         let mut db = Connection::open_with_flags(
@@ -232,7 +235,11 @@ impl Library {
                     .and_then(|p| metadata::title_year(p).1);
             }
         }
-        catalog::replace_index(&mut db, entries.values().map(|entry| entry.media.clone()))?;
+        let configuration = libraries::initialize(&db, &entries, &source_folders)?;
+        catalog::replace_index(
+            &mut db,
+            libraries::assign(&entries, &configuration).into_iter(),
+        )?;
         let directory = cap_std::fs::Dir::open_ambient_dir(&root, cap_std::ambient_authority())?;
         Ok(Arc::new(Self {
             root: Some(root),
@@ -240,6 +247,7 @@ impl Library {
             remote: None,
             remote_transfers: Arc::new(tokio::sync::Semaphore::new(4)),
             entries,
+            source_folders,
             database: Mutex::new(db),
             playback,
             metadata: metadata::Engine::new(&state)?,
@@ -263,8 +271,20 @@ impl Library {
         }
         let scan = config.scan().await?;
         let mut entries = BTreeMap::new();
+        let mut source_folders = config.roots.keys().cloned().collect::<BTreeSet<_>>();
         for record in scan.items {
             let relative = PathBuf::from(&record.relative);
+            let mut parent = relative.parent();
+            while let Some(folder) = parent.filter(|folder| !folder.as_os_str().is_empty()) {
+                source_folders.insert(
+                    folder
+                        .components()
+                        .map(|part| part.as_os_str().to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                );
+                parent = folder.parent();
+            }
             if relative.is_absolute()
                 || relative
                     .components()
@@ -358,7 +378,11 @@ impl Library {
                     .and_then(|p| metadata::title_year(p).1);
             }
         }
-        catalog::replace_index(&mut db, entries.values().map(|entry| entry.media.clone()))?;
+        let configuration = libraries::initialize(&db, &entries, &source_folders)?;
+        catalog::replace_index(
+            &mut db,
+            libraries::assign(&entries, &configuration).into_iter(),
+        )?;
         db.execute_batch("CREATE TABLE IF NOT EXISTS scan_summary(files_seen INTEGER,ignored_files INTEGER,links_skipped INTEGER);")?;
         db.execute("DELETE FROM scan_summary", [])?;
         db.execute(
@@ -371,6 +395,7 @@ impl Library {
             remote: Some(config),
             remote_transfers: Arc::new(tokio::sync::Semaphore::new(4)),
             entries,
+            source_folders,
             database: Mutex::new(db),
             playback,
             metadata: metadata::Engine::new(&state)?,
@@ -378,7 +403,11 @@ impl Library {
         }))
     }
 
-    fn scan(root: &Path, entries: &mut BTreeMap<String, Entry>) -> std::io::Result<()> {
+    fn scan(
+        root: &Path,
+        entries: &mut BTreeMap<String, Entry>,
+        source_folders: &mut BTreeSet<String>,
+    ) -> std::io::Result<()> {
         let mut directories = vec![root.to_path_buf()];
         while let Some(directory) = directories.pop() {
             let mut children = fs::read_dir(&directory)?.collect::<Result<Vec<_>, _>>()?;
@@ -389,7 +418,29 @@ impl Library {
                 if metadata.file_type().is_symlink() {
                     continue;
                 }
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::MetadataExt;
+                    if metadata.file_attributes()
+                        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+                        != 0
+                    {
+                        continue;
+                    }
+                }
                 if metadata.is_dir() {
+                    let relative = path
+                        .strip_prefix(root)
+                        .map_err(|_| std::io::ErrorKind::PermissionDenied)?;
+                    if relative.to_str().is_some() {
+                        source_folders.insert(
+                            relative
+                                .components()
+                                .map(|part| part.as_os_str().to_string_lossy())
+                                .collect::<Vec<_>>()
+                                .join("/"),
+                        );
+                    }
                     directories.push(path);
                     continue;
                 }
@@ -446,6 +497,24 @@ pub fn router(library: Arc<Library>) -> Router {
     router_at(library, "127.0.0.1:8787".parse().expect("Loopback literal"))
 }
 pub fn router_at(library: Arc<Library>, bind: std::net::SocketAddr) -> Router {
+    configured_router(library, bind, std::env::var("SHINEMA_ADMIN_TOKEN").ok())
+}
+
+/// Explicit operator configuration for embedders and isolated synthetic tests.
+/// Short or invalid tokens disable management just as an absent token does.
+pub fn router_with_admin_token(library: Arc<Library>, token: Option<String>) -> Router {
+    configured_router(
+        library,
+        "127.0.0.1:8787".parse().expect("Loopback literal"),
+        token,
+    )
+}
+
+fn configured_router(
+    library: Arc<Library>,
+    bind: std::net::SocketAddr,
+    token: Option<String>,
+) -> Router {
     library.playback.set_origin(bind);
     Router::new()
         .route(
@@ -454,6 +523,8 @@ pub fn router_at(library: Arc<Library>, bind: std::net::SocketAddr) -> Router {
         )
         .route("/api/catalog", get(catalog))
         .route("/api/library", get(library_summary))
+        .route("/api/libraries", get(libraries_public))
+        .route("/api/admin/libraries", get(libraries_admin).put(libraries_save).layer(DefaultBodyLimit::max(65_536)).layer(axum::middleware::from_fn(libraries::management_guard)))
         .route("/api/series", get(series))
         .route("/api/series/{id}/seasons", get(seasons))
         .route("/api/media/{id}/stream", get(stream))
@@ -467,7 +538,80 @@ pub fn router_at(library: Arc<Library>, bind: std::net::SocketAddr) -> Router {
         .layer(DefaultBodyLimit::max(4096))
         .fallback(static_web)
         .layer(axum::middleware::from_fn(request_boundary::guard))
+        .layer(Extension(libraries::ManagementAccess::new(token)))
         .with_state(library)
+}
+
+async fn libraries_public(
+    State(library): State<Arc<Library>>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let db = library
+        .database
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let value = libraries::read(&db, false, &library.source_folders)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(value)))
+}
+
+async fn libraries_admin(
+    State(library): State<Arc<Library>>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let db = library
+        .database
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let value = libraries::read(&db, true, &library.source_folders)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(value)))
+}
+
+async fn libraries_save(
+    State(library): State<Arc<Library>>,
+    Json(value): Json<libraries::Update>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let mut db = library
+        .database
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    libraries::update(&mut db, value, &library.entries, &library.source_folders)?;
+    let value = libraries::read(&db, true, &library.source_folders)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(value)))
+}
+
+fn check_revision(db: &Connection, query: &catalog::CatalogQuery) -> Result<(), StatusCode> {
+    if let Some(requested) = query.revision {
+        let revision: u64 = db
+            .query_row(
+                "SELECT revision FROM library_configuration WHERE singleton=1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if requested != revision {
+            return Err(StatusCode::CONFLICT);
+        }
+    }
+    Ok(())
+}
+
+fn current_media(library: &Library, id: &str) -> Result<Media, StatusCode> {
+    if !library.entries.contains_key(id) {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let db = library
+        .database
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let json: String = db
+        .query_row(
+            "SELECT media_json FROM media_catalog WHERE id=?1",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    serde_json::from_str(&json).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 async fn static_web(
@@ -486,6 +630,7 @@ async fn catalog(
         .database
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    check_revision(&db, &query)?;
     let mut value = catalog::page(&db, query).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     drop(db);
     let mut pending = false;
@@ -521,20 +666,24 @@ async fn series(
         .database
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    check_revision(&db, &query)?;
     let mut value = catalog::series(&db, query).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    drop(db);
     let mut pending = false;
     for row in value["items"]
         .as_array_mut()
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
     {
         let sid = row["id"].as_str().unwrap_or_default();
-        if let Some(entry) = library
-            .entries
-            .values()
-            .find(|entry| entry.media.classification.series_id.as_deref() == Some(sid))
+        let json = db
+            .query_row(
+                "SELECT media_json FROM media_catalog WHERE series_id=?1 LIMIT 1",
+                [sid],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         {
-            let mut item = entry.media.clone();
+            let mut item: Media =
+                serde_json::from_str(&json).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             item.title = row["title"].as_str().unwrap_or_default().to_string();
             pending |= library.metadata.overlay(&mut item, true, false);
             row["title"] = item.title.into();
@@ -679,12 +828,7 @@ async fn media_metadata(
     State(library): State<Arc<Library>>,
     ApiPath(id): ApiPath<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let mut item = library
-        .entries
-        .get(&id)
-        .ok_or(StatusCode::NOT_FOUND)?
-        .media
-        .clone();
+    let mut item = current_media(&library, &id)?;
     let pending = library.metadata.overlay(&mut item, false, true);
     Ok(Json(
         serde_json::json!({"apiVersion":1,"items":[item],"metadataPending":pending}),
@@ -708,10 +852,10 @@ async fn image_response(
     id: String,
     kind: &str,
 ) -> Result<Response, StatusCode> {
-    let entry = library.entries.get(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let item = current_media(&library, &id)?;
     let bytes = library
         .metadata
-        .image(&entry.media, kind == "backdrop")
+        .image(&item, kind == "backdrop")
         .map_err(|_| StatusCode::NOT_FOUND)?;
     let mime = if bytes.starts_with(b"\x89PNG") {
         "image/png"
