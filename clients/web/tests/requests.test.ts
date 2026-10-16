@@ -5,6 +5,7 @@ import {
   RequestError,
   parseRequestCandidate,
   parseRequestRecord,
+  parseSonarrCompatibility,
 } from '../../../packages/contracts/requests.ts';
 
 const token = 'synthetic-request-access-for-tests-only';
@@ -124,6 +125,9 @@ test('parsers reject malformed provider data and discard unrecognized fields', (
     parseRequestCandidate({ ...candidate, status: 'downloaded' }),
   );
   assert.throws(() => parseRequestRecord({ ...request, updatedAt: 9 }));
+  assert.throws(() =>
+    parseRequestRecord({ ...request, status: ['requested'] }),
+  );
 });
 
 test('capabilities never sends auth; incomplete refresh and safe server errors are represented', async () => {
@@ -196,4 +200,90 @@ test('ambiguous submissions are never retried and their status can be reconciled
   await assert.rejects(client.submit(candidate), { code: 'connection' });
   assert.equal(posts, 1);
   assert.equal((await client.list())[0].status, 'uncertain');
+});
+
+test('Sonarr compatibility is authenticated and strips provider settings', async () => {
+  const compatibility = {
+    apiVersion: 1,
+    enabled: true,
+    status: 'ready',
+    version: '5.0.0.2635',
+    apiVersionPath: 'v5',
+    preview: true,
+    metadataLanguage: 'English',
+    episodeOrder: 'Official',
+  };
+  let calls = 0;
+  const client = new RequestClient('', async (url, init) => {
+    calls++;
+    assert.equal(
+      init?.headers && (init.headers as Record<string, string>).Authorization,
+      `Bearer ${token}`,
+    );
+    return String(url).endsWith('/sonarr')
+      ? json({
+          ...compatibility,
+          apiKey: 'synthetic-private-value',
+          providerUrl: 'private',
+          rootFolderPath: 'private',
+        })
+      : json({ apiVersion: 1, items: [] });
+  });
+  await assert.rejects(client.sonarr(), { code: 'unauthorized' });
+  assert.equal(calls, 0);
+  await client.unlock(token);
+  assert.deepEqual(await client.sonarr(), compatibility);
+  client.lock();
+  await assert.rejects(client.sonarr(), { code: 'unauthorized' });
+});
+
+test('Sonarr compatibility accepts stable/beta policies and rejects inconsistent or unbounded details', () => {
+  const stable = {
+    apiVersion: 1,
+    enabled: true,
+    status: 'ready',
+    version: '4.0.20.3014',
+    apiVersionPath: 'v3',
+    preview: false,
+  };
+  const beta = {
+    ...stable,
+    version: '5.0.0.2635',
+    apiVersionPath: 'v5',
+    preview: true,
+    metadataLanguage: 'English',
+    episodeOrder: 'Official',
+  };
+  assert.deepEqual(parseSonarrCompatibility(stable), stable);
+  assert.deepEqual(parseSonarrCompatibility(beta), beta);
+  for (const state of [
+    { apiVersion: 1, enabled: false, status: 'disabled', preview: false },
+    { apiVersion: 1, enabled: true, status: 'unavailable', preview: false },
+    {
+      apiVersion: 1,
+      enabled: true,
+      status: 'unsupported',
+      preview: false,
+      version: '6.0.0.1',
+    },
+  ])
+    assert.deepEqual(parseSonarrCompatibility(state), state);
+  for (const invalid of [
+    { apiVersion: 1, enabled: true, status: ['ready'], preview: false },
+    { ...stable, status: {} },
+    { ...stable, version: 'Sonarr private diagnostic' },
+    { ...stable, version: '04.0.20.3014' },
+    { ...stable, version: '4.0.20' },
+    { ...stable, version: '4.2147483648.0.0' },
+    { ...stable, version: '4.'.repeat(30) },
+    { ...stable, version: '6.0.0.1' },
+    { ...stable, enabled: false },
+    { ...stable, apiVersionPath: 'v5' },
+    { ...stable, preview: true },
+    { ...beta, metadataLanguage: undefined },
+    { ...beta, metadataLanguage: 'Japanese' },
+    { ...beta, episodeOrder: 'DVD' },
+    { ...beta, status: 'unsupported' },
+  ])
+    assert.throws(() => parseSonarrCompatibility(invalid));
 });

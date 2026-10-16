@@ -14,6 +14,11 @@ use tower::ServiceExt;
 const TOKEN: &str = "synthetic-operator-token-for-tests-0000";
 const KEY: &str = "synthetic-provider-key-00000000000000";
 const HOST: &str = "127.0.0.1:8787";
+// Official release contracts pinned for this adapter, not installed providers:
+// v4.0.20.3014 cab419ade8ac7fcab5bf80394ee492abd35d5f5a
+// v5.0.0.2635 a2b6054a8f3746d149a811bddea2a8d063efc35e
+const SONARR_STABLE: &str = "4.0.20.3014";
+const SONARR_BETA: &str = "5.0.0.2635";
 
 #[derive(Clone, Copy, Default)]
 enum Reply {
@@ -36,6 +41,10 @@ struct Fixture {
     redirect: Option<String>,
     lookup_barrier: Option<Arc<tokio::sync::Barrier>>,
     series_lookup_override: Option<Value>,
+    sonarr_status_override: Option<Value>,
+    sonarr_status_http_error: Option<StatusCode>,
+    sonarr_status_non_json: bool,
+    paths: Vec<String>,
 }
 struct Mock {
     state: Arc<Mutex<Fixture>>,
@@ -107,6 +116,11 @@ async fn provider(State(state): State<Arc<Mutex<Fixture>>>, request: Request) ->
     let timed_out_payload = {
         let mut fixture = state.lock().unwrap();
         fixture.calls += 1;
+        fixture.paths.push(if query.is_empty() {
+            path.clone()
+        } else {
+            format!("{path}?{query}")
+        });
         if fixture.unavailable {
             return (
                 StatusCode::BAD_GATEWAY,
@@ -124,13 +138,47 @@ async fn provider(State(state): State<Arc<Mutex<Fixture>>>, request: Request) ->
         if fixture.oversized {
             return (StatusCode::OK, " ".repeat(2 * 1024 * 1024 + 1)).into_response();
         }
+        if path == "/fixture/api/v3/system/status" {
+            assert_eq!(method, Method::GET);
+            if let Some(status) = fixture.sonarr_status_http_error {
+                return (status, "private provider status error").into_response();
+            }
+            if fixture.sonarr_status_non_json {
+                return (StatusCode::OK, "private provider malformed status").into_response();
+            }
+            return Json(
+                fixture
+                    .sonarr_status_override
+                    .clone()
+                    .unwrap_or_else(|| sonarr_status(SONARR_STABLE)),
+            )
+            .into_response();
+        }
         let kind = if path.starts_with("/fixture/api/v3/movie") {
             "movie"
-        } else if path.starts_with("/fixture/api/v3/series") {
+        } else if path.starts_with("/fixture/api/v3/series")
+            || path.starts_with("/fixture/api/v5/series")
+        {
             "series"
         } else {
             panic!("Unexpected provider path {path}");
         };
+        let api = if kind == "series"
+            && fixture
+                .sonarr_status_override
+                .as_ref()
+                .and_then(|value| value.get("version"))
+                .and_then(Value::as_str)
+                .is_some_and(|version| version.starts_with("5."))
+        {
+            "v5"
+        } else {
+            "v3"
+        };
+        assert!(
+            path.starts_with(&format!("/fixture/api/{api}/{kind}")),
+            "Adapter used the wrong negotiated API: {path}"
+        );
         if path.ends_with("/lookup") {
             assert_eq!(method, Method::GET);
             let query = reqwest::Url::parse(&format!("http://fixture.invalid/?{query}")).unwrap();
@@ -140,6 +188,18 @@ async fn provider(State(state): State<Arc<Mutex<Fixture>>>, request: Request) ->
                 .unwrap()
                 .1
                 .into_owned();
+            let language = query
+                .query_pairs()
+                .find(|(key, _)| key == "language")
+                .map(|(_, value)| value.into_owned());
+            if kind == "series" && api == "v5" {
+                assert_eq!(language.as_deref(), Some("1"));
+            } else {
+                assert!(
+                    language.is_none(),
+                    "Stable/Radarr lookup policy must remain unchanged"
+                );
+            }
             if term == "nothing" {
                 return Json(json!([])).into_response();
             }
@@ -157,7 +217,7 @@ async fn provider(State(state): State<Arc<Mutex<Fixture>>>, request: Request) ->
             };
             return Json(json!([result])).into_response();
         }
-        assert!(path == format!("/fixture/api/v3/{kind}"));
+        assert!(path == format!("/fixture/api/{api}/{kind}"));
         if method == Method::GET {
             return Json(if kind == "movie" {
                 json!(fixture.movies)
@@ -184,6 +244,13 @@ async fn provider(State(state): State<Arc<Mutex<Fixture>>>, request: Request) ->
         if kind == "movie" {
             assert_eq!(payload["addOptions"]["searchForMovie"], false);
         } else {
+            if api == "v5" {
+                assert_eq!(payload["language"], json!({"id":1,"name":"English"}));
+                assert_eq!(payload["seasonType"], "official");
+            } else {
+                assert!(payload.get("language").is_none());
+                assert!(payload.get("seasonType").is_none());
+            }
             let expected_type = fixture
                 .series_lookup_override
                 .as_ref()
@@ -228,6 +295,9 @@ async fn provider(State(state): State<Arc<Mutex<Fixture>>>, request: Request) ->
     };
     tokio::time::sleep(std::time::Duration::from_secs(6)).await;
     (StatusCode::CREATED, Json(timed_out_payload)).into_response()
+}
+fn sonarr_status(version: &str) -> Value {
+    json!({"appName":"Sonarr","version":version,"instanceName":"private provider instance","startupPath":"/synthetic/private/startup","appData":"/synthetic/private/state","urlBase":"/fixture","branch":"private provider branch"})
 }
 async fn call(
     app: &Router,
@@ -289,6 +359,7 @@ async fn disabled_and_locked_never_contact_provider_and_capabilities_are_coarse(
     for path in [
         "/api/requests",
         "/api/requests/search?kind=movie&query=synthetic",
+        "/api/requests/sonarr",
     ] {
         let (status, value) = call(&app, "GET", path, None, false).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -483,12 +554,347 @@ async fn series_payload_monitoring_and_complete_status_use_server_policy() {
 
 #[tokio::test]
 async fn verified_sonarr_series_type_is_preserved_for_every_supported_type() {
-    for series_type in ["standard", "daily", "anime"] {
+    for version in [SONARR_STABLE, SONARR_BETA] {
+        for series_type in ["standard", "daily", "anime"] {
+            let mock = Mock::start().await;
+            let temp = tempfile::tempdir().unwrap();
+            let mut verified = lookup("series", 202);
+            verified["seriesType"] = series_type.into();
+            mock.state.lock().unwrap().series_lookup_override = Some(verified);
+            mock.state.lock().unwrap().sonarr_status_override = Some(sonarr_status(version));
+            let app = mock.app(temp.path());
+            let (status, value) = call(
+                &app,
+                "POST",
+                "/api/requests",
+                Some(json!({"kind":"series","externalId":202})),
+                true,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "series type {series_type}");
+            assert_eq!(value["item"]["status"], "requested");
+            let fixture = mock.state.lock().unwrap();
+            assert_eq!(fixture.posts.len(), 1);
+            assert_eq!(fixture.posts[0]["seriesType"], series_type);
+        }
+    }
+}
+
+#[tokio::test]
+async fn sonarr_status_and_requests_negotiate_pinned_stable_and_beta_contracts() {
+    for (version, api, preview) in [(SONARR_STABLE, "v3", false), (SONARR_BETA, "v5", true)] {
         let mock = Mock::start().await;
         let temp = tempfile::tempdir().unwrap();
-        let mut verified = lookup("series", 202);
-        verified["seriesType"] = series_type.into();
-        mock.state.lock().unwrap().series_lookup_override = Some(verified);
+        mock.state.lock().unwrap().sonarr_status_override = Some(sonarr_status(version));
+        let app = mock.app(temp.path());
+        let (status, compatibility) = call(&app, "GET", "/api/requests/sonarr", None, true).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(compatibility["apiVersion"], 1);
+        assert_eq!(compatibility["enabled"], true);
+        assert_eq!(compatibility["status"], "ready");
+        assert_eq!(compatibility["version"], version);
+        assert_eq!(compatibility["apiVersionPath"], api);
+        assert_eq!(compatibility["preview"], preview);
+        if preview {
+            assert_eq!(compatibility["metadataLanguage"], "English");
+            assert_eq!(compatibility["episodeOrder"], "Official");
+        } else {
+            assert!(compatibility.get("metadataLanguage").is_none());
+            assert!(compatibility.get("episodeOrder").is_none());
+        }
+        mock.state.lock().unwrap().paths.clear();
+        let (status, search) = call(
+            &app,
+            "GET",
+            "/api/requests/search?kind=series&query=synthetic",
+            None,
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(search["items"][0]["status"], "not_requested");
+        {
+            let fixture = mock.state.lock().unwrap();
+            assert_eq!(
+                fixture
+                    .paths
+                    .iter()
+                    .filter(|path| path.ends_with("/api/v3/system/status"))
+                    .count(),
+                1
+            );
+            assert!(
+                fixture
+                    .paths
+                    .contains(&format!("/fixture/api/{api}/series"))
+            );
+            let expected_lookup = format!(
+                "/fixture/api/{api}/series/lookup?term=synthetic{}",
+                if preview { "&language=1" } else { "" }
+            );
+            assert!(fixture.paths.contains(&expected_lookup));
+            assert_eq!(fixture.paths.len(), 3);
+        }
+        mock.state.lock().unwrap().paths.clear();
+        let (status, result) = call(
+            &app,
+            "POST",
+            "/api/requests",
+            Some(json!({"kind":"series","externalId":202})),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(result["item"]["status"], "requested");
+        {
+            let fixture = mock.state.lock().unwrap();
+            assert_eq!(fixture.posts.len(), 1);
+            assert_eq!(
+                fixture
+                    .paths
+                    .iter()
+                    .filter(|path| path.ends_with("/api/v3/system/status"))
+                    .count(),
+                1
+            );
+            assert_eq!(fixture.paths.len(), 4);
+        }
+        mock.state.lock().unwrap().paths.clear();
+        let (_, history) = call(&app, "GET", "/api/requests", None, true).await;
+        assert_eq!(history["items"][0]["status"], "requested");
+        assert_eq!(
+            mock.state.lock().unwrap().paths,
+            vec![
+                "/fixture/api/v3/system/status".to_string(),
+                format!("/fixture/api/{api}/series")
+            ]
+        );
+    }
+}
+
+#[tokio::test]
+async fn unsupported_or_malformed_sonarr_versions_never_reserve_or_post() {
+    let mut cases = Vec::new();
+    for version in [
+        "3.0.0.0",
+        "6.0.0.0",
+        "5.0.0",
+        "5.0.0.2635-beta",
+        "5..0.2635",
+        "05.0.0.2635",
+        "5.0.0.2147483648",
+        "5.0.0.0\n",
+        KEY,
+    ] {
+        cases.push(sonarr_status(version));
+    }
+    cases.extend([
+        json!({"appName":"Sonarr"}),
+        json!({"appName":"Sonarr","version":null}),
+        json!({"appName":"Sonarr","version":5}),
+        json!({"appName":"Radarr","version":SONARR_BETA}),
+        json!({"version":SONARR_BETA}),
+        json!([]),
+    ]);
+    for provider_status in cases {
+        let mock = Mock::start().await;
+        let temp = tempfile::tempdir().unwrap();
+        mock.state.lock().unwrap().sonarr_status_override = Some(provider_status);
+        let app = mock.app(temp.path());
+        let (status, compatibility) = call(&app, "GET", "/api/requests/sonarr", None, true).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(compatibility["enabled"], true);
+        assert_eq!(compatibility["status"], "unsupported");
+        assert_eq!(compatibility["preview"], false);
+        for field in ["apiVersionPath", "metadataLanguage", "episodeOrder"] {
+            assert!(compatibility.get(field).is_none());
+        }
+        let (status, error) = call(
+            &app,
+            "POST",
+            "/api/requests",
+            Some(json!({"kind":"series","externalId":202})),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(error["error"]["code"], "provider_unavailable");
+        assert_eq!(
+            call(
+                &app,
+                "GET",
+                "/api/requests/search?kind=series&query=synthetic",
+                None,
+                true
+            )
+            .await
+            .0,
+            StatusCode::BAD_GATEWAY
+        );
+        let (_, history) = call(&app, "GET", "/api/requests", None, true).await;
+        assert!(history["items"].as_array().unwrap().is_empty());
+        {
+            let fixture = mock.state.lock().unwrap();
+            assert!(fixture.posts.is_empty());
+            assert!(
+                fixture
+                    .paths
+                    .iter()
+                    .all(|path| path == "/fixture/api/v3/system/status")
+            );
+        }
+        mock.state.lock().unwrap().sonarr_status_override = Some(sonarr_status(SONARR_STABLE));
+        let (status, value) = call(
+            &app,
+            "POST",
+            "/api/requests",
+            Some(json!({"kind":"series","externalId":202})),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(value["duplicate"], false);
+    }
+}
+
+#[tokio::test]
+async fn sonarr_handshake_http_or_json_failures_are_sanitized_and_never_write() {
+    for http_error in [
+        Some(StatusCode::UNAUTHORIZED),
+        Some(StatusCode::SERVICE_UNAVAILABLE),
+        None,
+    ] {
+        let mock = Mock::start().await;
+        let temp = tempfile::tempdir().unwrap();
+        {
+            let mut fixture = mock.state.lock().unwrap();
+            fixture.sonarr_status_http_error = http_error;
+            fixture.sonarr_status_non_json = http_error.is_none();
+        }
+        let app = mock.app(temp.path());
+        let (status, compatibility) = call(&app, "GET", "/api/requests/sonarr", None, true).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            compatibility,
+            json!({"apiVersion":1,"enabled":true,"status":"unavailable","preview":false})
+        );
+        assert_eq!(
+            call(
+                &app,
+                "POST",
+                "/api/requests",
+                Some(json!({"kind":"series","externalId":202})),
+                true
+            )
+            .await
+            .0,
+            StatusCode::BAD_GATEWAY
+        );
+        assert!(mock.state.lock().unwrap().posts.is_empty());
+        assert!(
+            call(&app, "GET", "/api/requests", None, true).await.1["items"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[tokio::test]
+async fn sonarr_api_selection_rechecks_version_on_the_next_operation() {
+    let mock = Mock::start().await;
+    let temp = tempfile::tempdir().unwrap();
+    let app = mock.app(temp.path());
+    assert_eq!(
+        call(
+            &app,
+            "GET",
+            "/api/requests/search?kind=series&query=synthetic",
+            None,
+            true
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    {
+        let mut fixture = mock.state.lock().unwrap();
+        assert!(
+            fixture
+                .paths
+                .iter()
+                .any(|path| path.starts_with("/fixture/api/v3/series/lookup"))
+        );
+        fixture.sonarr_status_override = Some(sonarr_status(SONARR_BETA));
+        fixture.paths.clear();
+    }
+    assert_eq!(
+        call(
+            &app,
+            "GET",
+            "/api/requests/search?kind=series&query=synthetic",
+            None,
+            true
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert!(
+        mock.state
+            .lock()
+            .unwrap()
+            .paths
+            .iter()
+            .any(|path| path.starts_with("/fixture/api/v5/series/lookup"))
+    );
+}
+
+#[tokio::test]
+async fn sonarr_beta_uses_explicit_defaults_instead_of_inferred_lookup_metadata() {
+    let mock = Mock::start().await;
+    let temp = tempfile::tempdir().unwrap();
+    let mut lookup = lookup("series", 202);
+    lookup["language"] = json!({"id":2,"name":"French"});
+    lookup["seasonType"] = "dvd".into();
+    {
+        let mut fixture = mock.state.lock().unwrap();
+        fixture.sonarr_status_override = Some(sonarr_status(SONARR_BETA));
+        fixture.series_lookup_override = Some(lookup);
+    }
+    let app = mock.app(temp.path());
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/requests",
+            Some(json!({"kind":"series","externalId":202})),
+            true
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+    let fixture = mock.state.lock().unwrap();
+    assert_eq!(
+        fixture.posts[0]["language"],
+        json!({"id":1,"name":"English"})
+    );
+    assert_eq!(fixture.posts[0]["seasonType"], "official");
+}
+
+#[tokio::test]
+async fn preexisting_sonarr_titles_are_duplicates_on_stable_and_beta_without_updates() {
+    for version in [SONARR_STABLE, SONARR_BETA] {
+        let mock = Mock::start().await;
+        let temp = tempfile::tempdir().unwrap();
+        let mut existing = lookup("series", 202);
+        existing["statistics"] = json!({"episodeCount":4,"episodeFileCount":4});
+        {
+            let mut fixture = mock.state.lock().unwrap();
+            fixture.sonarr_status_override = Some(sonarr_status(version));
+            fixture.series.push(existing);
+        }
         let app = mock.app(temp.path());
         let (status, value) = call(
             &app,
@@ -498,12 +904,98 @@ async fn verified_sonarr_series_type_is_preserved_for_every_supported_type() {
             true,
         )
         .await;
-        assert_eq!(status, StatusCode::CREATED, "series type {series_type}");
-        assert_eq!(value["item"]["status"], "requested");
-        let fixture = mock.state.lock().unwrap();
-        assert_eq!(fixture.posts.len(), 1);
-        assert_eq!(fixture.posts[0]["seriesType"], series_type);
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["duplicate"], true);
+        assert_eq!(value["item"]["status"], "available");
+        assert!(mock.state.lock().unwrap().posts.is_empty());
     }
+}
+
+#[tokio::test]
+async fn sonarr_beta_ambiguous_write_reconciles_with_v5_without_reposting() {
+    let mock = Mock::start().await;
+    let temp = tempfile::tempdir().unwrap();
+    {
+        let mut fixture = mock.state.lock().unwrap();
+        fixture.sonarr_status_override = Some(sonarr_status(SONARR_BETA));
+        fixture.reply = Reply::Ambiguous;
+    }
+    let app = mock.app(temp.path());
+    let body = json!({"kind":"series","externalId":202});
+    let (status, value) = call(&app, "POST", "/api/requests", Some(body.clone()), true).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(value["item"]["status"], "uncertain");
+    let (status, value) = call(&app, "POST", "/api/requests", Some(body), true).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["duplicate"], true);
+    assert_eq!(value["item"]["status"], "requested");
+    let fixture = mock.state.lock().unwrap();
+    assert_eq!(fixture.posts.len(), 1);
+    assert!(
+        !fixture
+            .paths
+            .iter()
+            .any(|path| path.starts_with("/fixture/api/v3/series"))
+    );
+}
+
+#[tokio::test]
+async fn radarr_does_not_probe_or_depend_on_sonarr_compatibility() {
+    let mock = Mock::start().await;
+    let temp = tempfile::tempdir().unwrap();
+    mock.state.lock().unwrap().sonarr_status_override = Some(sonarr_status("6.0.0.0"));
+    let app = mock.app(temp.path());
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/requests",
+            Some(json!({"kind":"movie","externalId":101})),
+            true
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+    assert!(
+        mock.state
+            .lock()
+            .unwrap()
+            .paths
+            .iter()
+            .all(|path| path.starts_with("/fixture/api/v3/movie"))
+    );
+}
+
+#[tokio::test]
+async fn disabled_sonarr_status_is_authenticated_and_never_calls_a_provider() {
+    let mock = Mock::start().await;
+    let temp = tempfile::tempdir().unwrap();
+    let engine = Engine::new(
+        temp.path(),
+        Config {
+            token: TOKEN.into(),
+            radarr: Some(
+                ProviderConfig::new(&mock.url, KEY.into(), "/synthetic/movies".into(), 3).unwrap(),
+            ),
+            sonarr: None,
+        },
+    )
+    .unwrap();
+    let app = requests::router(engine, HOST.parse().unwrap());
+    assert_eq!(
+        call(&app, "GET", "/api/requests/sonarr", None, false)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, value) = call(&app, "GET", "/api/requests/sonarr", None, true).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        value,
+        json!({"apiVersion":1,"enabled":false,"status":"disabled","preview":false})
+    );
+    assert_eq!(mock.state.lock().unwrap().calls, 0);
 }
 
 #[tokio::test]

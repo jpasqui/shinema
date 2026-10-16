@@ -23,6 +23,9 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+mod sonarr;
+use sonarr::ApiVersion;
+
 const MAX_PROVIDER_BYTES: usize = 2 * 1024 * 1024;
 const MAX_REQUESTS: usize = 500;
 const PROVIDER_TIMEOUT: Duration = Duration::from_secs(5);
@@ -253,16 +256,62 @@ impl Engine {
         self.saved(record.kind, record.external_id)?
             .ok_or_else(ApiError::busy)
     }
-    fn url(&self, kind: Kind, suffix: &str) -> Result<Url, ApiError> {
+    async fn sonarr_release(&self) -> Result<sonarr::Release, sonarr::Failure> {
+        let provider = self
+            .provider(Kind::Series)
+            .map_err(|_| sonarr::Failure::Unavailable)?;
+        // This read-only endpoint exists in both pinned application versions.
+        // Its private paths, instance name, and other fields never leave Rust.
+        let url = provider
+            .base_url
+            .join("api/v3/system/status")
+            .map_err(|_| sonarr::Failure::Unavailable)?;
+        let response = self
+            .client
+            .get(url)
+            .header("X-Api-Key", &provider.api_key)
+            .send()
+            .await
+            .map_err(|_| sonarr::Failure::Unavailable)?;
+        if !response.status().is_success() {
+            return Err(sonarr::Failure::Unavailable);
+        }
+        let status = read_json(response)
+            .await
+            .map_err(|_| sonarr::Failure::Unavailable)?;
+        sonarr::Release::parse(&status)
+    }
+    async fn api(&self, kind: Kind) -> Result<ApiVersion, ApiError> {
+        match kind {
+            Kind::Movie => Ok(ApiVersion::V3),
+            Kind::Series => self
+                .sonarr_release()
+                .await
+                .map(|release| release.api)
+                .map_err(|_| ApiError::provider()),
+        }
+    }
+    fn url(&self, kind: Kind, api: ApiVersion, suffix: &str) -> Result<Url, ApiError> {
         self.provider(kind)?
             .base_url
-            .join(&format!("api/v3/{}{suffix}", kind.key()))
+            .join(&format!("api/{}/{}{suffix}", api.path(), kind.key()))
             .map_err(|_| ApiError::internal())
     }
-    async fn get(&self, kind: Kind, suffix: &str, term: Option<&str>) -> Result<Value, ApiError> {
-        let mut url = self.url(kind, suffix)?;
+    async fn get(
+        &self,
+        kind: Kind,
+        api: ApiVersion,
+        suffix: &str,
+        term: Option<&str>,
+    ) -> Result<Value, ApiError> {
+        let mut url = self.url(kind, api, suffix)?;
         if let Some(term) = term {
             url.query_pairs_mut().append_pair("term", term);
+            if kind == Kind::Series && api == ApiVersion::V5 {
+                // An explicit policy, not an inference from lookup language or
+                // mutable provider preferences. The v5 query name is `language`.
+                url.query_pairs_mut().append_pair("language", "1");
+            }
         }
         let response = self
             .client
@@ -276,8 +325,8 @@ impl Engine {
         }
         read_json(response).await
     }
-    async fn catalog(&self, kind: Kind) -> Result<Vec<Value>, ApiError> {
-        let value = self.get(kind, "", None).await?;
+    async fn catalog(&self, kind: Kind, api: ApiVersion) -> Result<Vec<Value>, ApiError> {
+        let value = self.get(kind, api, "", None).await?;
         value
             .as_array()
             .filter(|items| items.len() <= 10000)
@@ -439,6 +488,7 @@ pub fn router(engine: Arc<Engine>, bind: SocketAddr) -> Router {
         .route("/api/requests/capabilities", get(capabilities))
         .route("/api/requests", get(list).post(create))
         .route("/api/requests/search", get(search))
+        .route("/api/requests/sonarr", get(sonarr_status))
         .layer(DefaultBodyLimit::max(1024))
         .layer(middleware::from_fn_with_state(state.clone(), boundary))
         .with_state(state)
@@ -529,6 +579,40 @@ async fn capabilities(State(state): State<RouteState>) -> Json<Value> {
     )
 }
 
+async fn sonarr_status(State(state): State<RouteState>) -> Result<Json<Value>, ApiError> {
+    let engine = &state.engine;
+    if engine.provider(Kind::Series).is_err() {
+        return Ok(Json(
+            json!({"apiVersion":1,"enabled":false,"status":"disabled","preview":false}),
+        ));
+    }
+    let _permit = engine
+        .operations
+        .try_acquire()
+        .map_err(|_| ApiError::busy())?;
+    let mut value = json!({"apiVersion":1,"enabled":true,"preview":false});
+    match engine.sonarr_release().await {
+        Ok(release) => {
+            value["status"] = "ready".into();
+            value["version"] = release.version.into();
+            value["apiVersionPath"] = release.api.path().into();
+            if release.api == ApiVersion::V5 {
+                value["preview"] = true.into();
+                value["metadataLanguage"] = "English".into();
+                value["episodeOrder"] = "Official".into();
+            }
+        }
+        Err(sonarr::Failure::Unsupported(version)) => {
+            value["status"] = "unsupported".into();
+            if let Some(version) = version {
+                value["version"] = version.into();
+            }
+        }
+        Err(sonarr::Failure::Unavailable) => value["status"] = "unavailable".into(),
+    }
+    Ok(Json(value))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Search {
@@ -552,8 +636,9 @@ async fn search(
         .try_acquire()
         .map_err(|_| ApiError::busy())?;
     // Upstream catalog is authoritative, including entries added outside Shinema.
-    let catalog = engine.catalog(query.kind).await?;
-    let lookup = engine.get(query.kind, "/lookup", Some(text)).await?;
+    let api = engine.api(query.kind).await?;
+    let catalog = engine.catalog(query.kind, api).await?;
+    let lookup = engine.get(query.kind, api, "/lookup", Some(text)).await?;
     let items = lookup
         .as_array()
         .filter(|items| items.len() <= 1000)
@@ -606,7 +691,11 @@ async fn list(State(state): State<RouteState>) -> Result<Json<Value>, ApiError> 
         if !records.iter().any(|item| item.kind == kind) {
             continue;
         }
-        match engine.catalog(kind).await {
+        let catalog = match engine.api(kind).await {
+            Ok(api) => engine.catalog(kind, api).await,
+            Err(error) => Err(error),
+        };
+        match catalog {
             Ok(catalog) => {
                 for record in records.iter_mut().filter(|item| item.kind == kind) {
                     let previous_status = record.status.clone();
@@ -663,7 +752,8 @@ async fn create(
     // A durable existing identity is never resent, including failures/timeouts.
     if let Some(mut record) = engine.saved(input.kind, input.external_id)? {
         let previous_status = record.status.clone();
-        if let Ok(catalog) = engine.catalog(input.kind).await
+        if let Ok(api) = engine.api(input.kind).await
+            && let Ok(catalog) = engine.catalog(input.kind, api).await
             && let Some(value) = catalog
                 .iter()
                 .find(|item| external_id_of(item, input.kind) == Some(input.external_id))
@@ -683,7 +773,10 @@ async fn create(
     if engine.records()?.len() >= MAX_REQUESTS {
         return Err(ApiError::busy());
     }
-    let catalog = engine.catalog(input.kind).await?;
+    // Pin the negotiated API for this complete operation; never change API or
+    // retry a POST after a provider error. A later operation rechecks upgrades.
+    let api = engine.api(input.kind).await?;
+    let catalog = engine.catalog(input.kind, api).await?;
     if let Some(value) = catalog
         .iter()
         .find(|item| external_id_of(item, input.kind) == Some(input.external_id))
@@ -705,6 +798,7 @@ async fn create(
     let lookup = engine
         .get(
             input.kind,
+            api,
             "/lookup",
             Some(&format!(
                 "{}:{}",
@@ -766,6 +860,10 @@ async fn create(
             payload["addOptions"] = json!({"searchForMovie":false});
         }
         Kind::Series => {
+            if api == ApiVersion::V5 {
+                payload["language"] = json!({"id":1,"name":"English"});
+                payload["seasonType"] = "official".into();
+            }
             payload["seasonFolder"] = true.into();
             // Monitoring is explicit and no historical episode search is triggered.
             let seasons = value
@@ -792,7 +890,7 @@ async fn create(
     }
     let response = engine
         .client
-        .post(engine.url(input.kind, "")?)
+        .post(engine.url(input.kind, api, "")?)
         .header("X-Api-Key", &provider.api_key)
         .json(&payload)
         .send()
@@ -811,7 +909,7 @@ async fn create(
         }
         Ok(response) if response.status().is_client_error() => {
             // Another caller may have added the same title between GET and POST.
-            if let Ok(catalog) = engine.catalog(input.kind).await {
+            if let Ok(catalog) = engine.catalog(input.kind, api).await {
                 if let Some(value) = catalog
                     .iter()
                     .find(|item| external_id_of(item, input.kind) == Some(input.external_id))

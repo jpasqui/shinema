@@ -17,6 +17,7 @@ import type {
   RequestCapabilities,
   RequestKind,
   RequestRecord,
+  SonarrCompatibility,
 } from '../../../packages/contracts/requests.ts';
 
 const statusLabel = {
@@ -30,6 +31,51 @@ const errorMessage = (error: unknown) =>
   error instanceof RequestError
     ? error.message
     : 'The request service could not be reached. Check the server and try again.';
+
+const sonarrPreviewPolicy =
+  'New series use English metadata and Official episode order. Other language and order choices are not supported here.';
+
+function SonarrStatus({
+  compatibility,
+  loading,
+  problem,
+}: {
+  compatibility: SonarrCompatibility | null;
+  loading: boolean;
+  problem: string;
+}) {
+  const ready = compatibility?.status === 'ready';
+  const description = loading
+    ? 'Checking the series service. Your saved request list remains available.'
+    : problem ||
+      (ready
+        ? compatibility.preview
+          ? sonarrPreviewPolicy
+          : 'Series requests are supported by this Sonarr version.'
+        : compatibility?.status === 'disabled'
+          ? 'Series requests are disabled. Ask your server operator to review setup.'
+          : compatibility?.status === 'unsupported'
+            ? 'This Sonarr version is not supported for series requests. Ask your server operator to review it.'
+            : 'Sonarr is unavailable. Refresh statuses to check again.');
+  return (
+    <View style={[styles.sonarr, !loading && !ready && styles.sonarrWarning]}>
+      <Text accessibilityRole="header" style={styles.label}>
+        {loading
+          ? 'Checking Sonarr compatibility...'
+          : ready
+            ? `Sonarr ${compatibility.version}${compatibility.preview ? ' preview' : ''}`
+            : 'Sonarr needs attention'}
+      </Text>
+      <Text style={styles.small}>{description}</Text>
+      {ready && !loading && (
+        <Text style={styles.small}>
+          The server checks compatibility again when you submit a series
+          request.
+        </Text>
+      )}
+    </View>
+  );
+}
 
 export function Requests({
   origin,
@@ -60,12 +106,16 @@ export function Requests({
   const [mustRefresh, setMustRefresh] = useState(false);
   const [problem, setProblem] = useState('');
   const [notice, setNotice] = useState('');
+  const [sonarr, setSonarr] = useState<SonarrCompatibility | null>(null);
+  const [sonarrChecking, setSonarrChecking] = useState(false);
+  const [sonarrProblem, setSonarrProblem] = useState('');
   const epoch = useRef(0);
   const searchSequence = useRef(0);
   const listSequence = useRef(0);
   const authBusy = useRef(false);
   const submitBusy = useRef(false);
   const refreshBusy = useRef(false);
+  const sonarrSequence = useRef(0);
 
   function clearSearch() {
     searchSequence.current++;
@@ -77,6 +127,7 @@ export function Requests({
   function lock() {
     epoch.current++;
     listSequence.current++;
+    sonarrSequence.current++;
     client.lock();
     authBusy.current = false;
     submitBusy.current = false;
@@ -88,6 +139,9 @@ export function Requests({
     setMustRefresh(false);
     setToken('');
     setRecords([]);
+    setSonarr(null);
+    setSonarrChecking(false);
+    setSonarrProblem('');
     setQuery('');
     setProblem('');
     setNotice('Request access is locked.');
@@ -97,6 +151,35 @@ export function Requests({
   function failed(error: unknown) {
     if (error instanceof RequestError && error.code === 'unauthorized') lock();
     setProblem(errorMessage(error));
+  }
+
+  async function refreshSonarr(session: number) {
+    if (
+      !capabilities?.providers.some(
+        (provider) => provider.kind === 'series' && provider.enabled,
+      )
+    )
+      return;
+    const ticket = ++sonarrSequence.current;
+    setSonarr(null);
+    setSonarrChecking(true);
+    setSonarrProblem('');
+    try {
+      const value = await client.sonarr();
+      if (session === epoch.current && ticket === sonarrSequence.current)
+        setSonarr(value);
+    } catch (error) {
+      if (session !== epoch.current) return;
+      if (error instanceof RequestError && error.code === 'unauthorized')
+        failed(error);
+      else if (ticket === sonarrSequence.current)
+        setSonarrProblem(
+          'Sonarr compatibility could not be checked. Refresh statuses to try again.',
+        );
+    } finally {
+      if (session === epoch.current && ticket === sonarrSequence.current)
+        setSonarrChecking(false);
+    }
   }
 
   useEffect(() => {
@@ -129,6 +212,7 @@ export function Requests({
       epoch.current++;
       searchSequence.current++;
       listSequence.current++;
+      sonarrSequence.current++;
       client.lock();
     },
     [client],
@@ -153,6 +237,7 @@ export function Requests({
       if (ticket !== epoch.current) return;
       setRecords(items);
       setUnlocked(true);
+      void refreshSonarr(ticket);
       setMustRefresh(client.refreshIncomplete);
       if (client.refreshIncomplete)
         setNotice(
@@ -175,6 +260,7 @@ export function Requests({
     if (
       !unlocked ||
       submitting ||
+      (kind === 'series' && (sonarrChecking || sonarr?.status !== 'ready')) ||
       Array.from(term).length < 2 ||
       Array.from(term).length > 100
     )
@@ -205,6 +291,7 @@ export function Requests({
     const ticket = ++listSequence.current;
     const session = epoch.current;
     const searchAtStart = searchSequence.current;
+    void refreshSonarr(session);
     setRefreshing(true);
     setProblem('');
     try {
@@ -241,7 +328,9 @@ export function Requests({
       selected.status !== 'not_requested' ||
       submitBusy.current ||
       refreshBusy.current ||
-      mustRefresh
+      mustRefresh ||
+      (selected.kind === 'series' &&
+        (sonarrChecking || sonarr?.status !== 'ready'))
     )
       return;
     submitBusy.current = true;
@@ -437,6 +526,9 @@ export function Requests({
                   : 'series to Sonarr'}{' '}
                 and the shared request list. No automatic search starts.
               </Text>
+              {selected.kind === 'series' && sonarr?.preview && (
+                <Text style={styles.sonarrPolicy}>{sonarrPreviewPolicy}</Text>
+              )}
               <Text style={styles.small}>
                 Check the title and year. A series request adds the series, not
                 an individual episode.
@@ -446,7 +538,9 @@ export function Requests({
                 {button(
                   submitting ? 'Adding request...' : 'Confirm request',
                   () => void submit(),
-                  submitting,
+                  submitting ||
+                    (selected.kind === 'series' &&
+                      (sonarrChecking || sonarr?.status !== 'ready')),
                   true,
                 )}
               </View>
@@ -491,6 +585,13 @@ export function Requests({
                     </Pressable>
                   ))}
                 </View>
+                {providerEnabled('series') && (
+                  <SonarrStatus
+                    compatibility={sonarr}
+                    loading={sonarrChecking}
+                    problem={sonarrProblem}
+                  />
+                )}
                 <Text style={styles.label}>Search titles</Text>
                 <TextInput
                   accessibilityLabel="Search titles"
@@ -516,6 +617,8 @@ export function Requests({
                   () => void search(),
                   searching ||
                     submitting ||
+                    (kind === 'series' &&
+                      (sonarrChecking || sonarr?.status !== 'ready')) ||
                     Array.from(query.trim()).length < 2 ||
                     Array.from(query.trim()).length > 100,
                   true,
@@ -570,7 +673,9 @@ export function Requests({
                       item.status !== 'not_requested' ||
                         mustRefresh ||
                         submitting ||
-                        refreshing,
+                        refreshing ||
+                        (item.kind === 'series' &&
+                          (sonarrChecking || sonarr?.status !== 'ready')),
                     )}
                   </View>
                 ))
@@ -636,6 +741,22 @@ export function Requests({
 }
 
 const styles = StyleSheet.create({
+  sonarr: {
+    borderWidth: 1,
+    borderColor: '#435446',
+    borderRadius: 6,
+    padding: 15,
+    gap: 8,
+  },
+  sonarrWarning: { borderColor: '#886b4b' },
+  sonarrPolicy: {
+    color: '#e5ecd9',
+    borderLeftWidth: 2,
+    borderColor: '#b6cba5',
+    paddingLeft: 14,
+    fontSize: 16,
+    lineHeight: 25,
+  },
   screen: { flex: 1 },
   content: {
     paddingBottom: 36,

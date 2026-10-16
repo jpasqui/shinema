@@ -181,7 +181,13 @@ async function fakeProvider(kind, key) {
       );
       assert.equal(url.searchParams.has('apikey'), false);
       state.calls.push({ method: request.method, path: url.pathname });
-      const path = `/api/v3/${kind}`;
+      if (
+        !movie &&
+        request.method === 'GET' &&
+        url.pathname === '/api/v3/system/status'
+      )
+        return json(response, { appName: 'Sonarr', version: '5.0.0.2635' });
+      const path = `/api/${movie ? 'v3' : 'v5'}/${kind}`;
       if (request.method === 'GET' && url.pathname === path) {
         return state.failCatalog
           ? json(
@@ -192,6 +198,7 @@ async function fakeProvider(kind, key) {
           : json(response, catalog);
       }
       if (request.method === 'GET' && url.pathname === path + '/lookup') {
+        if (!movie) assert.equal(url.searchParams.get('language'), '1');
         const term = url.searchParams.get('term') ?? '';
         if (term === 'Generated delayed') {
           state.delayedStarted.resolve();
@@ -237,6 +244,8 @@ async function fakeProvider(kind, key) {
           assert.deepEqual(value.addOptions, { searchForMovie: false });
         } else {
           assert.equal(value.seriesType, 'daily');
+          assert.deepEqual(value.language, { id: 1, name: 'English' });
+          assert.equal(value.seasonType, 'official');
           assert.deepEqual(value.addOptions, {
             searchForMissingEpisodes: false,
             searchForCutoffUnmetEpisodes: false,
@@ -681,6 +690,9 @@ try {
     .getByRole('button', { name: 'Review request', exact: true })
     .click();
   await expect(page.getByRole('dialog')).toContainText('series to Sonarr');
+  await expect(page.getByRole('dialog')).toContainText(
+    'English metadata and Official episode order',
+  );
   await page
     .getByRole('button', { name: 'Confirm request', exact: true })
     .click();

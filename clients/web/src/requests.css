@@ -79,6 +79,38 @@
   color: var(--color-text);
   border-bottom-color: var(--color-accent);
 }
+.requests-sonarr {
+  padding: 15px 17px;
+  margin: 0 0 24px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+}
+.requests-sonarr h3 {
+  margin: 0 0 7px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.requests-sonarr p {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1.8;
+}
+.requests-sonarr p + p {
+  margin-top: 7px;
+}
+.requests-sonarr-warning {
+  border-color: #d3a17766;
+}
+.requests-sonarr-warning h3 {
+  color: #e3be9b;
+}
+.requests-confirm .requests-sonarr-policy {
+  border-left: 2px solid var(--color-accent);
+  padding-left: 14px;
+  color: var(--color-text);
+}
 .requests-search label,
 .requests-access label {
   display: block;

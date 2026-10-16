@@ -28,6 +28,16 @@ export type RequestCapabilities = {
   authentication: 'bearer';
   providers: { kind: RequestKind; enabled: boolean }[];
 };
+export type SonarrCompatibility = {
+  apiVersion: 1;
+  enabled: boolean;
+  status: 'ready' | 'disabled' | 'unavailable' | 'unsupported';
+  version?: string;
+  apiVersionPath?: 'v3' | 'v5';
+  preview: boolean;
+  metadataLanguage?: 'English';
+  episodeOrder?: 'Official';
+};
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -38,7 +48,8 @@ const integer = (value: unknown, min = 0): value is number =>
 const kind = (value: unknown): value is RequestKind =>
   value === 'movie' || value === 'series';
 const status = (value: unknown): value is RequestStatus =>
-  ['requested', 'available', 'uncertain', 'failed'].includes(String(value));
+  typeof value === 'string' &&
+  ['requested', 'available', 'uncertain', 'failed'].includes(value);
 
 function identity(value: unknown) {
   if (
@@ -132,6 +143,70 @@ export function parseRequestCapabilities(value: unknown): RequestCapabilities {
   };
 }
 
+export function parseSonarrCompatibility(value: unknown): SonarrCompatibility {
+  if (
+    !record(value) ||
+    value.apiVersion !== 1 ||
+    typeof value.enabled !== 'boolean' ||
+    typeof value.status !== 'string' ||
+    !['ready', 'disabled', 'unavailable', 'unsupported'].includes(
+      value.status,
+    ) ||
+    typeof value.preview !== 'boolean' ||
+    (value.version !== undefined &&
+      (typeof value.version !== 'string' ||
+        value.version.length > 43 ||
+        !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(
+          value.version,
+        ) ||
+        value.version.split('.').some((part) => Number(part) > 2147483647))) ||
+    (value.apiVersionPath !== undefined &&
+      value.apiVersionPath !== 'v3' &&
+      value.apiVersionPath !== 'v5') ||
+    (value.metadataLanguage !== undefined &&
+      value.metadataLanguage !== 'English') ||
+    (value.episodeOrder !== undefined && value.episodeOrder !== 'Official')
+  )
+    throw new Error('Invalid Sonarr compatibility');
+  const ready = value.status === 'ready';
+  const modern = value.apiVersionPath === 'v5';
+  if (
+    (value.status === 'disabled') !== !value.enabled ||
+    (ready &&
+      (!value.version ||
+        !value.apiVersionPath ||
+        !value.version.startsWith(modern ? '5.' : '4.') ||
+        value.preview !== modern ||
+        (modern &&
+          (value.metadataLanguage !== 'English' ||
+            value.episodeOrder !== 'Official')))) ||
+    (!ready &&
+      (value.apiVersionPath !== undefined ||
+        value.preview ||
+        value.metadataLanguage !== undefined ||
+        value.episodeOrder !== undefined))
+  )
+    throw new Error('Inconsistent Sonarr compatibility');
+  return {
+    apiVersion: 1,
+    enabled: value.enabled,
+    status: value.status as SonarrCompatibility['status'],
+    preview: value.preview,
+    ...(value.version === undefined
+      ? {}
+      : { version: value.version as string }),
+    ...(value.apiVersionPath === undefined
+      ? {}
+      : { apiVersionPath: value.apiVersionPath }),
+    ...(value.metadataLanguage === undefined
+      ? {}
+      : { metadataLanguage: value.metadataLanguage }),
+    ...(value.episodeOrder === undefined
+      ? {}
+      : { episodeOrder: value.episodeOrder }),
+  };
+}
+
 function items<T>(value: unknown, parse: (item: unknown) => T): T[] {
   if (
     !record(value) ||
@@ -213,6 +288,9 @@ export class RequestClient {
       await this.send('/capabilities', undefined, true),
       parseRequestCapabilities,
     );
+  }
+  async sonarr(): Promise<SonarrCompatibility> {
+    return this.parse(await this.send('/sonarr'), parseSonarrCompatibility);
   }
   async search(
     requestKind: RequestKind,

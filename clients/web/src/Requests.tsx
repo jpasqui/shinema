@@ -8,6 +8,7 @@ import type {
   RequestCapabilities,
   RequestKind,
   RequestRecord,
+  SonarrCompatibility,
 } from '../../../packages/contracts/requests.ts';
 import './requests.css';
 
@@ -23,6 +24,54 @@ function errorMessage(error: unknown) {
   return error instanceof RequestError
     ? error.message
     : 'The request service could not be reached. Check the server and try again.';
+}
+
+const sonarrPreviewPolicy =
+  'New series use English metadata and Official episode order. Other language and order choices are not supported here.';
+
+function SonarrStatus({
+  compatibility,
+  loading,
+  problem,
+}: {
+  compatibility: SonarrCompatibility | null;
+  loading: boolean;
+  problem: string;
+}) {
+  const ready = compatibility?.status === 'ready';
+  const description = loading
+    ? 'Checking the series service. Your saved request list remains available.'
+    : problem ||
+      (ready
+        ? compatibility.preview
+          ? sonarrPreviewPolicy
+          : 'Series requests are supported by this Sonarr version.'
+        : compatibility?.status === 'disabled'
+          ? 'Series requests are disabled. Ask your server operator to review setup.'
+          : compatibility?.status === 'unsupported'
+            ? 'This Sonarr version is not supported for series requests. Ask your server operator to review it.'
+            : 'Sonarr is unavailable. Refresh statuses to check again.');
+  return (
+    <section
+      className={`requests-sonarr${!loading && !ready ? ' requests-sonarr-warning' : ''}`}
+      aria-label="Sonarr compatibility"
+    >
+      <h3>
+        {loading
+          ? 'Checking Sonarr compatibility...'
+          : ready
+            ? `Sonarr ${compatibility.version}${compatibility.preview ? ' preview' : ''}`
+            : 'Sonarr needs attention'}
+      </h3>
+      <p>{description}</p>
+      {ready && !loading && (
+        <p className="requests-small">
+          The server checks compatibility again when you submit a series
+          request.
+        </p>
+      )}
+    </section>
+  );
 }
 
 export function Requests({ onBack }: { onBack: () => void }) {
@@ -46,12 +95,16 @@ export function Requests({ onBack }: { onBack: () => void }) {
   const [mustRefresh, setMustRefresh] = useState(false);
   const [problem, setProblem] = useState('');
   const [notice, setNotice] = useState('');
+  const [sonarr, setSonarr] = useState<SonarrCompatibility | null>(null);
+  const [sonarrChecking, setSonarrChecking] = useState(false);
+  const [sonarrProblem, setSonarrProblem] = useState('');
   const epoch = useRef(0);
   const searchSequence = useRef(0);
   const listSequence = useRef(0);
   const authBusy = useRef(false);
   const submitBusy = useRef(false);
   const refreshBusy = useRef(false);
+  const sonarrSequence = useRef(0);
   const searchInput = useRef<HTMLInputElement>(null);
   const confirmation = useRef<HTMLButtonElement>(null);
   const dialog = useRef<HTMLElement>(null);
@@ -67,6 +120,7 @@ export function Requests({ onBack }: { onBack: () => void }) {
   function lock() {
     epoch.current++;
     listSequence.current++;
+    sonarrSequence.current++;
     client.lock();
     authBusy.current = false;
     submitBusy.current = false;
@@ -78,6 +132,9 @@ export function Requests({ onBack }: { onBack: () => void }) {
     setMustRefresh(false);
     setToken('');
     setRecords([]);
+    setSonarr(null);
+    setSonarrChecking(false);
+    setSonarrProblem('');
     setQuery('');
     setProblem('');
     setNotice('Request access is locked.');
@@ -87,6 +144,35 @@ export function Requests({ onBack }: { onBack: () => void }) {
   function failed(error: unknown) {
     if (error instanceof RequestError && error.code === 'unauthorized') lock();
     setProblem(errorMessage(error));
+  }
+
+  async function refreshSonarr(session: number) {
+    if (
+      !capabilities?.providers.some(
+        (provider) => provider.kind === 'series' && provider.enabled,
+      )
+    )
+      return;
+    const ticket = ++sonarrSequence.current;
+    setSonarr(null);
+    setSonarrChecking(true);
+    setSonarrProblem('');
+    try {
+      const value = await client.sonarr();
+      if (session === epoch.current && ticket === sonarrSequence.current)
+        setSonarr(value);
+    } catch (error) {
+      if (session !== epoch.current) return;
+      if (error instanceof RequestError && error.code === 'unauthorized')
+        failed(error);
+      else if (ticket === sonarrSequence.current)
+        setSonarrProblem(
+          'Sonarr compatibility could not be checked. Refresh statuses to try again.',
+        );
+    } finally {
+      if (session === epoch.current && ticket === sonarrSequence.current)
+        setSonarrChecking(false);
+    }
   }
 
   useEffect(() => {
@@ -119,6 +205,7 @@ export function Requests({ onBack }: { onBack: () => void }) {
       epoch.current++;
       searchSequence.current++;
       listSequence.current++;
+      sonarrSequence.current++;
       client.lock();
     },
     [client],
@@ -145,6 +232,7 @@ export function Requests({ onBack }: { onBack: () => void }) {
       if (ticket !== epoch.current) return;
       setRecords(items);
       setUnlocked(true);
+      void refreshSonarr(ticket);
       setMustRefresh(client.refreshIncomplete);
       if (client.refreshIncomplete)
         setNotice(
@@ -168,6 +256,7 @@ export function Requests({ onBack }: { onBack: () => void }) {
     if (
       !unlocked ||
       submitting ||
+      (kind === 'series' && (sonarrChecking || sonarr?.status !== 'ready')) ||
       Array.from(term).length < 2 ||
       Array.from(term).length > 100
     )
@@ -198,6 +287,7 @@ export function Requests({ onBack }: { onBack: () => void }) {
     const ticket = ++listSequence.current;
     const session = epoch.current;
     const searchAtStart = searchSequence.current;
+    void refreshSonarr(session);
     setRefreshing(true);
     setProblem('');
     try {
@@ -235,7 +325,9 @@ export function Requests({ onBack }: { onBack: () => void }) {
       selected.status !== 'not_requested' ||
       submitBusy.current ||
       refreshBusy.current ||
-      mustRefresh
+      mustRefresh ||
+      (selected.kind === 'series' &&
+        (sonarrChecking || sonarr?.status !== 'ready'))
     )
       return;
     submitBusy.current = true;
@@ -426,6 +518,13 @@ export function Requests({ onBack }: { onBack: () => void }) {
                 </button>
               ))}
             </div>
+            {providerEnabled('series') && (
+              <SonarrStatus
+                compatibility={sonarr}
+                loading={sonarrChecking}
+                problem={sonarrProblem}
+              />
+            )}
             <form
               className="requests-search"
               onSubmit={(event) => {
@@ -457,6 +556,8 @@ export function Requests({ onBack }: { onBack: () => void }) {
                   disabled={
                     searching ||
                     submitting ||
+                    (kind === 'series' &&
+                      (sonarrChecking || sonarr?.status !== 'ready')) ||
                     Array.from(query.trim()).length < 2 ||
                     Array.from(query.trim()).length > 100
                   }
@@ -523,7 +624,9 @@ export function Requests({ onBack }: { onBack: () => void }) {
                             item.status !== 'not_requested' ||
                             mustRefresh ||
                             submitting ||
-                            refreshing
+                            refreshing ||
+                            (item.kind === 'series' &&
+                              (sonarrChecking || sonarr?.status !== 'ready'))
                           }
                           onClick={(event) => {
                             searchReturnFocus.current = event.currentTarget;
@@ -622,7 +725,11 @@ export function Requests({ onBack }: { onBack: () => void }) {
             role="dialog"
             aria-modal="true"
             aria-labelledby="request-confirm-title"
-            aria-describedby="request-confirm-description"
+            aria-describedby={
+              selected.kind === 'series' && sonarr?.preview
+                ? 'request-confirm-description request-sonarr-policy'
+                : 'request-confirm-description'
+            }
             onKeyDown={(event) => {
               if (event.key === 'Escape' && !submitting) {
                 event.preventDefault();
@@ -656,6 +763,11 @@ export function Requests({ onBack }: { onBack: () => void }) {
                 : 'series to Sonarr'}{' '}
               and the shared request list. No automatic search starts.
             </p>
+            {selected.kind === 'series' && sonarr?.preview && (
+              <p id="request-sonarr-policy" className="requests-sonarr-policy">
+                {sonarrPreviewPolicy}
+              </p>
+            )}
             <p className="requests-small">
               Check the title and year. A series request adds the series, not an
               individual episode.
@@ -671,7 +783,11 @@ export function Requests({ onBack }: { onBack: () => void }) {
               <button
                 ref={confirmation}
                 className="primary"
-                disabled={submitting}
+                disabled={
+                  submitting ||
+                  (selected.kind === 'series' &&
+                    (sonarrChecking || sonarr?.status !== 'ready'))
+                }
                 onClick={() => void submit()}
               >
                 {submitting ? 'Adding request...' : 'Confirm request'}

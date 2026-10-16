@@ -15,7 +15,7 @@ This is an operator preview, not a public or multi-user request portal.
 
 Actual provider/security setup needs the owner's explicit approval. Before
 enabling it, the operator must have an existing approved Radarr v3 API or Sonarr
-v4/v3 API instance, an existing root folder, and an existing quality profile.
+v4/v5 instance, an existing root folder, and an existing quality profile.
 Provider URL base paths are supported. Selecting or creating those resources,
 changing provider settings, and configuring indexers/download clients are outside
 this slice. Use synthetic mock endpoints for development and CI.
@@ -44,6 +44,13 @@ credentials stay in the Rust process and are sent only as `X-Api-Key` to the
 configured provider. Redirects and environment proxies are disabled for these
 calls; responses and errors never expose provider URLs, keys, folders, profiles,
 raw responses, or internal filesystem paths.
+
+Sonarr compatibility is checked through its authenticated system-status API on
+each operation. Sonarr v4 uses API v3; Sonarr v5 uses API v5 and is marked as a
+preview in both clients. Other major versions, malformed version responses, or
+an unavailable status API stop new series searches and registrations before a
+provider write or request-history reservation. Saved duplicates remain readable.
+This does not install, upgrade, or reconfigure Sonarr.
 
 The existing server requires loopback binding. Use its exact displayed IP and
 port; `localhost` is not an alias for a configured `127.0.0.1` address here. Request
@@ -75,8 +82,14 @@ settings, paths, or download options are rejected.
 Registration sets monitoring on. Movies use `minimumAvailability: released`;
 series preserve the verified Sonarr lookup type (`standard`, `daily`, or `anime`).
 Missing or unsupported types stop registration before any provider write or
-request-history reservation. Series use season folders and monitor regular
-seasons, excluding specials in the lookup result. **Immediate historical searches are disabled**:
+request-history reservation. New Sonarr v5 series explicitly use **English
+metadata** and **Official episode order**. Lookup uses the same English policy;
+this preview does not infer Sonarr's preferred-language setting. The clients show
+this policy before confirmation. Other metadata languages, DVD/Netflix/alternate
+orders, season-title naming, and changing an existing series are not supported
+here. Sonarr v4 retains its existing API v3 defaults. Series use season folders
+and monitor regular seasons, excluding specials in the lookup result.
+**Immediate historical searches are disabled**:
 `searchForMovie`, `searchForMissingEpisodes`, and
 `searchForCutoffUnmetEpisodes` are false. Existing provider automation may still
 act on monitored titles later. This preview does not manage provider commands,
@@ -120,6 +133,7 @@ the only unauthenticated endpoint. Other endpoints require
 | Endpoint | Result |
 | --- | --- |
 | `GET /api/requests/capabilities` | `apiVersion`, `enabled`, `authentication: bearer`, provider kinds/enabled flags. No configuration details. |
+| `GET /api/requests/sonarr` | Authenticated compatibility status: `ready`, `disabled`, `unavailable`, or `unsupported`; verified numeric version and selected API path when ready; v5 preview flag and fixed English/Official policy. No raw provider status or configuration. |
 | `GET /api/requests/search?kind=movie&query=...` | Up to 50 verified search results with status, optional year and saved request ID. Query length 2–100 characters. |
 | `GET /api/requests` | Saved records with bounded provider refresh. `refreshIncomplete` warns when a provider could not be refreshed; previous statuses remain. |
 | `POST /api/requests` | `{kind, externalId}` returns `{apiVersion, item, duplicate}`. HTTP 201 for a new confirmed/rejected record, 202 for uncertain, 200 for a duplicate. Inspect `item.status`. |
@@ -127,7 +141,8 @@ the only unauthenticated endpoint. Other endpoints require
 Errors are `{error:{code,message}}` with safe messages. Codes are `disabled`,
 `unauthorized`, `forbidden_origin`, `invalid_request`, `provider_disabled`,
 `provider_unavailable`, `not_found`, `request_limit`, and `internal_error`.
-There is no administrative integration endpoint and no live configuration test.
+There is no administrative integration endpoint. The authenticated compatibility
+read checks the configured Sonarr status; it does not alter configuration.
 
 ## Validation and API references
 
@@ -139,10 +154,26 @@ failure handling, response-size limits, and refusal to follow redirects.
 `node scripts/requests-smoke.mjs` exercises the running server against synthetic
 providers. No real title, media, or live service is required.
 
+On **2026-10-16**, the official release API identified stable
+[Sonarr v4.0.20.3014](https://github.com/Sonarr/Sonarr/releases/tag/v4.0.20.3014)
+(published 2026-09-16, commit `cab419ade8ac7fcab5bf80394ee492abd35d5f5a`)
+and beta
+[v5.0.0.2635](https://github.com/Sonarr/Sonarr/releases/tag/v5.0.0.2635)
+(published 2026-10-16, commit `a2b6054a8f3746d149a811bddea2a8d063efc35e`).
+Mock contracts are pinned to those versions. The beta adds
+[metadata languages and episode orders](https://github.com/Sonarr/Sonarr/pull/8990),
+which require explicit language and order fields in API v5. This slice supports
+the fixed policy above; it does not expose Sonarr's new settings UI, OIDC,
+alternate-order selection, download progress, or anime list integrations.
+Those upstream features do not add user accounts to Shinema.
+
 API fields were checked against the official upstream
 [Radarr v3 OpenAPI specification](https://github.com/Radarr/Radarr/blob/develop/src/Radarr.Api.V3/openapi.json),
-[Sonarr v3 OpenAPI specification](https://github.com/Sonarr/Sonarr/blob/develop/src/Sonarr.Api.V3/openapi.json),
+[Sonarr stable v3 OpenAPI specification](https://github.com/Sonarr/Sonarr/blob/cab419ade8ac7fcab5bf80394ee492abd35d5f5a/src/Sonarr.Api.V3/openapi.json),
 [Radarr movie controller](https://github.com/Radarr/Radarr/blob/develop/src/Radarr.Api.V3/Movies/MovieController.cs),
-and [Sonarr series controller](https://github.com/Sonarr/Sonarr/blob/develop/src/Sonarr.Api.V3/Series/SeriesController.cs).
+and the pinned beta
+[Sonarr v5 series controller](https://github.com/Sonarr/Sonarr/blob/a2b6054a8f3746d149a811bddea2a8d063efc35e/src/Sonarr.Api.V5/Series/SeriesController.cs),
+[lookup controller](https://github.com/Sonarr/Sonarr/blob/a2b6054a8f3746d149a811bddea2a8d063efc35e/src/Sonarr.Api.V5/Series/SeriesLookupController.cs),
+and [series resource](https://github.com/Sonarr/Sonarr/blob/a2b6054a8f3746d149a811bddea2a8d063efc35e/src/Sonarr.Api.V5/Series/SeriesResource.cs).
 The mocked tests verify this adapter's contract; deployment against an approved
 instance still needs operator validation of its version and policy.
