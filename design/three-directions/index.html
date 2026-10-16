@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Shinema — three directions</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #101211;
+        color: #f1eee7;
+        font:
+          15px 'Segoe UI',
+          system-ui,
+          sans-serif;
+      }
+      button,
+      select {
+        font: inherit;
+      }
+      button {
+        cursor: pointer;
+      }
+      header {
+        max-width: 1500px;
+        margin: auto;
+        padding: 36px 36px 24px;
+      }
+      .eyebrow {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 3px;
+        color: #abaea5;
+      }
+      h1 {
+        font-size: 38px;
+        letter-spacing: -1.5px;
+        font-weight: 500;
+        margin: 10px 0;
+      }
+      header p {
+        color: #a9ada5;
+        margin: 0;
+        line-height: 1.6;
+      }
+      .directions {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
+        margin-top: 28px;
+      }
+      .direction {
+        border: 1px solid #343934;
+        border-radius: 8px;
+        background: #1a1e1b;
+        color: inherit;
+        padding: 20px;
+        text-align: left;
+        min-height: 122px;
+      }
+      .direction[aria-pressed='true'] {
+        border-color: #e3dac5;
+        background: #252a24;
+      }
+      .number {
+        font: 11px monospace;
+        color: #a9ada5;
+      }
+      .direction strong {
+        display: block;
+        font-size: 25px;
+        font-weight: 500;
+        margin: 7px 0;
+      }
+      .direction span:last-child {
+        color: #b7bdb4;
+        font-size: 13px;
+      }
+      .toolbar {
+        display: flex;
+        gap: 20px;
+        flex-wrap: wrap;
+        align-items: center;
+        padding: 16px 0;
+      }
+      .toolbar label {
+        color: #b7bdb4;
+        font-size: 12px;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      select {
+        background: #252a24;
+        border: 1px solid #444a43;
+        color: #f1eee7;
+        border-radius: 4px;
+        padding: 8px 12px;
+      }
+      .hint {
+        margin-left: auto;
+        color: #999f94;
+        font-size: 12px;
+      }
+      .preview-area {
+        padding: 0 36px 32px;
+        max-width: 1500px;
+        margin: auto;
+      }
+      .stage {
+        position: relative;
+        overflow: hidden;
+        background: #090c0b;
+        box-shadow: 0 24px 80px #0008;
+        margin: auto;
+        width: 100%;
+        aspect-ratio: 16/9;
+      }
+      .stage.phone {
+        width: 390px;
+        max-width: 100%;
+        aspect-ratio: 390/844;
+        border: 1px solid #444;
+        border-radius: 22px;
+      }
+      iframe {
+        position: absolute;
+        top: 0;
+        left: 0;
+        border: 0;
+        transform-origin: top left;
+        width: 1600px;
+        height: 900px;
+      }
+      .notes {
+        display: flex;
+        gap: 30px;
+        max-width: 1500px;
+        margin: auto;
+        padding: 0 36px 42px;
+        color: #a9ada5;
+        font-size: 13px;
+        line-height: 1.7;
+      }
+      .notes b {
+        color: #e1dfd7;
+        font-weight: 500;
+      }
+      a {
+        color: #e1dfd7;
+      }
+      button:focus-visible,
+      select:focus-visible,
+      a:focus-visible {
+        outline: 3px solid #c8e1ff;
+        outline-offset: 4px;
+      }
+      @media (max-width: 700px) {
+        header {
+          padding: 24px 18px 12px;
+        }
+        h1 {
+          font-size: 29px;
+        }
+        .directions {
+          gap: 7px;
+        }
+        .direction {
+          padding: 12px;
+          min-height: 140px;
+        }
+        .direction strong {
+          font-size: 20px;
+        }
+        .direction span:last-child {
+          font-size: 11px;
+        }
+        .preview-area {
+          padding: 0 12px 24px;
+        }
+        .notes {
+          padding: 0 18px 30px;
+          display: block;
+        }
+        .hint {
+          display: none;
+        }
+        .toolbar {
+          gap: 10px;
+        }
+        .toolbar label {
+          font-size: 11px;
+        }
+        select {
+          max-width: 130px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="eyebrow">Shinema / design study 01</div>
+      <h1>Your collection. Three ways in.</h1>
+      <p>
+        Explore each direction at TV and phone sizes. The collection stays the
+        same; the experience changes.
+      </p>
+      <div class="directions" aria-label="Design direction">
+        <button class="direction" data-option="marquee" aria-pressed="true">
+          <span class="number">01 / IMMERSIVE</span><strong>Marquee</strong
+          ><span>Artwork first. A quieter cinema at home.</span>
+        </button>
+        <button class="direction" data-option="archive" aria-pressed="false">
+          <span class="number">02 / EDITORIAL</span><strong>Archive</strong
+          ><span>A considered catalogue for collectors.</span>
+        </button>
+        <button class="direction" data-option="signal" aria-pressed="false">
+          <span class="number">03 / PRECISE</span><strong>Signal</strong
+          ><span>A direct path from finding to watching.</span>
+        </button>
+      </div>
+      <div class="toolbar">
+        <label
+          >Screen
+          <select id="view">
+            <option value="home">Home</option>
+            <option value="library">Movie library</option>
+            <option value="detail">Film detail</option>
+            <option value="series">Show detail</option>
+            <option value="player">Player controls</option>
+          </select></label
+        >
+        <label
+          >Size
+          <select id="device">
+            <option value="tv">TV · 1600 × 900</option>
+            <option value="phone">Phone · 390 × 844</option>
+          </select></label
+        >
+        <label
+          >State
+          <select id="state">
+            <option value="ready">Ready / focus</option>
+            <option value="loading">Loading</option>
+            <option value="empty">Empty library</option>
+          </select></label
+        >
+        <span class="hint"
+          >Click the preview, then use ↑ ↓ ← → · Enter · Esc</span
+        >
+      </div>
+    </header>
+    <main class="preview-area">
+      <div class="stage">
+        <iframe
+          title="Interactive Shinema design preview"
+          src="screen.html?option=marquee"
+        ></iframe>
+      </div>
+    </main>
+    <footer class="notes">
+      <div id="tradeoff">
+        <b>Marquee</b> gives artwork room to breathe. Fewer titles are visible
+        at once.
+      </div>
+      <div>
+        <b>About this study</b><br />Original generated artwork and fictional
+        titles. Simulated playback and local interactions. No media server or
+        account connection. No final style selected.
+      </div>
+      <div>
+        <a
+          id="open"
+          href="screen.html?option=marquee"
+          target="_blank"
+          rel="noopener"
+          >Open full-size preview ↗</a
+        ><br />TV layouts shown in Chromium; hardware validation remains
+        separate.
+      </div>
+    </footer>
+    <script type="module" src="comparison.mjs"></script>
+  </body>
+</html>
