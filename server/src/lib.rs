@@ -28,6 +28,9 @@ pub use catalog::Classification;
 pub use ssh::SshConfig;
 mod state_files;
 
+#[cfg(test)]
+mod performance_tests;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Media {
