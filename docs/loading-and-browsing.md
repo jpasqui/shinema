@@ -29,3 +29,9 @@ User scrolling, switching skins, changing a library/search/season, resizing and 
 Measurements are synthetic host/browser checks. Native list geometry and request/focus behavior are tested without a physical renderer; Android compilation alone does not verify a TV, physical remote, phone, IME, accessibility service, HDR or frame time. No live NAS, private media or device configuration is part of this validation.
 
 Library navigation consumes stable IDs and descriptor data independently of display labels and media type. The separate library-configuration work owns descriptor fetching, editable names/order/visibility, top-level destinations and Settings/reset. No theme or navigation file loads arbitrary application code.
+
+A short server batch cannot strand the current viewport: one replaceable demand set drains missing pinned offsets as bounded request slots become available. A newer viewport replaces that demand; explicit failures wait for user retry.
+
+A delayed tail request may move keyboard focus only while its original card and navigation intent remain current. New arrow input, Search, Settings or another control cancels that pending focus move.
+
+Native startup recovers saved catalogue, progress and pending updates independently of startup navigation. Explicit connections and cache writes await that recovery, so early input or exit cannot replace unread durable state with a fresh cache. A failed read blocks writes until a successful retry; a different server never borrows another server's pending progress.

@@ -101,8 +101,10 @@ def audit(kind, path):
             if re.search(host_marker, content, re.IGNORECASE):
                 raise SystemExit('Private host/source marker in playback diagnostics')
             if file.suffix == '.png' and (not content.startswith(b'\x89PNG\r\n\x1a\n')
-                    or content[16:24] != (1280).to_bytes(4, 'big') + (900).to_bytes(4, 'big')):
-                raise SystemExit('Playback screenshots must use the declared fixed viewport')
+                    or content[16:24] not in {
+                        (width).to_bytes(4, 'big') + (900).to_bytes(4, 'big')
+                        for width in (390, 1280)}):
+                raise SystemExit('Playback screenshots must use a declared fixed viewport')
             count += 1
         try:
             data = json.loads((path / 'failure.json').read_text(encoding='utf-8'))

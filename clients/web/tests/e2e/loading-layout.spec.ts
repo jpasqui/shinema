@@ -1,4 +1,5 @@
 import type { Page, Route } from '@playwright/test';
+import { appendFile } from 'node:fs/promises';
 import type { Media } from '../../../../packages/contracts/index.ts';
 import { defaultLibraries } from '../../../../packages/contracts/index.ts';
 import {
@@ -10,17 +11,164 @@ import { test, expect, idFor, mediaFor } from './fixtures.ts';
 type Skin = 'marquee' | 'archive';
 type Box = { x: number; y: number; width: number; height: number };
 type Geometry = Record<string, Box>;
+const diagnosticAnchors = [
+  'brand',
+  'header',
+  'navigation',
+  'navigationItems',
+  'navigationPrimary',
+  'navigationSettings',
+  'feature',
+  'title',
+  'toolbar',
+  'search',
+  'searchAction',
+  'refresh',
+  'heading',
+  'card',
+  'poster',
+  'cardTitle',
+  'cardMeta',
+  'featureTitle',
+  'featureMeta',
+  'featureSummary',
+  'featureAction',
+  'metadata',
+  'description',
+  'play',
+  'artwork',
+  'back',
+  'selected',
+  'tail',
+  'intent',
+] as const;
+type DiagnosticAnchor = (typeof diagnosticAnchors)[number];
+const diagnosticSourceAnchors: Array<[DiagnosticAnchor, string]> = [
+  ['brand', '.brand'],
+  ['navigationPrimary', '.top-navigation-items > button'],
+  ['navigationSettings', '.navigation-settings-button'],
+  ['navigationItems', '.top-navigation-items'],
+  ['navigation', '.top-navigation'],
+  ['featureTitle', '.feature-copy h2, .programme-copy h2'],
+  ['featureMeta', '.feature-meta, .programme-meta'],
+  ['featureSummary', '.hero-summary, .programme-summary'],
+  ['featureAction', '.feature-copy button, .programme-copy button'],
+  ['feature', '[aria-label="Featured title"]'],
+  ['search', '#library-search'],
+  ['searchAction', '.browse-toolbar button[type="submit"]'],
+  ['refresh', '.browse-toolbar > button'],
+  ['toolbar', '.browse-toolbar'],
+  ['heading', '.library-section .section-heading'],
+  ['cardTitle', '.media-card h3'],
+  ['cardMeta', '.media-card .card-copy > span'],
+  ['poster', '.media-card .poster'],
+  ['card', '.media-card'],
+  ['title', '.detail-copy h1, .full-library .page-title'],
+  ['metadata', '.detail-copy .metadata'],
+  ['description', '.detail-copy .description'],
+  ['play', '.detail-copy .primary'],
+  ['artwork', '.detail-backdrop, .detail-layout .poster'],
+  ['back', '.detail > .back-button'],
+  ['tail', '.browse-tail'],
+  ['header', '.header'],
+];
 type Shift = {
   value: number;
   hadRecentInput: boolean;
   startTime: number;
   sources: Array<{
+    anchor: DiagnosticAnchor | 'other';
     selector: string;
     nodeType: string;
     previous: Box;
     current: Box;
   }>;
 };
+type LayoutTrace = {
+  skin: Skin;
+  width: 390 | 1280 | 0;
+  step: number;
+  snapshots: Array<{ step: number; scroll: number[]; geometry: Geometry }>;
+};
+const layoutTraces = new WeakMap<Page, LayoutTrace>();
+
+function diagnosticNumber(
+  value: number,
+  minimum = -1000000,
+  maximum = 1000000,
+  precision = 1000,
+) {
+  return Number.isFinite(value)
+    ? Math.round(Math.max(minimum, Math.min(maximum, value)) * precision) /
+        precision
+    : 0;
+}
+
+function diagnosticBox(box: Box) {
+  return {
+    x: diagnosticNumber(box.x),
+    y: diagnosticNumber(box.y),
+    width: diagnosticNumber(box.width, 0),
+    height: diagnosticNumber(box.height, 0),
+  };
+}
+
+/** Fixed labels and numeric fields only: never export selectors or page text. */
+function layoutDiagnostic(trace: LayoutTrace, line: number, entries: Shift[]) {
+  const report = {
+    schema: 1,
+    line: Math.trunc(diagnosticNumber(line, 1)),
+    skin: trace.skin === 'archive' ? 'archive' : 'marquee',
+    width: trace.width === 390 || trace.width === 1280 ? trace.width : 0,
+    omittedSnapshots: diagnosticNumber(trace.step - trace.snapshots.length, 0),
+    snapshots: trace.snapshots.slice(0, 16).map((snapshot) => ({
+      step: diagnosticNumber(snapshot.step, 0),
+      scroll: snapshot.scroll
+        .slice(0, 2)
+        .map((value) => diagnosticNumber(value)),
+      anchors: Object.fromEntries(
+        diagnosticAnchors.flatMap((anchor) =>
+          snapshot.geometry[anchor]
+            ? [[anchor, diagnosticBox(snapshot.geometry[anchor])]]
+            : [],
+        ),
+      ),
+    })),
+    shifts: {
+      count: diagnosticNumber(entries.length, 0),
+      cls: diagnosticNumber(
+        entries
+          .filter((entry) => !entry.hadRecentInput)
+          .reduce((sum, entry) => sum + entry.value, 0),
+        0,
+        1000000,
+        1000000000000,
+      ),
+      entries: entries.slice(-16).map((entry) => ({
+        value: diagnosticNumber(entry.value, 0, 1, 1000000000000),
+        recentInput: entry.hadRecentInput === true,
+        time: diagnosticNumber(entry.startTime, 0, 1000000000),
+        sources: entry.sources.slice(0, 5).map((source) => ({
+          anchor: diagnosticAnchors.includes(source.anchor as DiagnosticAnchor)
+            ? source.anchor
+            : 'other',
+          kind: source.nodeType === 'text' ? 'text' : 'element',
+          previous: diagnosticBox(source.previous),
+          current: diagnosticBox(source.current),
+        })),
+      })),
+    },
+  };
+  // Retain the first and latest samples if a complex failure fills the budget.
+  while (Buffer.byteLength(JSON.stringify(report)) > 30 * 1024) {
+    if (report.snapshots.length > 2) {
+      report.snapshots.splice(1, 1);
+      report.omittedSnapshots++;
+    } else if (report.shifts.entries.length) report.shifts.entries.shift();
+    else break;
+  }
+  return JSON.stringify(report);
+}
 declare global {
   interface Window {
     __shinemaShifts: { entries: Shift[]; observer: PerformanceObserver };
@@ -201,75 +349,93 @@ async function libraryMock(page: Page, total = 180) {
 }
 
 async function prepare(page: Page, skin: Skin, width = 1280) {
+  layoutTraces.set(page, {
+    skin,
+    width: width === 390 || width === 1280 ? width : 0,
+    step: 0,
+    snapshots: [],
+  });
   await page.setViewportSize({ width, height: 900 });
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const theme = skin === 'archive' ? archiveTheme : defaultTheme;
-  await page.addInitScript((theme) => {
-    localStorage.setItem(
-      'shinema.appearance.v1',
-      JSON.stringify({ version: 1, theme, motion: 'reduced' }),
-    );
-    const entries: Shift[] = [];
-    const sourceSelector = (node: Node | null | undefined) => {
-      let element = node instanceof Element ? node : node?.parentElement;
-      const parts: string[] = [];
-      for (let depth = 0; element && depth < 6; depth++) {
-        const id = element.getAttribute('id');
-        const testId = element.getAttribute('data-testid');
-        const classes = [...element.classList]
-          .map((name) => `.${CSS.escape(name)}`)
-          .join('');
-        const siblings = element.parentElement
-          ? [...element.parentElement.children].filter(
-              (sibling) => sibling.localName === element!.localName,
-            )
-          : [];
-        const position =
-          siblings.length > 1
-            ? `:nth-of-type(${siblings.indexOf(element) + 1})`
-            : '';
-        parts.unshift(
-          `${element.localName}${id ? `#${CSS.escape(id)}` : testId ? `[data-testid=${JSON.stringify(testId)}]` : classes + position}`,
+  await page.addInitScript(
+    ({ theme, sourceAnchors }) => {
+      localStorage.setItem(
+        'shinema.appearance.v1',
+        JSON.stringify({ version: 1, theme, motion: 'reduced' }),
+      );
+      const entries: Shift[] = [];
+      const sourceAnchor = (node: Node | null | undefined) => {
+        const element = node instanceof Element ? node : node?.parentElement;
+        return (
+          sourceAnchors.find(([, selector]) =>
+            element?.closest(selector),
+          )?.[0] ?? 'other'
         );
-        if (id || testId) break;
-        element = element.parentElement;
-      }
-      return parts.join(' > ') || '<detached>';
-    };
-    const box = (rect: DOMRectReadOnly): Box => ({
-      x: rect.x,
-      y: rect.y,
-      width: rect.width,
-      height: rect.height,
-    });
-    const observer = new PerformanceObserver((list) => {
-      for (const entry of list.getEntries()) {
-        const shift = entry as PerformanceEntry & {
-          value: number;
-          hadRecentInput: boolean;
-          sources?: Array<{
-            node?: Node | null;
-            previousRect: DOMRectReadOnly;
-            currentRect: DOMRectReadOnly;
-          }>;
-        };
-        entries.push({
-          value: shift.value,
-          hadRecentInput: shift.hadRecentInput,
-          startTime: shift.startTime,
-          sources: (shift.sources ?? []).map((source) => ({
-            selector: sourceSelector(source.node),
-            nodeType:
-              source.node?.nodeType === Node.TEXT_NODE ? 'text' : 'element',
-            previous: box(source.previousRect),
-            current: box(source.currentRect),
-          })),
-        });
-      }
-    });
-    observer.observe({ type: 'layout-shift', buffered: true });
-    window.__shinemaShifts = { entries, observer };
-  }, theme);
+      };
+      const sourceSelector = (node: Node | null | undefined) => {
+        let element = node instanceof Element ? node : node?.parentElement;
+        const parts: string[] = [];
+        for (let depth = 0; element && depth < 6; depth++) {
+          const id = element.getAttribute('id');
+          const testId = element.getAttribute('data-testid');
+          const classes = [...element.classList]
+            .map((name) => `.${CSS.escape(name)}`)
+            .join('');
+          const siblings = element.parentElement
+            ? [...element.parentElement.children].filter(
+                (sibling) => sibling.localName === element!.localName,
+              )
+            : [];
+          const position =
+            siblings.length > 1
+              ? `:nth-of-type(${siblings.indexOf(element) + 1})`
+              : '';
+          parts.unshift(
+            `${element.localName}${id ? `#${CSS.escape(id)}` : testId ? `[data-testid=${JSON.stringify(testId)}]` : classes + position}`,
+          );
+          if (id || testId) break;
+          element = element.parentElement;
+        }
+        return parts.join(' > ') || '<detached>';
+      };
+      const box = (rect: DOMRectReadOnly): Box => ({
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+      });
+      const observer = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          const shift = entry as PerformanceEntry & {
+            value: number;
+            hadRecentInput: boolean;
+            sources?: Array<{
+              node?: Node | null;
+              previousRect: DOMRectReadOnly;
+              currentRect: DOMRectReadOnly;
+            }>;
+          };
+          entries.push({
+            value: shift.value,
+            hadRecentInput: shift.hadRecentInput,
+            startTime: shift.startTime,
+            sources: (shift.sources ?? []).map((source) => ({
+              anchor: sourceAnchor(source.node),
+              selector: sourceSelector(source.node),
+              nodeType:
+                source.node?.nodeType === Node.TEXT_NODE ? 'text' : 'element',
+              previous: box(source.previousRect),
+              current: box(source.currentRect),
+            })),
+          });
+        }
+      });
+      observer.observe({ type: 'layout-shift', buffered: true });
+      window.__shinemaShifts = { entries, observer };
+    },
+    { theme, sourceAnchors: diagnosticSourceAnchors },
+  );
 }
 
 async function paint(page: Page) {
@@ -317,9 +483,10 @@ async function snapshot(
   selectors: Record<string, string>,
 ): Promise<Geometry> {
   await paint(page);
-  return page.evaluate(
-    (selectors) =>
-      Object.fromEntries(
+  const result = await page.evaluate(
+    (selectors) => ({
+      scroll: [scrollX, scrollY],
+      geometry: Object.fromEntries(
         Object.entries(selectors).map(([name, selector]) => {
           const node = document.querySelector(selector);
           if (!node) throw new Error(`Missing geometry anchor: ${name}`);
@@ -335,8 +502,15 @@ async function snapshot(
           ];
         }),
       ),
+    }),
     selectors,
   );
+  const trace = layoutTraces.get(page);
+  if (trace) {
+    if (trace.snapshots.length === 16) trace.snapshots.splice(1, 1);
+    trace.snapshots.push({ ...result, step: ++trace.step });
+  }
+  return result.geometry;
 }
 
 function differences(before: Geometry, after: Geometry) {
@@ -412,7 +586,35 @@ async function appendEdge(page: Page) {
   await page.mouse.wheel(0, 2);
 }
 
-test.afterEach(async ({ api }) => {
+test.afterEach(async ({ api, page }, testInfo) => {
+  const summary = process.env.GITHUB_STEP_SUMMARY;
+  const trace = layoutTraces.get(page);
+  if (testInfo.status !== testInfo.expectedStatus && trace) {
+    let entries: Shift[] = [];
+    try {
+      await paint(page);
+      entries = await page.evaluate(
+        () => window.__shinemaShifts?.entries ?? [],
+      );
+    } catch {
+      // A closed page still has its preceding numeric geometry snapshots.
+    }
+    const diagnostic = layoutDiagnostic(trace, testInfo.line, entries);
+    await testInfo.attach('generated-layout-diagnostic', {
+      body: Buffer.from(diagnostic),
+      contentType: 'application/json',
+    });
+    if (summary)
+      try {
+        await appendFile(
+          summary,
+          `\nGenerated layout diagnostic\n\n\`\`\`json\n${diagnostic}\n\`\`\`\n`,
+          'utf8',
+        );
+      } catch {
+        // Do not expose the destination, exception, or assertion contents.
+      }
+  }
   expect(api.blockedRequests).toEqual([]);
 });
 
@@ -635,6 +837,92 @@ for (const skin of ['marquee', 'archive'] as const) {
       mock.releaseAll();
     }
   });
+
+  for (const intent of ['card', 'Search'] as const) {
+    test(`${skin}: pending remote tail append preserves newer ${intent} focus and scroll intent`, async ({
+      page,
+      api,
+    }) => {
+      api.total = 120;
+      const mock = await libraryMock(page, 120);
+      mock.hold('catalog:movies::60');
+      try {
+        await prepare(page, skin);
+        await page.goto('/');
+        const first = page.locator(`[data-browse-id="${idFor(0)}"]`);
+        const last = page.locator(`[data-browse-id="${idFor(59)}"]`);
+        const previous = page.locator(`[data-browse-id="${idFor(58)}"]`);
+        await expect(first).toBeVisible();
+        await first.focus();
+        await page.keyboard.press('End');
+        await expect(last).toBeFocused();
+        await page.keyboard.press('ArrowRight');
+        await mock.waitFor('catalog:movies::60');
+        await expect(last).toBeFocused();
+        await expect(page.getByTestId('library-feed')).toHaveAttribute(
+          'data-loaded-count',
+          '60',
+        );
+        await expect(
+          page.locator(`[data-browse-id="${idFor(60)}"]`),
+        ).toHaveCount(0);
+
+        const intended =
+          intent === 'card'
+            ? previous
+            : page.getByLabel('Search titles', { exact: true });
+        if (intent === 'card') await page.keyboard.press('ArrowLeft');
+        else await intended.click();
+        await expect(intended).toBeFocused();
+        const original = await intended.elementHandle();
+        const originalCard = await previous.elementHandle();
+        const anchors = {
+          card: `[data-browse-id="${idFor(58)}"]`,
+          intent:
+            intent === 'card'
+              ? `[data-browse-id="${idFor(58)}"]`
+              : '#library-search',
+        };
+        const before = await snapshot(page, anchors);
+        const scroll = await page.evaluate(() => scrollY);
+
+        mock.release('catalog:movies::60');
+        await expect(page.getByTestId('library-feed')).toHaveAttribute(
+          'data-loaded-count',
+          '120',
+        );
+        await expect(page.getByTestId('library-feed')).toHaveAttribute(
+          'aria-busy',
+          'false',
+        );
+        await paint(page);
+        await expect(intended).toBeFocused();
+        expect(
+          await intended.evaluate(
+            (node, original) =>
+              node === original && node === document.activeElement,
+            original!,
+          ),
+        ).toBe(true);
+        expect(
+          await previous.evaluate(
+            (node, original) =>
+              node === original && node.getAttribute('data-browse-id'),
+            originalCard!,
+          ),
+        ).toBe(idFor(58));
+        expect(differences(before, await snapshot(page, anchors))).toEqual([]);
+        expect(await page.evaluate(() => scrollY)).toBeCloseTo(scroll, 0);
+        expect(
+          mock.calls.filter((call) => call.key === 'catalog:movies::60'),
+        ).toHaveLength(1);
+        await original!.dispose();
+        await originalCard!.dispose();
+      } finally {
+        mock.releaseAll();
+      }
+    });
+  }
 
   test(`${skin}: query and collection changes discard delayed old append/search results`, async ({
     page,

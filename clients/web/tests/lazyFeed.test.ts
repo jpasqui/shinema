@@ -621,6 +621,61 @@ test('incomplete batches cannot exceed twelve retained boundaries even with many
   }
 });
 
+test('short batches drain every latest pinned range beyond the bounded task queue', async () => {
+  let delayed = false;
+  const requests: Array<{
+    offset: number;
+    gate: ReturnType<typeof deferred<unknown>>;
+    released: boolean;
+  }> = [];
+  const single = (offset: number) => ({
+    ...page(offset, 80),
+    items: [item(offset)],
+    nextOffset: offset + 1 < 80 ? offset + 1 : null,
+  });
+  const feed = new LazyFeed(async (offset) => {
+    if (!delayed) return single(offset);
+    const gate = deferred<unknown>();
+    requests.push({ offset, gate, released: false });
+    return gate.promise;
+  }, 'catalog');
+  for (let index = 0; index < 40; index++) await feed.loadNext();
+  delayed = true;
+  const leave = feed.subscribe(() => {
+    assert.ok(feed.getSnapshot().activeRequests <= MAX_ACTIVE_REQUESTS);
+    assert.ok(feed.getSnapshot().queuedRequests <= MAX_QUEUED_REQUESTS);
+    assert.ok(feed.getSnapshot().retainedBatches <= MAX_RETAINED_BATCHES);
+  });
+  let settled = false;
+  const pending = feed.ensureRange(1, 13, 6).then(() => {
+    settled = true;
+  });
+  // Release bounded waves without changing viewport, focus or calling
+  // ensureRange again. Previously offset1 was silently dropped forever.
+  for (let wave = 0; wave < MAX_RETAINED_BATCHES && !settled; wave++) {
+    for (let microtask = 0; microtask < 12; microtask++) await tick();
+    for (const request of requests)
+      if (!request.released) {
+        request.released = true;
+        request.gate.resolve(single(request.offset));
+      }
+  }
+  for (let microtask = 0; microtask < 12; microtask++) await tick();
+  assert.equal(settled, true);
+  await pending;
+  assert.equal(feed.getSnapshot().loading, false);
+  assert.equal(feed.getSnapshot().error, null);
+  assert.equal(feed.getSnapshot().retainedBatches, MAX_RETAINED_BATCHES);
+  for (let offset = 0; offset < MAX_RETAINED_BATCHES; offset++)
+    assert.equal(feed.itemAt(offset)?.id, id(offset));
+  assert.equal(requests.length, MAX_RETAINED_BATCHES - 1);
+  assert.equal(
+    new Set(requests.map(({ offset }) => offset)).size,
+    requests.length,
+  );
+  leave();
+});
+
 test('active HTTP and queue stay bounded; pause settles queued work without starting it', async () => {
   let delayed = false;
   let active = 0;

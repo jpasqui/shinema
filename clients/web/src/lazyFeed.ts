@@ -55,6 +55,12 @@ type Task = {
   promise: Promise<void>;
   resolve: () => void;
 };
+type ViewportDemand = {
+  offsets: number[];
+  promise: Promise<void[]>;
+  resolve: (value: void[]) => void;
+  settled: boolean;
+};
 const priority = (intent: Intent) =>
   intent === 'explicit' ? 0 : intent === 'viewport' ? 1 : 2;
 
@@ -88,6 +94,7 @@ export class LazyFeed {
   private tasks = new Map<number, Task>();
   private queue = new Map<number, Task>();
   private pins = new Set<number>([0]);
+  private viewportDemand?: ViewportDemand;
   private snapshot: FeedSnapshot = Object.freeze({
     revision: 0,
     loadedEnd: 0,
@@ -142,7 +149,12 @@ export class LazyFeed {
       ...this.snapshot,
       ...next,
       revision: this.snapshot.revision + 1,
-      loading: this.flights.size > 0 || this.queue.size > 0,
+      loading:
+        this.flights.size > 0 ||
+        this.queue.size > 0 ||
+        !!this.viewportDemand?.offsets.some((offset) =>
+          this.eligible(offset, false),
+        ),
       activeRequests: this.flights.size,
       queuedRequests: this.queue.size,
       retainedBatches: this.pages.size,
@@ -318,7 +330,62 @@ export class LazyFeed {
     task.resolve();
   }
 
+  private queueTask(
+    offset: number,
+    force: boolean,
+    replacing: boolean,
+    intent: Intent,
+  ): Task {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => {
+      resolve = done;
+    });
+    const task: Task = {
+      offset,
+      force,
+      replacing,
+      intent,
+      generation: this.generation,
+      promise,
+      resolve,
+    };
+    this.tasks.set(offset, task);
+    this.queue.set(offset, task);
+    return task;
+  }
+
+  // Current viewport demand is bounded independently from the task queue. A
+  // short server batch can need more than the nine active/queued slots; admit
+  // the remaining current offsets as completions free space, rather than drop
+  // them and depend on another scroll/render to ask again.
+  private admitViewport() {
+    for (const offset of this.viewportDemand?.offsets ?? []) {
+      if (this.tasks.has(offset) || !this.eligible(offset, false)) continue;
+      if (this.queue.size >= MAX_QUEUED_REQUESTS) {
+        const metadata = [...this.queue.values()].find(
+          (task) => task.intent === 'metadata',
+        );
+        if (!metadata) break;
+        this.cancelTask(metadata);
+      }
+      this.queueTask(offset, false, false, 'viewport');
+    }
+  }
+
+  private settleViewport() {
+    const demand = this.viewportDemand;
+    if (
+      demand &&
+      !demand.settled &&
+      !demand.offsets.some((offset) => this.eligible(offset, false))
+    ) {
+      demand.settled = true;
+      demand.resolve([]);
+    }
+  }
+
   private drain() {
+    this.admitViewport();
     while (this.flights.size < MAX_ACTIVE_REQUESTS && this.queue.size) {
       const task = [...this.queue.values()].sort(
         (a, b) => priority(a.intent) - priority(b.intent),
@@ -337,7 +404,9 @@ export class LazyFeed {
           this.publish();
         },
       );
+      this.admitViewport();
     }
+    this.settleViewport();
   }
 
   private enqueue(
@@ -363,24 +432,10 @@ export class LazyFeed {
         return Promise.resolve();
       this.cancelTask(discard);
     }
-    let resolve!: () => void;
-    const promise = new Promise<void>((done) => {
-      resolve = done;
-    });
-    const task: Task = {
-      offset,
-      force,
-      replacing,
-      intent,
-      generation: this.generation,
-      promise,
-      resolve,
-    };
-    this.tasks.set(offset, task);
-    this.queue.set(offset, task);
+    const task = this.queueTask(offset, force, replacing, intent);
     this.drain();
     this.publish();
-    return promise;
+    return task.promise;
   }
 
   loadOffset(offset: number, force = false, replacing = false): Promise<void> {
@@ -503,23 +558,45 @@ export class LazyFeed {
     );
     this.pins = new Set(
       [
-        0,
-        ...(focused ? [focused.offset] : []),
-        ...viewport.map((segment) => segment.offset),
+        ...new Set([
+          0,
+          ...(focused ? [focused.offset] : []),
+          ...viewport.map((segment) => segment.offset),
+        ]),
       ].slice(0, MAX_RETAINED_BATCHES),
     );
     const segments = [
       ...new Set([...(focused ? [focused] : []), ...viewport]),
     ].filter((segment) => this.pins.has(segment.offset));
+    const offsets = segments.map((segment) => segment.offset);
+    const prior = this.viewportDemand;
+    const same =
+      prior &&
+      prior.offsets.length === offsets.length &&
+      prior.offsets.every((offset, index) => offset === offsets[index]);
+    if (
+      !same ||
+      (prior.settled && offsets.some((offset) => this.eligible(offset, false)))
+    ) {
+      prior?.resolve([]);
+      let resolve!: (value: void[]) => void;
+      const promise = new Promise<void[]>((done) => {
+        resolve = done;
+      });
+      this.viewportDemand = { offsets, promise, resolve, settled: false };
+    }
     for (const task of [...this.tasks.values()])
       if (task.intent !== 'explicit' && !this.pins.has(task.offset))
         this.cancelTask(task);
     this.prune();
-    return Promise.all(
-      segments.map((segment) =>
-        this.enqueue(segment.offset, false, false, 'viewport'),
-      ),
-    );
+    this.drain();
+    if (
+      this.queue.size !== this.snapshot.queuedRequests ||
+      this.flights.size !== this.snapshot.activeRequests ||
+      this.pages.size !== this.snapshot.retainedBatches
+    )
+      this.publish();
+    return this.viewportDemand!.promise;
   }
 
   refreshRange(
@@ -555,6 +632,8 @@ export class LazyFeed {
   }
 
   pause() {
+    this.viewportDemand?.resolve([]);
+    this.viewportDemand = undefined;
     if (!this.flights.size && !this.tasks.size) return;
     this.generation++;
     for (const task of [...this.tasks.values()]) this.cancelTask(task);

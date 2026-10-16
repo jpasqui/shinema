@@ -250,6 +250,11 @@ export function LibraryBrowser({
   const pendingFocus = useRef<{ index: number; scroll?: number } | null>(
     navigation.focusId ? { index: focus, scroll: navigation.scroll } : null,
   );
+  const focusIntent = useRef(0);
+  const cancelPendingFocus = () => {
+    focusIntent.current++;
+    pendingFocus.current = null;
+  };
   const scrollEpoch = useRef(0);
   const consumedScroll = useRef(-1);
   const shows = navigation.collection === 'tv' && !navigation.series;
@@ -289,11 +294,11 @@ export function LibraryBrowser({
   }, [enabled, changed, identity, requestedNavigation, setNavigation]);
   useEffect(() => {
     const open = () => {
-      pendingFocus.current = null;
+      cancelPendingFocus();
       setSettings(true);
     };
     const search = () => {
-      pendingFocus.current = null;
+      cancelPendingFocus();
       document.getElementById('library-search')?.focus();
     };
     window.addEventListener('shinema:library-settings', open);
@@ -344,6 +349,7 @@ export function LibraryBrowser({
   ]);
 
   useLayoutEffect(() => {
+    focusIntent.current++;
     const index = navigation.focusId
       ? (feed.indexOf(navigation.focusId) ?? feed.view.focusIndex)
       : 0;
@@ -468,6 +474,7 @@ export function LibraryBrowser({
   }, [feed, enabled, state.loadedEnd, state.loading, state.error, state.total]);
 
   const replace = (value: Partial<BrowseNavigation>) => {
+    cancelPendingFocus();
     setNavigation({
       ...navigation,
       ...value,
@@ -518,16 +525,26 @@ export function LibraryBrowser({
     else if (event.key === 'End') next = state.loadedEnd - 1;
     else return;
     event.preventDefault();
+    // A delayed append belongs to this particular remote-key intent. A newer
+    // direction or focus choice must win even while the same feed stays live.
+    if (next >= state.loadedEnd && state.error && event.repeat) return;
+    const intent = ++focusIntent.current;
+    const origin = event.currentTarget;
+    pendingFocus.current = null;
     if (next >= state.loadedEnd) {
       if (state.nextOffset !== null) {
         // A held remote key must not retry an outage repeatedly. A new press
         // explicitly retries the failed boundary without moving current focus.
-        if (state.error && event.repeat) return;
         const target = next;
         const priorEnd = state.loadedEnd;
         const request = state.error ? feed.retry() : feed.loadNext();
         void request.then(() => {
-          if (activeFeed.current !== feed) return;
+          if (
+            activeFeed.current !== feed ||
+            focusIntent.current !== intent ||
+            document.activeElement !== origin
+          )
+            return;
           const end = feed.getSnapshot().loadedEnd;
           if (end > priorEnd) move(Math.min(target, end - 1));
         });
@@ -569,7 +586,7 @@ export function LibraryBrowser({
         : ''));
 
   return (
-    <div className="library-shell">
+    <div className="library-shell" onFocusCapture={cancelPendingFocus}>
       <aside className="library-sidebar">
         <p>YOUR LIBRARY</p>
         <nav aria-label="Collections">
@@ -606,7 +623,7 @@ export function LibraryBrowser({
         <button
           className="text-button"
           onClick={() => {
-            pendingFocus.current = null;
+            cancelPendingFocus();
             setSettings((value) => !value);
           }}
         >
@@ -659,7 +676,7 @@ export function LibraryBrowser({
             <input
               id="library-search"
               onFocus={() => {
-                pendingFocus.current = null;
+                cancelPendingFocus();
               }}
               value={search}
               onChange={(event) => setSearch(event.target.value)}
@@ -673,7 +690,7 @@ export function LibraryBrowser({
           <button
             className="text-button"
             onClick={() => {
-              pendingFocus.current = null;
+              cancelPendingFocus();
               onRefresh?.();
               libraryNavigation.reload();
               setRefresh((value) => value + 1);

@@ -16,7 +16,7 @@ import {NativeDetail,NativeHeader,NativeLibrary,NativePlayerChrome} from './skin
 import {nativeSkinLayout} from './skin-layout.ts';
 import {FEED_BATCH_SIZE,NativeFeed,clampFeedAnchor,feedItemTop,feedScrollAnchor,parseFeedBatch,parseFeedCatalog,restoreFeedAnchor} from './feed.ts';
 import {HttpStatusError,loadLibrarySnapshot,visibleLibraries as visibleLibraryDescriptors} from './libraries.ts';
-import {NativeActivity} from './lifecycle.ts';
+import {NativeActivity,StartupHydration} from './lifecycle.ts';
 import type {FeedScope} from './feed.ts';
 
 const Host=NativeModules.ShinemaHost as {readState:()=>Promise<string>;stageState:(value:string)=>Promise<void>;writeState:(value:string)=>Promise<void>;readPreferences:()=>Promise<string>;writePreferences:(value:string)=>Promise<void>;finish:()=>void};
@@ -54,6 +54,7 @@ export default function App(){
   const activeDestination=useRef<ConnectionStamp|null>(null);
   const session=useRef(new SessionGuard());const handler=useRef<(key:Key)=>void>(()=>{});
   const activity=useRef(new NativeActivity());const mounted=useRef(true);
+  const startupStorage=useRef<StartupHydration<Stored>|null>(null);
   const saveCurrent=useRef<()=>Promise<void>>(async()=>{});const persistQueue=useRef(new StorageQueue());
   const syncQueue=useRef(new ProgressQueue());
   const [preferences,setPreferences]=useState<AppearancePreferences>(defaultPreferences);
@@ -167,7 +168,16 @@ export default function App(){
   }
   function appearanceAction(index:number){appearanceActions[index]?.run();}
 
-  function update(value:Stored){store.current=value;setStored(value);}
+  function update(value:Stored){store.current=value;if(mounted.current)setStored(value);}
+  function hydrateStartup(restored:Stored){
+    const scope=scopeFor(restored);
+    try{feed.current.reset(scope,restored.catalog??undefined);}catch{restored={...restored,catalog:null};feed.current.reset(scope);if(mounted.current)setMessage('Saved library data was invalid. Reconnect to refresh.');}
+    update(restored);if(mounted.current)setFeedSnapshot(feed.current.snapshot());
+  }
+  function startupState():StartupHydration<Stored>{
+    if(!startupStorage.current)startupStorage.current=new StartupHydration(()=>Host.readState().then(recover),hydrateStartup);
+    return startupStorage.current;
+  }
   function acceptCatalog(value:Stored,refresh:boolean){
     const scope=scopeFor(value);const oldScope=scopeFor(store.current);const changed=JSON.stringify(scope)!==JSON.stringify(oldScope);const selectedId=feed.current.itemAt(cursorPosition.current)?.id;
     const preserved=!changed&&!refresh&&Boolean(value.catalog)&&!(value.libraries&&value.selectedLibraryId===null);
@@ -184,7 +194,7 @@ export default function App(){
   function persist():Promise<void>{
     // Sample when this queue slot executes, so an old snapshot cannot overwrite
     // a newer successfully activated server after a delayed connection write.
-    return persistQueue.current.run(()=>Host.writeState(JSON.stringify(store.current)));
+    return startupState().run(()=>persistQueue.current.run(()=>Host.writeState(JSON.stringify(store.current))));
   }
   async function syncOne(id:string,value:Progress,destination:ConnectionStamp){
     try{
@@ -210,6 +220,8 @@ export default function App(){
     feed.current.cancelPending();setFeedSnapshot(feed.current.snapshot());const signal=activity.current.beginConnection();const attempt=session.current.beginConnection();setBusy(true);setMessage('Loading library...');
     setOriginText(origin);
     try{
+      await startupState().ready();
+      if(!mounted.current||signal.aborted||!session.current.currentAttempt(attempt))return;
       const current=store.current;const sameOrigin=origin===current.origin;
       const snapshot=await loadLibrarySnapshot(origin,selection??(sameOrigin?current.selectedLibraryId:null),sameOrigin?current.libraries:null,(destination,path)=>activity.current.read(signal,()=>request(destination,path,'GET',undefined,signal)),FEED_BATCH_SIZE);
       const loadedScope=scopeFor({origin,libraries:snapshot.libraries,selectedLibraryId:snapshot.selectedLibraryId});
@@ -245,7 +257,7 @@ export default function App(){
 
   useEffect(()=>{
     let alive=true;mounted.current=true;const startup=activity.current.capture();
-    void Host.readState().then(raw=>{if(!alive||!activity.current.current(startup))return;const restored=recover(raw);if(restored.catalog){try{feed.current.reset(scopeFor(restored),restored.catalog);}catch{restored.catalog=null;setMessage('Saved library data was invalid. Reconnect to refresh.');}}update(restored);setOriginText(restored.origin);if(restored.catalog){setFeedSnapshot(feed.current.snapshot());setRoute('library');}void connect(restored.origin,false);}).catch(()=>{if(alive&&activity.current.current(startup))setMessage('Could not read the saved library. Enter your server address to reconnect.');});
+    void startupState().ready().then(restored=>{if(!alive||!activity.current.current(startup))return;setOriginText(restored.origin);if(store.current.catalog)setRoute('library');void connect(restored.origin,false);}).catch(()=>{if(alive&&activity.current.current(startup))setMessage('Could not read the saved library. Enter your server address to reconnect.');});
     const keys=new NativeEventEmitter(NativeModules.ShinemaHost).addListener('ShinemaKey',event=>{
       const key=event as Partial<Key>;
       if(typeof key.code==='number' && typeof key.action==='number' && typeof key.repeat==='number')handler.current({code:key.code,action:key.action,repeat:key.repeat});
