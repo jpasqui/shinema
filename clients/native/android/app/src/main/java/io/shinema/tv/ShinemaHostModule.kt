@@ -20,7 +20,8 @@ class ShinemaHostModule(private val context:ReactApplicationContext):ReactContex
   }
   override fun getName()="ShinemaHost"
   override fun initialize(){super.initialize();requestNavigation=false;instance=this}
-  override fun invalidate(){if(instance===this){instance=null;requestNavigation=false};super.invalidate()}
+  override fun invalidate(){if(instance===this){instance=null;requestNavigation=false;ShinemaNetwork.revoke()};super.invalidate()}
+  @ReactMethod fun setLocalHttpOrigin(origin:String?,promise:Promise){ShinemaNetwork.setLocalHttpOrigin(origin,promise)}
   @ReactMethod fun setRequestNavigation(enabled:Boolean){requestNavigation=enabled}
   @ReactMethod fun addListener(eventName:String){}
   @ReactMethod fun removeListeners(count:Int){}

@@ -77,7 +77,7 @@ test('request client keeps bearer in memory, sends identity only, and does not f
         : {}),
     });
     assert.equal(call.init.cache, undefined);
-    assert.equal(call.init.redirect, undefined);
+    assert.equal(call.init.redirect, 'error');
     assert.equal(call.init.credentials, 'omit');
   }
   client.lock();

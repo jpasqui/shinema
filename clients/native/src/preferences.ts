@@ -7,7 +7,10 @@ import type {
   ThemeDesign,
 } from '../../../packages/design-tokens/theme.ts';
 import { serverOrigin } from '../../../packages/contracts/index.ts';
-import type { Media } from '../../../packages/contracts/index.ts';
+import type {
+  Media,
+  ServerTransport,
+} from '../../../packages/contracts/index.ts';
 
 export type MotionPreference = 'system' | 'reduced';
 export type AppearancePreferences = {
@@ -116,12 +119,13 @@ export function artworkUri(
   origin: string,
   item: Media | undefined,
   kind: 'poster' | 'backdrop',
+  transport?: ServerTransport,
 ): string | undefined {
   if (!item || !/^[a-f0-9]{64}$/.test(item.id)) return undefined;
   const path = kind === 'poster' ? item.posterPath : item.backdropPath;
   if (path !== `/api/media/${item.id}/${kind}`) return undefined;
   try {
-    return serverOrigin(origin) + path;
+    return serverOrigin(origin, transport) + path;
   } catch {
     return undefined;
   }

@@ -14,6 +14,8 @@ React, React Native TV and react-native-video carry MIT metadata. Hermes carries
 
 Android runtime/build dependencies are a separate Gradle closure: Media3 and AndroidX use Apache-2.0, while Kotlin uses Apache-2.0. The SDK, JDK, Gradle and local FFmpeg are development tools, not vendored product code. The JSON inventory covers Cargo/npm, not a complete APK notice manifest.
 
+The Android HTTP-policy JVM tests use JUnit 4.13.2 under the [Eclipse Public License 1.0](https://github.com/junit-team/junit4/blob/r4.13.2/LICENSE-junit.txt). This test-only dependency is not packaged in the Android APK.
+
 MIT licensing of original code can coexist with these separately retained dependency terms. For any distributed binary, assemble the full runtime notice/license bundle, including native and Maven dependencies, preserve required attribution and NOTICE files, and review any dependency changes. The unsigned development APK is not a public release and no dependency notices have been removed or rewritten.
 
 Primary references: [MIT text](https://opensource.org/license/mit), [Apache 2.0 terms](https://www.apache.org/licenses/LICENSE-2.0), [CC BY 4.0 terms](https://creativecommons.org/licenses/by/4.0/), [Unicode license](https://www.unicode.org/license.txt), [React Native TV](https://github.com/react-native-tvos/react-native-tvos), [react-native-video](https://github.com/TheWidlarzGroup/react-native-video), and [AndroidX Media](https://github.com/androidx/media).

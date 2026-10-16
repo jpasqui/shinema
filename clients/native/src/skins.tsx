@@ -12,6 +12,7 @@ import type {
   ContentSupport,
   Media,
   Progress,
+  ServerTransport,
 } from '../../../packages/contracts/index.ts';
 import type {
   Theme,
@@ -35,6 +36,7 @@ type SkinProps = {
 type Bounds = { y: number; height: number };
 type LibraryProps = SkinProps & {
   origin: string;
+  transport?: ServerTransport;
   itemAt: (index: number) => Media | undefined;
   total: number;
   known: boolean;
@@ -54,6 +56,7 @@ type LibraryProps = SkinProps & {
 };
 type DetailProps = SkinProps & {
   origin: string;
+  transport?: ServerTransport;
   item: Media;
   progress?: Progress;
   busy: boolean;
@@ -73,6 +76,7 @@ export function NativeHeader({
   onLibrary,
   onAppearance,
   onRequests,
+  onActionFocus,
 }: {
   theme: Theme;
   width: number;
@@ -83,6 +87,7 @@ export function NativeHeader({
   onLibrary: (library: LibraryDescriptor) => void;
   onAppearance: () => void;
   onRequests?: () => void;
+  onActionFocus?: (action: 'appearance' | 'requests') => void;
 }) {
   const archive = theme.design.skin === 'archive';
   const colors = theme.colors;
@@ -165,6 +170,7 @@ export function NativeHeader({
             },
           ]}
           onPress={onAppearance}
+          onFocus={() => onActionFocus?.('appearance')}
         >
           <Text
             numberOfLines={1}
@@ -228,6 +234,7 @@ export function NativeHeader({
               selected: focused && headerCursor === libraries.length + 1,
             }}
             onPress={onRequests}
+            onFocus={() => onActionFocus?.('requests')}
             style={{
               width: 128,
               height: 44,
@@ -330,10 +337,15 @@ function Artwork({
   );
 }
 
-function imageFor(origin: string, item: Media | undefined, poster: boolean) {
+function imageFor(
+  origin: string,
+  item: Media | undefined,
+  poster: boolean,
+  transport?: ServerTransport,
+) {
   return (
-    artworkUri(origin, item, poster ? 'poster' : 'backdrop') ??
-    artworkUri(origin, item, poster ? 'backdrop' : 'poster')
+    artworkUri(origin, item, poster ? 'poster' : 'backdrop', transport) ??
+    artworkUri(origin, item, poster ? 'backdrop' : 'poster', transport)
   );
 }
 
@@ -343,6 +355,7 @@ function MarqueeFeature({
   height,
   reduced,
   origin,
+  transport,
   item,
   busy,
   artwork = true,
@@ -352,6 +365,7 @@ function MarqueeFeature({
   height: number;
   reduced: boolean;
   origin: string;
+  transport?: ServerTransport;
   item?: Media;
   busy: boolean;
   artwork?: boolean;
@@ -359,7 +373,7 @@ function MarqueeFeature({
   const layout = nativeSkinLayout(theme, width, height);
   const geometry = nativeReservedGeometry(theme, width, height);
   const colors = theme.colors;
-  const uri = artwork ? imageFor(origin, item, false) : undefined;
+  const uri = artwork ? imageFor(origin, item, false, transport) : undefined;
   return (
     <View
       style={{
@@ -446,6 +460,7 @@ function ArchiveProgramme({
   height,
   reduced,
   origin,
+  transport,
   item,
   busy,
   artwork = true,
@@ -455,6 +470,7 @@ function ArchiveProgramme({
   height: number;
   reduced: boolean;
   origin: string;
+  transport?: ServerTransport;
   item?: Media;
   busy: boolean;
   artwork?: boolean;
@@ -462,7 +478,7 @@ function ArchiveProgramme({
   const layout = nativeSkinLayout(theme, width, height);
   const geometry = nativeReservedGeometry(theme, width, height);
   const colors = theme.colors;
-  const uri = artwork ? imageFor(origin, item, true) : undefined;
+  const uri = artwork ? imageFor(origin, item, true, transport) : undefined;
   return (
     <View
       style={{ height: geometry.feature, marginBottom: 16, overflow: 'hidden' }}
@@ -715,6 +731,7 @@ export function NativeLibrary(props: LibraryProps) {
     height,
     reduced,
     origin,
+    transport,
     itemAt,
     total,
     known,
@@ -748,6 +765,7 @@ export function NativeLibrary(props: LibraryProps) {
     height,
     reduced,
     origin,
+    transport,
     item: featured,
     busy: busy || !known,
     artwork: !featured || contentSupport(featured).supported,
@@ -863,6 +881,7 @@ export function NativeLibrary(props: LibraryProps) {
                             origin,
                             item,
                             theme.design.cards === 'poster',
+                            transport,
                           )
                         : undefined
                     }
@@ -1065,6 +1084,7 @@ export function NativeDetail({
   height,
   reduced,
   origin,
+  transport,
   item,
   progress,
   busy,
@@ -1076,7 +1096,7 @@ export function NativeDetail({
   const geometry = nativeReservedGeometry(theme, width, height);
   const colors = theme.colors;
   const archive = theme.design.skin === 'archive';
-  const uri = imageFor(origin, item, archive);
+  const uri = imageFor(origin, item, archive, transport);
   const bodyTop = useRef(0);
   const copyTop = useRef(0);
   const playBounds = useRef<Bounds>({ y: 0, height: 0 });

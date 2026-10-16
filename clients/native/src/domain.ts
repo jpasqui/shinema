@@ -1,13 +1,18 @@
-import {parseCatalog,parseProgress,serverOrigin} from '../../../packages/contracts/index.ts';
+import {parseCatalog,parseProgress,serverOrigin,localHttpOrigin} from '../../../packages/contracts/index.ts';
 import type {Catalog,Progress} from '../../../packages/contracts/index.ts';
 import {parseLibraries} from '../../../packages/contracts/index.ts';
 import {selectedLibrary,scopedCatalog} from './libraries.ts';
 import type {LibraryNavigation} from './libraries.ts';
-export type Stored=LibraryNavigation & {origin:string;catalog:Catalog|null;progress:Record<string,Progress>;pending:Record<string,Progress>};
-export const fresh=():Stored=>({origin:'https://localhost:8787',catalog:null,progress:{},pending:{},libraries:null,selectedLibraryId:null});
+export type Stored=LibraryNavigation & {origin:string;localHttpOrigin?:string|null;catalog:Catalog|null;progress:Record<string,Progress>;pending:Record<string,Progress>};
+export const fresh=():Stored=>({origin:'https://localhost:8787',localHttpOrigin:null,catalog:null,progress:{},pending:{},libraries:null,selectedLibraryId:null});
 export function recover(raw:string):Stored {
   try{
-    const value=JSON.parse(raw);const origin=serverOrigin(value.origin);let catalog:Catalog|null=null;
+    const value=JSON.parse(raw);let origin:string;let consent:string|null=null;
+    // Keep an unconsented HTTP cache offline without converting its identity or
+    // borrowing another server's consent. Network validators still reject it.
+    try{origin=serverOrigin(value.origin);}catch{origin=localHttpOrigin(value.origin);}
+    if(origin.startsWith('http:')&&typeof value.localHttpOrigin==='string'&&value.localHttpOrigin===origin&&localHttpOrigin(value.localHttpOrigin)===value.localHttpOrigin)consent=origin;
+    let catalog:Catalog|null=null;
     try{if(value.catalog!==null)catalog=parseCatalog(value.catalog);}catch{}
     const progress:Record<string,Progress>={};const pending:Record<string,Progress>={};
     for(const [id,p] of Object.entries(value.progress??{}))if(/^[a-f0-9]{64}$/.test(id)){try{const parsed=parseProgress(p);if(parsed)progress[id]=parsed;}catch{}}
@@ -24,7 +29,7 @@ export function recover(raw:string):Stored {
         else if(catalog)catalog=scopedCatalog(catalog,selectedLibraryId);
       }catch{libraries=null;selectedLibraryId=null;catalog=null;}
     }
-    return {origin,catalog,progress,pending,libraries,selectedLibraryId};
+    return {origin,localHttpOrigin:consent,catalog,progress,pending,libraries,selectedLibraryId};
   }catch{return fresh();}
 }
 export function move(cursor:number,direction:number,count:number):number {

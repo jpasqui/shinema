@@ -3,7 +3,10 @@ import {
   parseSubtitles,
   serverOrigin,
 } from '../../../packages/contracts/index.ts';
-import type { SubtitleTrack } from '../../../packages/contracts/index.ts';
+import type {
+  ServerTransport,
+  SubtitleTrack,
+} from '../../../packages/contracts/index.ts';
 
 const MAX_BYTES = 4 * 1024 * 1024;
 const MAX_CUES = 20000;
@@ -249,11 +252,13 @@ export type SubtitleTransport = {
     origin: string,
     path: string,
     signal: AbortSignal,
+    transport?: ServerTransport,
   ) => Promise<unknown>;
   content: (
     origin: string,
     path: string,
     signal: AbortSignal,
+    transport?: ServerTransport,
   ) => Promise<string>;
 };
 
@@ -277,13 +282,23 @@ async function responseFor(
   origin: string,
   path: string,
   signal: AbortSignal,
+  transport?: ServerTransport,
 ): Promise<Response> {
+  const captured = Object.freeze({
+    localHttpOrigin: transport?.localHttpOrigin ?? null,
+  });
+  const safeOrigin = serverOrigin(origin, captured);
   const options: RequestInit & { redirect: 'error' } = {
     signal,
     redirect: 'error',
   };
-  const response = await fetch(origin + path, options);
-  if (!response.ok || (response.url && new URL(response.url).origin !== origin))
+  const response = await fetch(safeOrigin + path, options);
+  if (
+    !response.ok ||
+    response.redirected ||
+    (response.url &&
+      serverOrigin(new URL(response.url).origin, captured) !== safeOrigin)
+  )
     throw new Error('Subtitle request failed');
   if (Number(response.headers.get('content-length')) > MAX_BYTES)
     throw new Error('Subtitle response is too large');
@@ -337,8 +352,13 @@ export function xhrSubtitleText(
   signal: AbortSignal,
   vtt: boolean,
   create: () => XMLHttpRequest = () => new XMLHttpRequest(),
+  transport?: ServerTransport,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
+    const captured = Object.freeze({
+      localHttpOrigin: transport?.localHttpOrigin ?? null,
+    });
+    const safeOrigin = serverOrigin(origin, captured);
     const xhr = create();
     let settled = false;
     const finish = (error?: Error, value = '') => {
@@ -389,7 +409,9 @@ export function xhrSubtitleText(
         if (
           xhr.status < 200 ||
           xhr.status >= 300 ||
-          (xhr.responseURL && new URL(xhr.responseURL).origin !== origin)
+          (xhr.responseURL &&
+            serverOrigin(new URL(xhr.responseURL).origin, captured) !==
+              safeOrigin)
         )
           throw new Error('Subtitle request failed');
         const text = xhr.responseText;
@@ -412,7 +434,7 @@ export function xhrSubtitleText(
       if (xhr.readyState >= 2) checkHeaders();
     };
     try {
-      xhr.open('GET', origin + path);
+      xhr.open('GET', safeOrigin + path);
       xhr.withCredentials = false;
       xhr.responseType = 'text';
       xhr.send();
@@ -427,12 +449,13 @@ async function subtitleText(
   path: string,
   signal: AbortSignal,
   vtt = false,
+  transport?: ServerTransport,
 ): Promise<string> {
   // RN fetch buffers before resolving, while XHR can abort during a chunked
   // response. This also supports embedded tracks without Content-Length.
   if (typeof XMLHttpRequest !== 'undefined')
-    return xhrSubtitleText(origin, path, signal, vtt);
-  const response = await responseFor(origin, path, signal);
+    return xhrSubtitleText(origin, path, signal, vtt, undefined, transport);
+  const response = await responseFor(origin, path, signal, transport);
   if (
     vtt &&
     !/^text\/vtt(?:;|$)/i.test(response.headers.get('content-type') ?? '')
@@ -442,9 +465,10 @@ async function subtitleText(
 }
 
 const transport: SubtitleTransport = {
-  manifest: async (origin, path, signal) =>
-    JSON.parse(await subtitleText(origin, path, signal)),
-  content: (origin, path, signal) => subtitleText(origin, path, signal, true),
+  manifest: async (origin, path, signal, context) =>
+    JSON.parse(await subtitleText(origin, path, signal, false, context)),
+  content: (origin, path, signal, context) =>
+    subtitleText(origin, path, signal, true, context),
 };
 
 function interruptible<T>(
@@ -468,6 +492,7 @@ export class SubtitleController {
     origin: string;
     id: string;
     languages: readonly string[];
+    transport: ServerTransport;
   } | null = null;
   private discovery: AbortController | null = null;
   private download: AbortController | null = null;
@@ -501,11 +526,20 @@ export class SubtitleController {
     origin: string,
     id: string,
     languages: readonly string[],
+    transport?: ServerTransport,
   ): Promise<void> {
     this.cancel();
-    if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid subtitle media');
-    this.context = { origin: serverOrigin(origin), id, languages };
     this.set({ ...emptySubtitles(), automatic: this.preference === null });
+    if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid subtitle media');
+    const captured = Object.freeze({
+      localHttpOrigin: transport?.localHttpOrigin ?? null,
+    });
+    this.context = {
+      origin: serverOrigin(origin, captured),
+      id,
+      languages: [...languages],
+      transport: captured,
+    };
     await this.discover();
   }
 
@@ -570,6 +604,7 @@ export class SubtitleController {
             context.origin,
             `/api/media/${context.id}/subtitles`,
             request.signal,
+            context.transport,
           ),
           request.signal,
         ),
@@ -619,7 +654,12 @@ export class SubtitleController {
     try {
       const cues = parseSubtitleCues(
         await interruptible(
-          this.io.content(context.origin, track.contentPath, request.signal),
+          this.io.content(
+            context.origin,
+            track.contentPath,
+            request.signal,
+            context.transport,
+          ),
           request.signal,
         ),
       );

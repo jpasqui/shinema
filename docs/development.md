@@ -60,14 +60,16 @@ The Android build uses Gradle 9.4.1, Android platform `android-37.0`, Build Tool
 
 ```sh
 cd android
-gradle --no-daemon :app:assembleRelease
+gradle --no-daemon :app:testReleaseUnitTest :app:assembleRelease
 ```
 
 The result is an unsigned ARM64 release APK for `io.shinema.tv`. No keys, credentials or signing setup are committed. Use an existing approved local test identity for bounded installation; production signing is not configured. Windows native builds may require short directory junctions to avoid Ninja's path-length limit. Keep local SDK paths and helper scripts in ignored `.local`, not tracked files.
 
-The release client requires HTTPS with normal platform certificate validation. Enter an origin such as `https://your-trusted-server.example`, without credentials or an API path. This first loopback server does not yet terminate TLS; release end-to-end use requires a separately approved trusted TLS endpoint. No certificate bypass, generated credential, or cleartext exception is included.
+The native client defaults to HTTPS with normal platform certificate validation. Enter an origin such as `https://your-trusted-server.example`, without credentials or an API path. The Rust loopback server does not terminate TLS; HTTPS needs a separately configured trusted TLS endpoint.
 
-A development HTTP test variant is not included. Any future test transport must be scoped to its exact loopback destination and must preserve the release policy. Device testing requires current operator authorization and availability; do not interrupt a device in use.
+For a trusted local network, setup also offers explicit HTTP consent for the exact server address. HTTP leaves media, library information and playback progress unencrypted. Consent is saved only with a confirmed connection and does not permit other origins, public addresses or HTTPS downgrades. See [local HTTP connections](local-http.md) for address, DNS and redirect rules. This changes neither the Rust loopback binding nor its authentication boundaries.
+
+Device testing requires current operator authorization and availability; do not interrupt a device in use. Temporary device routing for an isolated test must remain bounded to the approved local server and be removed after the session.
 
 Remote controls: arrows browse the eight-card page; Select opens detail/plays; player Select pauses, Left/Right seeks ten seconds, Back returns player to detail to the same library page, then exits at root. Held Back is gated until release. Menu opens server setup outside playback. Up in setup focuses the address field. Cached browsing is available offline; streaming still needs the server.
 

@@ -9,5 +9,5 @@ class MainApplication : Application(), ReactApplication {
   override val reactHost: ReactHost by lazy {
     getDefaultReactHost(context=applicationContext,packageList=PackageList(this).packages.apply { add(ShinemaHostPackage()) })
   }
-  override fun onCreate() { super.onCreate(); loadReactNative(this) }
+  override fun onCreate() { super.onCreate(); ShinemaNetwork.install(); loadReactNative(this) }
 }
