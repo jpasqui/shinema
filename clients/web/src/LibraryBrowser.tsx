@@ -214,32 +214,34 @@ export function LibraryBrowser({
       ready,
     );
   const collectionsReady = libraryNavigation.initialDiscoverySettled && ready;
-  // Once cached destinations have been shown during an outage, reconnecting
-  // must not move the surviving controls. Removed destinations become inert
-  // slots; an explicit local navigation edit releases that reservation.
-  const fallbackCollections = useRef<{
-    preferences: typeof libraryNavigation.preferences;
-    ids: string[];
-  } | null>(null);
+  // Revalidation must not move already actionable destinations, including
+  // a healthy reconnect with no failed request. Current descriptors still
+  // decide labels/actions; new IDs can reuse inactive physical cells.
+  const collectionLayout = useRef({
+    preferences: libraryNavigation.preferences,
+    ids: [] as string[],
+    resetAfterRevision: undefined as number | undefined,
+  });
   if (
-    fallbackCollections.current?.preferences !== libraryNavigation.preferences
-  )
-    fallbackCollections.current = null;
-  if (
-    collectionsReady &&
-    libraryNavigation.unavailable &&
-    !fallbackCollections.current
-  )
-    fallbackCollections.current = {
+    collectionLayout.current.preferences !== libraryNavigation.preferences ||
+    (collectionLayout.current.resetAfterRevision !== undefined &&
+      libraryNavigation.document.revision >
+        collectionLayout.current.resetAfterRevision)
+  ) {
+    collectionLayout.current = {
       preferences: libraryNavigation.preferences,
-      ids: visible.map((descriptor) => descriptor.id),
+      ids: [],
+      resetAfterRevision: undefined,
     };
+  }
   const collectionPositions = collectionSlots(
     visible,
     libraryNavigation.preferences,
     collectionsReady,
-    fallbackCollections.current?.ids,
+    collectionsReady ? collectionLayout.current.ids : [],
   );
+  if (collectionsReady)
+    collectionLayout.current.ids = collectionPositions.map(({ id }) => id);
   const identity = browseIdentity(navigation);
   const session = useMemo(
     () => (enabled ? sessionFor(navigation) : idleSession),
@@ -683,7 +685,7 @@ export function LibraryBrowser({
                 key={id}
                 data-collection-slot={
                   libraryNavigation.preferences.order.includes(id) ||
-                  fallbackCollections.current?.ids.includes(id)
+                  collectionLayout.current.ids.includes(id)
                     ? id
                     : undefined
                 }
@@ -711,6 +713,10 @@ export function LibraryBrowser({
             preferences={libraryNavigation.preferences}
             onPreferences={libraryNavigation.savePreferences}
             onSaved={() => {
+              // A deliberate server-settings edit may apply its new order;
+              // ordinary Refresh/online events preserve mounted positions.
+              collectionLayout.current.resetAfterRevision =
+                libraryNavigation.document.revision;
               cache.current = {};
               for (const session of sessions.values()) session.feed.pause();
               sessions.clear();
@@ -855,6 +861,7 @@ export function LibraryBrowser({
             ref={grid}
             className="poster-grid"
             data-testid="library-feed"
+            data-library-revision={navigation.revision}
             data-loaded-count={state.loadedEnd}
             data-retained-count={state.retainedCount}
             aria-label="Library titles"
