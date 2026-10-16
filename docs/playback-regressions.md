@@ -27,6 +27,12 @@ The existing `web-smoke.mjs` and `full-library-smoke.mjs` still own actual Rust 
 
 Subtitles have no selection controls or client contract yet, so this suite adds no subtitle assertions. Native full-library browsing is also unfinished. These host checks establish neither Shield/TV remote handling nor Android decoder, Safari native-HLS, audio, NAS, real disconnect timing, or device resume behavior. No production client/server code or visible UI changes are part of this test expansion.
 
+## Failure diagnostics
+
+On failure, Playwright captures a viewport-only 1280x900 screenshot before teardown, with a five-second capture timeout. Traces and recordings are disabled, and the test Vite server hides its source-path error overlay. A reporter retains at most 16 screenshots of 2 MiB each, plus a structured JSON summary and workload log capped by audit at 64 KiB each. Logs identify the source-relative test location, outcome, error count and screenshot availability. Raw error messages/stacks, console output, request URLs, test attachments and media are excluded. Startup failures retain a structured runner-error count without requiring a screenshot.
+
+CI audits the dedicated ignored `ci-artifacts/playback-failure` directory and uploads `shinema-playback-failure-<head>` for seven days whenever the playback step fails, independently of the later browser-smoke step. The exact file allowlist, PNG signature/viewport, counts, sizes, summary/log consistency and private-content/path checks must pass before upload. Raw Playwright output remains under ignored `clients/web/.local/playback-results` and is never uploaded. Audit locally with `python scripts/audit_ci_artifacts.py playback-diagnostics ci-artifacts/playback-failure` after a failed run.
+
 ## Native races requiring separate fixes
 
 The current native session helpers have two independently reproduced races. These are coordination follow-ups, not knowingly failing required CI tests in this PR. All sequences use one captured HTTPS origin, a synthetic 64-character media ID, in-memory storage, and explicitly held promises; no actual network or device is needed.

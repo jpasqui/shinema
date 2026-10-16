@@ -79,6 +79,61 @@ def audit(kind, path):
                 raise SystemExit('Unexpected file in browser failure evidence')
             check(file.name, file.read_bytes())
             count += 1
+    elif kind == 'playback-diagnostics':
+        if path.is_symlink() or not path.is_dir():
+            raise SystemExit('Playback diagnostics require an ordinary directory')
+        files = list(path.iterdir())
+        if not 2 <= len(files) <= 18:
+            raise SystemExit('Playback diagnostic file count exceeds its bound')
+        for file in files:
+            if file.is_symlink() or not file.is_file() or not re.fullmatch(
+                    r'(?:failure-(?:[1-9]|1[0-6])\.png|failure\.json|browser-test\.log)', file.name):
+                raise SystemExit('Unexpected file in playback diagnostics')
+            limit = 2 * 1024 * 1024 if file.suffix == '.png' else 64 * 1024
+            if not 0 < file.stat().st_size <= limit:
+                raise SystemExit('Playback diagnostic file exceeds its bound')
+            content = file.read_bytes()
+            check(file.name, content)
+            # Short drive-root strings can occur by chance in compressed PNGs.
+            # Use distinctive host markers there; text logs reject any drive root.
+            host_marker = (rb'[A-Z]:[\\/]+Users[\\/]|/(?:Users|home|tmp|var|mnt)/|id_ed25519|known_hosts'
+                           if file.suffix == '.png' else rb'[A-Z]:[\\/]|/(?:Users|home|tmp|var|mnt)/|id_ed25519|known_hosts')
+            if re.search(host_marker, content, re.IGNORECASE):
+                raise SystemExit('Private host/source marker in playback diagnostics')
+            if file.suffix == '.png' and (not content.startswith(b'\x89PNG\r\n\x1a\n')
+                    or content[16:24] != (1280).to_bytes(4, 'big') + (900).to_bytes(4, 'big')):
+                raise SystemExit('Playback screenshots must use the declared fixed viewport')
+            count += 1
+        try:
+            data = json.loads((path / 'failure.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            raise SystemExit('Playback diagnostic summary is missing or invalid')
+        if (not isinstance(data, dict) or set(data) != {'schema', 'generatedOnly', 'status', 'runnerErrors', 'omittedFailures', 'failures'}
+                or data['schema'] != 1 or data['generatedOnly'] is not True
+                or data['status'] not in {'failed', 'timedout', 'interrupted'}
+                or type(data['runnerErrors']) is not int or not 0 <= data['runnerErrors'] <= 100
+                or type(data['omittedFailures']) is not int or not 0 <= data['omittedFailures'] <= 1000000
+                or not isinstance(data['failures'], list) or len(data['failures']) > 16):
+            raise SystemExit('Playback diagnostic summary is missing or invalid')
+        expected = {'failure.json', 'browser-test.log'}
+        lines = [f"Generated-only playback suite: {data['status']}",
+                 f"runnerErrors={data['runnerErrors']} omittedFailures={data['omittedFailures']}"]
+        for index, item in enumerate(data['failures'], 1):
+            if (not isinstance(item, dict) or set(item) != {'source', 'line', 'outcome', 'errorCount', 'screenshot'}
+                    or not isinstance(item['source'], str) or not re.fullmatch(r'tests/e2e/[a-z0-9-]+\.spec\.ts', item['source'])
+                    or type(item['line']) is not int or not 1 <= item['line'] <= 1000000
+                    or item['outcome'] not in {'passed', 'failed', 'timedOut', 'skipped', 'interrupted'}
+                    or type(item['errorCount']) is not int or not 0 <= item['errorCount'] <= 100
+                    or type(item['screenshot']) is not bool):
+                raise SystemExit('Playback failure record is invalid')
+            screenshot = f'failure-{index}.png' if item['screenshot'] else 'unavailable'
+            if item['screenshot']:
+                expected.add(screenshot)
+            lines.append(f"{item['source']}:{item['line']} outcome={item['outcome']} errors={item['errorCount']} screenshot={screenshot}")
+        if {file.name for file in files} != expected:
+            raise SystemExit('Playback diagnostic screenshots do not match the summary')
+        if (path / 'browser-test.log').read_text(encoding='utf-8') != '\n'.join(lines) + '\n':
+            raise SystemExit('Playback diagnostic log contains unexpected content')
     elif kind == 'public-fixtures':
         expected = {'before-movies.png', 'before-series.png', 'after-movies.png',
                     'after-series.png', 'interactions.webm', 'provenance.json'}
@@ -139,7 +194,7 @@ def audit(kind, path):
             if digest != hashlib.sha256((path / name).read_bytes()).hexdigest():
                 raise SystemExit('Public fixture evidence hash mismatch')
     else:
-        raise SystemExit('Expected web, android, diagnostics or public-fixtures')
+        raise SystemExit('Expected web, android, diagnostics, playback-diagnostics or public-fixtures')
     print(f'Audited {count} allowlisted files: no forbidden content or unexpected files detected.')
 
 
