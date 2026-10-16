@@ -10,6 +10,7 @@ fn fixture(movies: u32, shows: u32, episodes: u32) -> (tempfile::TempDir, Arc<Li
     fs::create_dir(&root).unwrap();
     let mut library = Library::open(&root, &temp.path().join("state")).unwrap();
     let owned = Arc::get_mut(&mut library).unwrap();
+    owned.database = Mutex::new(Connection::open_in_memory().unwrap());
     for index in 0..movies + shows * episodes {
         let movie = index < movies;
         let number = index.saturating_sub(movies);
@@ -41,6 +42,7 @@ fn fixture(movies: u32, shows: u32, episodes: u32) -> (tempfile::TempDir, Arc<Li
             },
         );
     }
+    owned.series_entries = index_series(&owned.entries);
     catalog::replace_index(
         owned.database.get_mut().unwrap(),
         owned.entries.values().map(|e| e.media.clone()),
@@ -72,6 +74,11 @@ fn browse_benchmark() {
         .unwrap();
     let _runtime = runtime.enter();
     let (_temp, library) = fixture(100_000, 1000, 20);
+    let sid = library
+        .entries
+        .values()
+        .find_map(|entry| entry.media.classification.series_id.clone())
+        .unwrap();
     for (name, query) in [
         (
             "movies-first",
@@ -99,6 +106,16 @@ fn browse_benchmark() {
                 ..Default::default()
             },
         ),
+        (
+            "episodes-page",
+            catalog::CatalogQuery {
+                collection: Some("tv".into()),
+                series: Some(sid),
+                season: Some(1),
+                limit: Some(60),
+                ..Default::default()
+            },
+        ),
     ] {
         // CatalogQuery intentionally has no Clone requirement in production.
         let result = measure(
@@ -106,9 +123,10 @@ fn browse_benchmark() {
                 let query = catalog::CatalogQuery {
                     collection: query.collection.clone(),
                     search: query.search.clone(),
+                    series: query.series.clone(),
+                    season: query.season,
                     offset: query.offset,
                     limit: query.limit,
-                    ..Default::default()
                 };
                 black_box(catalog::page(&library.database.lock().unwrap(), query).unwrap());
             },
@@ -134,7 +152,34 @@ fn browse_benchmark() {
         30,
     );
     println!("series-page: {result}");
+    let db = library.database.lock().unwrap();
+    let pages: u64 = db
+        .query_row("PRAGMA page_count", [], |row| row.get(0))
+        .unwrap();
+    let page_bytes: u64 = db
+        .query_row("PRAGMA page_size", [], |row| row.get(0))
+        .unwrap();
+    println!("catalogSqliteBytes: {}", pages * page_bytes);
     println!(
         "workload: 100000 movies + 1000 series * 20 episodes; 60 rows/page; 3 warmups; concurrency 1; memory SQLite; metadata providers disabled"
     );
+}
+
+#[test]
+fn series_representatives_preserve_the_first_media_id_without_full_page_scans() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _runtime = runtime.enter();
+    let (_temp, library) = fixture(30, 10, 3);
+    assert_eq!(library.series_entries.len(), 10);
+    for (sid, id) in &library.series_entries {
+        let former = library
+            .entries
+            .values()
+            .find(|entry| entry.media.classification.series_id.as_ref() == Some(sid))
+            .unwrap();
+        assert_eq!(&former.media.id, id);
+    }
 }

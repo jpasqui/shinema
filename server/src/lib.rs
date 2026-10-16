@@ -102,6 +102,7 @@ pub struct Library {
     remote: Option<SshConfig>,
     remote_transfers: Arc<tokio::sync::Semaphore>,
     entries: BTreeMap<String, Entry>,
+    series_entries: BTreeMap<String, String>,
     database: Mutex<Connection>,
     playback: playback::Engine,
     metadata: Arc<metadata::Engine>,
@@ -170,6 +171,18 @@ fn media_id(relative: &Path) -> String {
         hash.update(bytes);
     }
     format!("{:x}", hash.finalize())
+}
+
+fn index_series(entries: &BTreeMap<String, Entry>) -> BTreeMap<String, String> {
+    let mut series = BTreeMap::new();
+    for (id, entry) in entries {
+        if let Some(sid) = &entry.media.classification.series_id {
+            // Preserve the former values().find() representative: the first
+            // media ID in the library's deterministic BTreeMap order.
+            series.entry(sid.clone()).or_insert_with(|| id.clone());
+        }
+    }
+    series
 }
 
 impl Library {
@@ -241,6 +254,7 @@ impl Library {
             directory: Some(directory),
             remote: None,
             remote_transfers: Arc::new(tokio::sync::Semaphore::new(4)),
+            series_entries: index_series(&entries),
             entries,
             database: Mutex::new(db),
             playback,
@@ -372,6 +386,7 @@ impl Library {
             directory: None,
             remote: Some(config),
             remote_transfers: Arc::new(tokio::sync::Semaphore::new(4)),
+            series_entries: index_series(&entries),
             entries,
             database: Mutex::new(db),
             playback,
@@ -531,9 +546,9 @@ async fn series(
     {
         let sid = row["id"].as_str().unwrap_or_default();
         if let Some(entry) = library
-            .entries
-            .values()
-            .find(|entry| entry.media.classification.series_id.as_deref() == Some(sid))
+            .series_entries
+            .get(sid)
+            .and_then(|id| library.entries.get(id))
         {
             let mut item = entry.media.clone();
             item.title = row["title"].as_str().unwrap_or_default().to_string();
