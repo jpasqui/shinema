@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Shinema theme v1",
+  "description": "Declarative colors and bounded choices of application-authored presentation only; no executable code, CSS, fonts or remote resources. Imports are limited to 8192 UTF-8 bytes. Runtime validation additionally enforces 4.5:1 text, muted and danger contrast on every solid surface, 4.5:1 onAccent/accent contrast, and 3:1 focus contrast on every solid surface. Render text and focus over solid scrims when artwork is behind them. The unreleased palette-only prototype is rejected; design is required and no migration is inferred.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "name", "colors", "design"],
+  "properties": {
+    "version": { "const": 1 },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 48,
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f-\\u009f<>](?:[^\\u0000-\\u001f\\u007f-\\u009f<>]*[^\\s\\u0000-\\u001f\\u007f-\\u009f<>])?(?![\\s\\S])"
+    },
+    "design": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["skin", "typography", "density", "cards", "motion"],
+      "properties": {
+        "skin": { "type": "string", "enum": ["marquee", "archive"] },
+        "typography": {
+          "type": "string",
+          "enum": ["cinema", "editorial", "system"]
+        },
+        "density": { "type": "string", "enum": ["comfortable", "compact"] },
+        "cards": { "type": "string", "enum": ["poster", "landscape"] },
+        "motion": { "type": "string", "enum": ["subtle", "still"] }
+      }
+    },
+    "colors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "background",
+        "surface",
+        "elevated",
+        "text",
+        "muted",
+        "accent",
+        "onAccent",
+        "focus",
+        "danger"
+      ],
+      "properties": {
+        "background": { "$ref": "#/$defs/color" },
+        "surface": { "$ref": "#/$defs/color" },
+        "elevated": { "$ref": "#/$defs/color" },
+        "text": { "$ref": "#/$defs/color" },
+        "muted": { "$ref": "#/$defs/color" },
+        "accent": { "$ref": "#/$defs/color" },
+        "onAccent": { "$ref": "#/$defs/color" },
+        "focus": { "$ref": "#/$defs/color" },
+        "danger": { "$ref": "#/$defs/color" }
+      }
+    }
+  },
+  "$defs": {
+    "color": {
+      "type": "string",
+      "minLength": 7,
+      "maxLength": 7,
+      "pattern": "^#[0-9a-fA-F]{6}$"
+    }
+  }
+}

@@ -6,7 +6,14 @@ export function MetadataCredits() {
       <p>Local files remain browsable when provider metadata is unavailable.</p>
       <p>
         <a href="https://www.themoviedb.org" target="_blank" rel="noreferrer">
-          <img src={logo} alt="TMDB" width="100" />
+          <img
+            src={logo}
+            alt="TMDB"
+            width="100"
+            height="13"
+            loading="lazy"
+            decoding="async"
+          />
         </a>
       </p>
       <p>

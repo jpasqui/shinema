@@ -26,6 +26,8 @@ import {
 import type { Cache } from './model.ts';
 import { Artwork } from './Artwork.tsx';
 import { MediaPoster } from './MediaPoster.tsx';
+import { AppearanceButton } from './Appearance.tsx';
+import { LibraryFeature, SkinHeader, DetailPresentation } from './skins.tsx';
 import { TopNavigation } from './TopNavigation.tsx';
 import { useLibraries } from './libraries.ts';
 import type { TopNavigationDestination } from '../../../packages/contracts/navigation.ts';
@@ -66,6 +68,39 @@ function Poster({ item, large = false }: { item: Media; large?: boolean }) {
       className={`poster art-${Math.max(0, artwork(item))}${large ? ' large' : ''}`}
     >
       <Artwork kind={Math.max(0, artwork(item))} />
+    </div>
+  );
+}
+
+function DetailBackdrop({ source }: { source?: string }) {
+  const [loaded, setLoaded] = useState<string>();
+  const [failed, setFailed] = useState<string>();
+  const state = !source
+    ? 'missing'
+    : failed === source
+      ? 'failed'
+      : loaded === source
+        ? 'loaded'
+        : 'loading';
+  return (
+    <div
+      className="detail-backdrop"
+      aria-hidden="true"
+      data-artwork-state={state}
+    >
+      {source && failed !== source ? (
+        <img
+          src={source}
+          alt=""
+          width="1600"
+          height="900"
+          decoding="async"
+          onLoad={() => setLoaded(source)}
+          onError={() => setFailed(source)}
+        />
+      ) : (
+        <div className="detail-artwork-fallback" />
+      )}
     </div>
   );
 }
@@ -130,6 +165,14 @@ export default function App() {
     [persist],
   );
   const refresh = useCallback(async () => {
+    // Connected browsing owns its bounded feed from the first paint. Its loading
+    // shell must not be replaced by a different catalogue after discovery.
+    if (!demo) {
+      for (const [id, progress] of Object.entries(cache.current.pending))
+        void sync(id, progress);
+      setLoading(false);
+      return;
+    }
     catalogAbort.current?.abort();
     const controller = new AbortController();
     catalogAbort.current = controller;
@@ -315,13 +358,9 @@ export default function App() {
     cards.current[next]?.focus();
   };
   const items = cache.current.catalog?.items ?? [];
-  const fullLibrary =
-    !demo &&
-    (cache.current.catalog?.fullLibrary === true ||
-      items.some((item) => item.collection));
+  const fullLibrary = !demo;
   useEffect(() => {
     if (!navigationIntent || route !== 'library' || !fullLibrary) return;
-    // Deliver after the browse view mounts and installs its event listeners.
     const frame = requestAnimationFrame(() => {
       window.dispatchEvent(new Event(`shinema:library-${navigationIntent}`));
       setNavigationIntent(null);
@@ -351,8 +390,8 @@ export default function App() {
   const featured =
     items.find((item) => item.title.includes('Orbit')) ?? items[0];
   return (
-    <div className="app" data-cache-version={version}>
-      <header className="header">
+    <div className="app" data-cache-version={version} data-route={route}>
+      <SkinHeader>
         <button
           className="brand"
           onClick={showLibrary}
@@ -369,7 +408,8 @@ export default function App() {
         <span className="context-label">
           {demo ? 'Demo library' : 'Connected library'}
         </span>
-      </header>
+        <AppearanceButton />
+      </SkinHeader>
       {storageError && (
         <div className="notice" role="alert">
           Browser storage is unavailable. Resume changes will last for this
@@ -388,16 +428,11 @@ export default function App() {
         />
       ) : route === 'detail' && selected ? (
         <main className={`detail${!demo ? ' connected-detail' : ''}`}>
-          {!demo && selected.backdropPath && (
-            <div className="detail-backdrop" aria-hidden="true">
-              <img src={selected.backdropPath} alt="" />
-            </div>
-          )}
+          {!demo && <DetailBackdrop source={selected.backdropPath} />}
           <button ref={back} className="back-button" onClick={showLibrary}>
             &larr; Back to library
           </button>
-          <div className="detail-layout">
-            <Poster item={selected} large />
+          <DetailPresentation artwork={<Poster item={selected} large />}>
             <section className="detail-copy">
               <p className="detail-category">
                 {demo
@@ -408,7 +443,7 @@ export default function App() {
                       ? 'Movie'
                       : 'Library title'}
               </p>
-              <h1>{title(selected)}</h1>
+              <h1 title={title(selected)}>{title(selected)}</h1>
               <div className="metadata">
                 <span>
                   {demo
@@ -444,24 +479,30 @@ export default function App() {
               <p className="quiet">
                 Starts muted &middot; progress saved automatically
               </p>
-              {selected.metadataUrl && (
-                <p className="quiet">
-                  Metadata from{' '}
-                  <a
-                    href={selected.metadataUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    {selected.metadataSource === 'tvmaze' ? 'TVmaze' : 'TMDB'}
-                  </a>
-                  {selected.metadataSource === 'tvmaze' ? ' · CC BY-SA' : ''}
-                </p>
-              )}
+              <p className="quiet metadata-source">
+                {selected.metadataUrl && (
+                  <>
+                    Metadata from{' '}
+                    <a
+                      href={selected.metadataUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {selected.metadataSource === 'tvmaze' ? 'TVmaze' : 'TMDB'}
+                    </a>
+                    {selected.metadataSource === 'tvmaze' ? ' - CC BY-SA' : ''}
+                  </>
+                )}
+              </p>
             </section>
-          </div>
+          </DetailPresentation>
         </main>
       ) : fullLibrary ? (
         <LibraryBrowser
+          libraryNavigation={libraryNavigation}
+          onRefresh={() => {
+            void refresh();
+          }}
           navigation={browseNavigation}
           setNavigation={setBrowseNavigation}
           onSelect={showDetail}
@@ -477,25 +518,17 @@ export default function App() {
                 : 'Browse your saved titles.'}
             </p>
           </div>
-          {featured && (
-            <section className="feature" aria-label="Featured title">
-              <Artwork kind={Math.max(0, artwork(featured))} wide />
-              <div className="feature-shade" />
-              <div className="feature-copy">
-                <p className="feature-label">Featured</p>
-                <h2 title={title(featured)}>{title(featured)}</h2>
-                <p className="feature-meta">
-                  {demo ? 'Generated sample · 1 min' : 'Direct playback'}
-                </p>
-                <button
-                  className="primary"
-                  onClick={() => showDetail(featured, items.indexOf(featured))}
-                >
-                  View details <span aria-hidden="true">&rarr;</span>
-                </button>
-              </div>
-            </section>
-          )}
+          <LibraryFeature
+            item={featured}
+            loading={loading && !featured}
+            demo={demo}
+            progress={
+              featured ? cache.current.progress[featured.id] : undefined
+            }
+            onOpen={() => {
+              if (featured) showDetail(featured, items.indexOf(featured));
+            }}
+          />
           <section className="library-section">
             <div className="section-heading">
               <h2>
@@ -540,13 +573,39 @@ export default function App() {
                 aria-busy="true"
               >
                 {[0, 1, 2].map((i) => (
-                  <div key={i} className="skeleton" />
+                  <div
+                    key={i}
+                    className="media-card media-card--loading skeleton-card"
+                    aria-hidden="true"
+                  >
+                    <div className="poster skeleton" />
+                    <div className="card-copy">
+                      <h3>&nbsp;</h3>
+                      <span>&nbsp;</span>
+                    </div>
+                    <div
+                      className="watch-progress"
+                      style={{ visibility: 'hidden' }}
+                    />
+                  </div>
                 ))}
               </div>
             ) : items.length ? (
               <div className="poster-grid">
                 {items.map((item, index) => {
                   const progress = cache.current.progress[item.id];
+                  const percent =
+                    progress && progress.durationSeconds > 0
+                      ? Math.max(
+                          0,
+                          Math.min(
+                            100,
+                            (progress.positionSeconds /
+                              progress.durationSeconds) *
+                              100,
+                          ),
+                        )
+                      : 0;
                   return (
                     <button
                       key={item.id}
@@ -571,18 +630,18 @@ export default function App() {
                               : item.container.toUpperCase()}
                         </span>
                       </div>
-                      {progress && (
-                        <div
-                          className="watch-progress"
-                          aria-label={`${Math.round((progress.positionSeconds / progress.durationSeconds) * 100)} percent watched`}
-                        >
-                          <div
-                            style={{
-                              width: `${(progress.positionSeconds / progress.durationSeconds) * 100}%`,
-                            }}
-                          />
-                        </div>
-                      )}
+                      <div
+                        className="watch-progress"
+                        style={{ visibility: progress ? 'visible' : 'hidden' }}
+                        aria-hidden={!progress}
+                        aria-label={
+                          progress
+                            ? `${Math.round(percent)} percent watched`
+                            : undefined
+                        }
+                      >
+                        <div style={{ width: `${percent}%` }} />
+                      </div>
                     </button>
                   );
                 })}

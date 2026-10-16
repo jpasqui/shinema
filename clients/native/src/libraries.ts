@@ -57,7 +57,21 @@ export async function loadLibrarySnapshot(
   preferred: string | null,
   previous: Libraries | null,
   request: (origin: string, path: string) => Promise<unknown>,
+  firstPageLimit = 500,
 ): Promise<LibrarySnapshot> {
+  if (
+    !Number.isSafeInteger(firstPageLimit) ||
+    firstPageLimit < 1 ||
+    firstPageLimit > 500
+  )
+    throw new Error('Invalid first library batch size');
+  const firstCatalog = (value: unknown, id?: string) => {
+    const catalog =
+      id === undefined ? parseCatalog(value) : scopedCatalog(value, id);
+    if (catalog.items.length > firstPageLimit)
+      throw new Error('Server exceeded first library batch size');
+    return catalog;
+  };
   let libraries: Libraries;
   try {
     libraries = parseLibraries(await request(origin, '/api/libraries'));
@@ -70,7 +84,9 @@ export async function loadLibrarySnapshot(
     return {
       libraries: null,
       selectedLibraryId: null,
-      catalog: parseCatalog(await request(origin, '/api/catalog?limit=500')),
+      catalog: firstCatalog(
+        await request(origin, `/api/catalog?limit=${firstPageLimit}`),
+      ),
     };
   }
   if (previous && libraries.revision < previous.revision)
@@ -79,10 +95,10 @@ export async function loadLibrarySnapshot(
   const catalog =
     selectedLibraryId === null
       ? { apiVersion: 1 as const, items: [] }
-      : scopedCatalog(
+      : firstCatalog(
           await request(
             origin,
-            `/api/catalog?library=${encodeURIComponent(selectedLibraryId)}&limit=500&revision=${libraries.revision}`,
+            `/api/catalog?library=${encodeURIComponent(selectedLibraryId)}&limit=${firstPageLimit}&revision=${libraries.revision}`,
           ),
           selectedLibraryId,
         );

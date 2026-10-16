@@ -21,6 +21,19 @@ for (const name of ['Orbit', 'Horizon', 'Pulse'])
 process.env.VITE_DEMO_MODE = 'true';
 process.env.SHINEMA_DEMO_DELAY_MS = '700';
 process.env.SHINEMA_API_ORIGIN = 'http://127.0.0.1:28887';
+const environment = {
+  ...process.env,
+  SHINEMA_MEDIA_ROOT: join(local, 'media'),
+  SHINEMA_STATE_DIR: join(run, 'state'),
+  SHINEMA_BIND: '127.0.0.1:28887',
+};
+for (const key of [
+  'SHINEMA_SSH_CONFIG',
+  'SHINEMA_TMDB_TOKEN_FILE',
+  'SHINEMA_TVMAZE',
+  'SHINEMA_WEB_ROOT',
+])
+  delete environment[key];
 const processServer = spawn(
   join(
     root,
@@ -30,13 +43,9 @@ const processServer = spawn(
   ),
   [],
   {
-    env: {
-      ...process.env,
-      SHINEMA_MEDIA_ROOT: join(local, 'media'),
-      SHINEMA_STATE_DIR: join(run, 'state'),
-      SHINEMA_BIND: '127.0.0.1:28887',
-    },
+    env: environment,
     stdio: ['ignore', 'ignore', 'pipe'],
+    windowsHide: true,
   },
 );
 let serverError = '';
@@ -46,7 +55,7 @@ processServer.stderr.on('data', (data) => {
 let vite, browser, diagnostics;
 const results = {
   methodology:
-    'Official Chromium in a fresh isolated context; actual Rust API and generated H.264/AAC media on loopback. 700ms deliberate catalog delay exercises loading, not a speed measurement.',
+    'Official Chromium in a fresh isolated context; actual Rust API and generated H.264/AAC media on loopback. A held initial response and 700ms deliberate catalog delay exercise loading geometry, not a speed measurement.',
   checks: [],
   screenshots: [],
 };
@@ -84,6 +93,82 @@ async function screenshot(page, name) {
     animations: 'disabled',
   });
   results.screenshots.push(name + '.png');
+}
+async function libraryLayout(page) {
+  return page.evaluate(() => {
+    const anchors = {
+      header: '.header',
+      hero: '[data-testid="library-feature"]',
+      heading: '.library-section .section-heading',
+      grid: '.poster-grid',
+      card: '.poster-grid > .media-card',
+    };
+    return Object.fromEntries(
+      Object.entries(anchors).map(([name, selector]) => {
+        const node = document.querySelector(selector);
+        if (!node) throw new Error(`Missing stable loading anchor: ${name}`);
+        const rect = node.getBoundingClientRect();
+        return [
+          name,
+          {
+            x: rect.x + window.scrollX,
+            y: rect.y + window.scrollY,
+            width: rect.width,
+            height: rect.height,
+          },
+        ];
+      }),
+    );
+  });
+}
+function assertStableLibrary(before, after) {
+  for (const name of Object.keys(before))
+    for (const key of ['x', 'y', 'width', 'height']) {
+      // A feed may extend below the viewport; its origin and columns stay put.
+      if (name === 'grid' && key === 'height') continue;
+      assert(
+        Math.abs(before[name][key] - after[name][key]) <= 1,
+        `${name} ${key} changed from ${before[name][key]} to ${after[name][key]}`,
+      );
+    }
+}
+async function proveLayoutOracle(page, baseline) {
+  const card = page.locator('.poster-grid > .media-card').first();
+  const style = await card.getAttribute('style');
+  const restore = async () => {
+    await card.evaluate((node, original) => {
+      if (original === null) node.removeAttribute('style');
+      else node.setAttribute('style', original);
+      node.style.setProperty('transition', 'none', 'important');
+      node.getBoundingClientRect();
+      if (original === null) node.removeAttribute('style');
+      else node.setAttribute('style', original);
+    }, style);
+  };
+  try {
+    for (const [property, value, dimension] of [
+      ['transform', 'translateY(8px)', 'y'],
+      ['width', `${baseline.card.width + 8}px`, 'width'],
+    ]) {
+      await card.evaluate(
+        (node, [property, value]) => {
+          node.style.setProperty('transition', 'none', 'important');
+          node.style.setProperty(property, value, 'important');
+        },
+        [property, value],
+      );
+      const changed = await libraryLayout(page);
+      assert.throws(
+        () => assertStableLibrary(baseline, changed),
+        new RegExp(`card ${dimension} changed`),
+        'Layout checks must reject an injected eight-pixel regression',
+      );
+      await restore();
+    }
+  } finally {
+    await restore();
+  }
+  assertStableLibrary(baseline, await libraryLayout(page));
 }
 try {
   await waitForServer();
@@ -142,16 +227,63 @@ try {
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
+  let releaseCatalog;
+  const catalogGate = new Promise((resolve) => {
+    releaseCatalog = resolve;
+  });
+  let holdInitialCatalog = true;
+  await page.route('**/api/catalog?**', async (route) => {
+    if (!holdInitialCatalog) return route.continue();
+    try {
+      const response = await route.fetch();
+      await catalogGate;
+      await route.fulfill({ response }).catch(() => {});
+    } catch {
+      // StrictMode may abort the first development-mount request. Its successor
+      // still stays behind the same gate, so loading cannot finish early.
+      await route.abort().catch(() => {});
+    }
+  });
   const start = performance.now();
-  await page.goto('http://127.0.0.1:28883');
-  await expect(page.getByLabel('Loading library')).toBeVisible();
-  await screenshot(page, 'loading');
+  let loading, held;
+  try {
+    await page.goto('http://127.0.0.1:28883');
+    await expect(page.getByLabel('Loading library')).toBeVisible();
+    await expect(page.getByTestId('library-feature')).toBeVisible();
+    await expect(
+      page.locator('.poster-grid > .media-card').first(),
+    ).toBeVisible();
+    loading = await libraryLayout(page);
+    await page.waitForTimeout(150);
+    held = await libraryLayout(page);
+    assertStableLibrary(loading, held);
+    await screenshot(page, 'loading');
+  } finally {
+    holdInitialCatalog = false;
+    releaseCatalog();
+  }
   await expect(
     page.getByRole('button', { name: 'Open Orbit', exact: true }),
   ).toBeVisible();
   results.catalogToVisibleMs = Math.round(performance.now() - start);
+  const loaded = await libraryLayout(page);
+  assertStableLibrary(loading, loaded);
+  await page.waitForTimeout(150);
+  const settled = await libraryLayout(page);
+  assertStableLibrary(loading, settled);
+  await proveLayoutOracle(page, settled);
+  await expect(
+    page.getByRole('button', { name: /^(Next|Previous) page$/ }),
+  ).toHaveCount(0);
+  results.loadingLayout = {
+    loading,
+    held,
+    loaded,
+    settled,
+    positionAndSizeMutationsRejected: true,
+  };
   results.checks.push(
-    'Actual catalog, deliberate loading state and library render',
+    'Actual catalog held across cold loading keeps header, hero, heading, grid origin and first-card geometry within one pixel; injected position/size regressions are rejected; no page controls',
   );
   await screenshot(page, 'library-desktop');
   const longTitles = [

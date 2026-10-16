@@ -29,6 +29,24 @@ class ShinemaHostModule(private val context:ReactApplicationContext):ReactContex
   // may remain in its separate private slot but cannot replace confirmed data.
   @ReactMethod fun stageState(value:String,promise:Promise){writeCache("candidate-state.json",value,promise)}
   @ReactMethod fun writeState(value:String,promise:Promise){writeCache("client-state.json",value,promise)}
+  // Appearance never shares a file or queue with library/resume state.
+  @ReactMethod fun readPreferences(promise:Promise){
+    try{
+      val file=AtomicFile(File(context.filesDir,"appearance-v1.json"))
+      val backup=File(context.filesDir,"appearance-v1.json.bak")
+      if(!file.baseFile.exists() && !backup.exists()){promise.resolve("");return}
+      val bytes=file.readFully()
+      if(bytes.size>16384){promise.reject("PREFERENCES_TOO_LARGE","Saved appearance exceeds limit");return}
+      promise.resolve(bytes.toString(Charsets.UTF_8))
+    }catch(error:Exception){promise.reject("PREFERENCES_READ_FAILED","Could not read appearance")}
+  }
+  @ReactMethod fun writePreferences(value:String,promise:Promise){
+    val bytes=value.toByteArray(Charsets.UTF_8)
+    if(bytes.size>16384){promise.reject("PREFERENCES_TOO_LARGE","Appearance exceeds limit");return}
+    val file=AtomicFile(File(context.filesDir,"appearance-v1.json"));var output:java.io.FileOutputStream?=null
+    try{output=file.startWrite();output.write(bytes);output.fd.sync();file.finishWrite(output);promise.resolve(null)}
+    catch(error:Exception){if(output!=null)file.failWrite(output);promise.reject("PREFERENCES_WRITE_FAILED","Could not save appearance")}
+  }
   private fun writeCache(name:String,value:String,promise:Promise){
     val bytes=value.toByteArray(Charsets.UTF_8)
     if(bytes.size>1048576){promise.reject("STATE_TOO_LARGE","Client state exceeds limit");return}

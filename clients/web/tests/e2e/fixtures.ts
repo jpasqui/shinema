@@ -234,6 +234,69 @@ export async function openMovie(page: Page, index = 0) {
   await page.getByRole('button', { name: /Play|Resume/ }).click();
 }
 
+/** Reach later rows through the same lazy edge used by scrolling, never pages. */
+export async function revealMovie(page: Page, index: number) {
+  const feed = page.getByTestId('library-feed');
+  await expect
+    .poll(async () => Number(await feed.getAttribute('data-loaded-count')))
+    .toBeGreaterThan(0);
+  const item = page.locator(`[data-browse-id="${idFor(index)}"]`);
+  const gestures = [];
+  const viewport = page.viewportSize()!;
+  await page.mouse.move(viewport.width / 2, viewport.height / 2);
+  for (let attempt = 0; attempt < 32; attempt++) {
+    const position = await feed.evaluate((grid, targetIndex) => {
+      const style = getComputedStyle(grid);
+      const columns = Math.max(
+        1,
+        style.gridTemplateColumns.split(' ').filter(Boolean).length,
+      );
+      const card = grid.querySelector<HTMLElement>('[data-browse-index]');
+      const target = grid.querySelector<HTMLElement>(
+        `[data-browse-index="${targetIndex}"]`,
+      );
+      const stride =
+        (card?.getBoundingClientRect().height ?? 0) +
+        (Number.parseFloat(style.rowGap) || 0);
+      const top =
+        target?.getBoundingClientRect().top ??
+        grid.getBoundingClientRect().top +
+          Math.floor(targetIndex / columns) * stride;
+      const height = (target ?? card)?.getBoundingClientRect().height ?? 0;
+      return {
+        scroll: window.scrollY,
+        loaded: Number(grid.getAttribute('data-loaded-count')),
+        top,
+        bottom: top + height,
+        viewport: window.innerHeight,
+        mounted: !!target,
+      };
+    }, index);
+    if (
+      position.mounted &&
+      position.top >= 1 &&
+      position.bottom <= position.viewport - 1
+    )
+      break;
+    // Capture a single destination before each gesture. Following a sentinel
+    // locator while it moves can skip the requested row after an append.
+    const distance = (position.top + position.bottom - position.viewport) / 2;
+    const limit = position.viewport * 0.6;
+    const delta = Math.max(-limit, Math.min(limit, distance));
+    gestures.push({ ...position, delta });
+    await page.mouse.wheel(0, delta);
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    await expect(feed).toHaveAttribute('aria-busy', 'false');
+  }
+  await expect(item, JSON.stringify(gestures)).toBeInViewport({ ratio: 1 });
+  return item;
+}
+
 export async function pauseDecoded(page: Page) {
   const video = page.locator('video');
   await expect

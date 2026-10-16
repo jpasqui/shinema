@@ -135,6 +135,7 @@ const result = {
   methodology:
     'Fresh full Chromium; original generated full-duration sources; 1,457 recursive media entries; loopback only.',
   checks: [],
+  feedAppends: [],
   seeks: [],
 };
 async function wait(predicate, seconds = 90) {
@@ -144,6 +145,152 @@ async function wait(predicate, seconds = 90) {
     await new Promise((done) => setTimeout(done, 50));
   }
   throw new Error('Integration condition timed out');
+}
+async function documentBounds(locator) {
+  return locator.evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    return {
+      x: rect.x + window.scrollX,
+      y: rect.y + window.scrollY,
+      width: rect.width,
+      height: rect.height,
+    };
+  });
+}
+function assertStableBounds(before, after, message) {
+  for (const key of ['x', 'y', 'width', 'height'])
+    assert(
+      Math.abs(before[key] - after[key]) <= 1,
+      `${message}: ${key} changed from ${before[key]} to ${after[key]}`,
+    );
+}
+async function proveLayoutOracle(locator, baseline) {
+  const style = await locator.getAttribute('style');
+  const restore = async () => {
+    await locator.evaluate((node, original) => {
+      if (original === null) node.removeAttribute('style');
+      else node.setAttribute('style', original);
+      node.style.setProperty('transition', 'none', 'important');
+      node.getBoundingClientRect();
+      if (original === null) node.removeAttribute('style');
+      else node.setAttribute('style', original);
+    }, style);
+  };
+  try {
+    for (const [property, value, dimension] of [
+      ['transform', 'translateY(8px)', 'y'],
+      ['width', `${baseline.width + 8}px`, 'width'],
+    ]) {
+      await locator.evaluate(
+        (node, [property, value]) => {
+          node.style.setProperty('transition', 'none', 'important');
+          node.style.setProperty(property, value, 'important');
+        },
+        [property, value],
+      );
+      const moved = await documentBounds(locator);
+      assert.throws(
+        () => assertStableBounds(baseline, moved, 'Injected layout mutation'),
+        new RegExp(`${dimension} changed`),
+        'Layout checks must reject an injected eight-pixel regression',
+      );
+      await restore();
+    }
+  } finally {
+    await restore();
+  }
+  assertStableBounds(
+    baseline,
+    await documentBounds(locator),
+    'Restored card after layout-oracle mutations',
+  );
+}
+async function noPageControls(page) {
+  await expect(
+    page.getByRole('button', { name: /^(Next|Previous) page$/ }),
+  ).toHaveCount(0);
+  await expect(page.getByLabel('Library pages', { exact: true })).toHaveCount(
+    0,
+  );
+}
+async function appendAtBoundary(page, resource, expectedCount, nextTitle) {
+  const feed = page.getByTestId('library-feed');
+  const rows = feed.locator('button[data-browse-id]');
+  await expect(rows).toHaveCount(60);
+  await expect(feed).toHaveAttribute('data-loaded-count', '60');
+  await noPageControls(page);
+  const initialIds = await rows.evaluateAll((nodes) =>
+    nodes.map((node) => node.dataset.browseId),
+  );
+  const first = page.locator(`[data-browse-id="${initialIds[0]}"]`);
+  const last = page.locator(`[data-browse-id="${initialIds.at(-1)}"]`);
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  let requests = 0;
+  const pattern = `**/api/${resource}?**`;
+  const handler = async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('offset') !== '60') return route.continue();
+    requests++;
+    const response = await route.fetch();
+    await gate;
+    await route.fulfill({ response }).catch(() => {});
+  };
+  await page.route(pattern, handler);
+  try {
+    // The first 60 records must remain while the next real API batch is held.
+    await page.getByTestId('library-sentinel').scrollIntoViewIfNeeded();
+    await expect.poll(() => requests).toBe(1);
+    await last.focus();
+    await expect(last).toBeFocused();
+    await expect(rows).toHaveCount(60);
+    const before = {
+      first: await documentBounds(first),
+      last: await documentBounds(last),
+    };
+    release();
+    await expect(rows).toHaveCount(expectedCount);
+    await expect(feed).toHaveAttribute(
+      'data-loaded-count',
+      String(expectedCount),
+    );
+    await expect(
+      page.getByRole('button', { name: `Open ${nextTitle}`, exact: true }),
+    ).toBeVisible();
+    await expect(last).toBeFocused();
+    const ids = await rows.evaluateAll((nodes) =>
+      nodes.map((node) => node.dataset.browseId),
+    );
+    assert.deepEqual(ids.slice(0, initialIds.length), initialIds);
+    assert.equal(new Set(ids).size, expectedCount, 'Appended IDs are unique');
+    assert.equal(requests, 1, 'One boundary requests exactly one next batch');
+    const after = {
+      first: await documentBounds(first),
+      last: await documentBounds(last),
+    };
+    assertStableBounds(before.first, after.first, 'First card during append');
+    assertStableBounds(before.last, after.last, 'Focused card during append');
+    await noPageControls(page);
+    await expect(
+      page.getByText(`All ${expectedCount} titles loaded.`, { exact: true }),
+    ).toBeVisible();
+    // The feature and season toolbar can fill the first viewport. Reveal the
+    // earlier card itself when checking that scroll-back preserves the feed.
+    await first.scrollIntoViewIfNeeded();
+    await expect(first).toBeInViewport();
+    return {
+      resource,
+      initialCount: 60,
+      count: ids.length,
+      before,
+      after,
+    };
+  } finally {
+    release();
+    await page.unroute(pattern, handler);
+  }
 }
 try {
   if (captureEvidence) {
@@ -281,20 +428,31 @@ try {
   const summary = await (await fetch(origin + '/api/library')).json();
   assert.deepEqual(summary, { movies: 2, series: 70, total: 1457, tv: 1455 });
   const ids = new Set();
+  const offsets = new Set();
   let offset = 0;
   do {
+    assert(!offsets.has(offset), 'API batches must not repeat an offset');
+    offsets.add(offset);
     const page = await (
       await fetch(origin + `/api/catalog?limit=60&offset=${offset}`)
     ).json();
+    assert.equal(page.total, 1457);
+    assert(page.items.length <= 60, 'API batches stay bounded');
     for (const item of page.items) {
       assert(!ids.has(item.id));
       ids.add(item.id);
     }
-    offset = page.nextOffset;
+    const next = page.nextOffset;
+    assert(
+      next === null ||
+        (Number.isInteger(next) && next > offset && next < page.total),
+      'A continuation offset must advance within the catalog',
+    );
+    offset = next;
   } while (offset !== null);
   assert.equal(ids.size, 1457);
   result.checks.push(
-    'Complete recursive index, SQLite totals, all pages without duplicate or missing IDs',
+    'Complete recursive index, SQLite totals and bounded internal API batches without duplicate or missing IDs',
   );
   process.env.VITE_DEMO_MODE = 'false';
   process.env.SHINEMA_DEMO_DELAY_MS = '0';
@@ -315,6 +473,26 @@ try {
     browser,
     join(root, 'ci-artifacts', 'browser-failure'),
   );
+  // Prove the geometry oracle before creating the recorded public workload.
+  // Deliberate test mutations must never appear as app movement in evidence.
+  const oracleContext = await browser.newContext({
+    viewport: { width: 1280, height: 900 },
+  });
+  diagnostics.observe(oracleContext);
+  try {
+    const oraclePage = await oracleContext.newPage();
+    await oraclePage.setContent(
+      '<button style="display:block;box-sizing:border-box;width:160px;height:240px">Generated layout fixture</button>',
+    );
+    const fixtureCard = oraclePage.getByRole('button', {
+      name: 'Generated layout fixture',
+      exact: true,
+    });
+    await proveLayoutOracle(fixtureCard, await documentBounds(fixtureCard));
+    result.layoutOracle = { positionAndSizeMutationsRejected: true };
+  } finally {
+    await oracleContext.close();
+  }
   if (captureEvidence) await captureBefore();
   const context = await browser.newContext({
     viewport: { width: 1280, height: 900 },
@@ -348,28 +526,18 @@ try {
   ).toBeVisible();
   if (captureEvidence)
     await page.screenshot({ path: join(evidence, 'after-series.png') });
-  await page.getByRole('button', { name: 'Next page', exact: true }).click();
-  await expect(
-    page.getByRole('button', { name: 'Open Generated series 60', exact: true }),
-  ).toBeVisible();
-  await expect(page.getByText('61–70 of 70', { exact: true })).toBeVisible();
-  await page
-    .getByRole('button', { name: 'Previous page', exact: true })
-    .click();
+  result.feedAppends.push(
+    await appendAtBoundary(page, 'series', 70, 'Generated series 60'),
+  );
   await page
     .getByRole('button', { name: 'Open Generated series 00', exact: true })
     .click();
   await page.getByLabel('Season', { exact: true }).selectOption('1');
-  await page.getByRole('button', { name: 'Next page', exact: true }).click();
-  await expect(
-    page.getByRole('button', { name: 'Open Generated S01E61', exact: true }),
-  ).toBeVisible();
-  await expect(page.getByText('61–75 of 75', { exact: true })).toBeVisible();
-  await page
-    .getByRole('button', { name: 'Previous page', exact: true })
-    .click();
+  result.feedAppends.push(
+    await appendAtBoundary(page, 'catalog', 75, 'Generated S01E61'),
+  );
   result.checks.push(
-    'UI pagination crosses 60-item boundary for both series and episodes and returns to the first page',
+    'Series and episode feeds lazily append past 60 records without page controls, duplicate requests, replaced cards, moved anchors or stolen focus; scrolling back retains earlier titles',
   );
   await page
     .getByRole('button', { name: 'Open Generated S01E01', exact: true })
@@ -493,11 +661,9 @@ try {
     page.getByRole('button', { name: 'Open Generated film', exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText(
-      'The server is unavailable. This saved page is still here.',
-      { exact: true },
-    ),
+    page.getByRole('button', { name: 'Retry loading', exact: true }),
   ).toBeVisible();
+  await noPageControls(page);
   result.checks.push(
     'Direct full-duration MP4 and cached browsing after API outage/reload',
   );
@@ -525,10 +691,7 @@ try {
     .click();
   await stalledPage.getByLabel('Season', { exact: true }).selectOption('1');
   await expect(
-    stalledPage.getByText(
-      'The server is unavailable and this page has not been saved yet.',
-      { exact: true },
-    ),
+    stalledPage.getByRole('button', { name: 'Retry loading', exact: true }),
   ).toBeVisible({ timeout: 13000 });
   await stalledPage.getByLabel('Season', { exact: true }).selectOption('all');
   await expect(
