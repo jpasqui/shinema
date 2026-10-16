@@ -687,7 +687,7 @@ function MarqueeFeature({
           width: scene.artWidth,
           height: scene.artHeight,
           overflow: 'hidden',
-          borderRadius: posterOnly ? 3 : 0,
+          borderRadius: posterOnly ? 3 : 8,
         }}
       >
         <Artwork
@@ -701,23 +701,6 @@ function MarqueeFeature({
           coverHeight={scene.artHeight}
         />
       </View>
-      {!posterOnly
-        ? Array.from({ length: 8 }, (_, index) => (
-            <View
-              key={index}
-              pointerEvents="none"
-              style={{
-                position: 'absolute',
-                left: scene.copyWidth + index * 10 - 1,
-                top: 0,
-                bottom: 0,
-                width: 11,
-                backgroundColor: colors.background,
-                opacity: 1 - index / 8,
-              }}
-            />
-          ))
-        : null}
       <View
         style={{
           width: scene.copyWidth,
@@ -792,7 +775,7 @@ function MarqueeFeature({
               ? 'Choose a title below to see details, pick up where you left off, or start watching.'
               : busy
                 ? 'Your collection will appear here. You can keep navigating while it loads.'
-                : 'Connect a server or refresh your library to begin.')}
+                : 'Choose a library above, or use Menu to check your server.')}
         </Text>
       </View>
     </View>
