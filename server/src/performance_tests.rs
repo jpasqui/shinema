@@ -42,12 +42,18 @@ pub(super) fn fixture(movies: u32, shows: u32, episodes: u32) -> (tempfile::Temp
             },
         );
     }
-    owned.series_entries = index_series(&owned.entries);
-    catalog::replace_index(
+    owned.source_folders.extend(["movies".into(), "tv".into()]);
+    let configuration = libraries::initialize(
         owned.database.get_mut().unwrap(),
-        owned.entries.values().map(|e| e.media.clone()),
+        &owned.entries,
+        &owned.source_folders,
     )
     .unwrap();
+    let assigned = libraries::assign(&owned.entries, &configuration);
+    for media in &assigned {
+        owned.entries.get_mut(&media.id).unwrap().media = media.clone();
+    }
+    catalog::replace_index(owned.database.get_mut().unwrap(), assigned.into_iter()).unwrap();
     (temp, library)
 }
 
@@ -128,6 +134,8 @@ fn browse_benchmark() {
         let result = measure(
             || {
                 let query = catalog::CatalogQuery {
+                    library: query.library.clone(),
+                    revision: query.revision,
                     collection: query.collection.clone(),
                     search: query.search.clone(),
                     series: query.series.clone(),

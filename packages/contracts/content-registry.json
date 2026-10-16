@@ -1,0 +1,233 @@
+{
+  "version": 1,
+  "contentTypes": [
+    {
+      "id": "movies",
+      "name": "Movies",
+      "availability": "available",
+      "capabilities": {
+        "metadata": true,
+        "play": true,
+        "view": false,
+        "launch": false
+      }
+    },
+    {
+      "id": "tv",
+      "name": "TV shows",
+      "availability": "available",
+      "capabilities": {
+        "metadata": true,
+        "play": true,
+        "view": false,
+        "launch": false
+      }
+    }
+  ],
+  "formats": [
+    {
+      "id": "mp4",
+      "name": "MP4",
+      "extensions": [
+        "mp4"
+      ],
+      "mimeTypes": [
+        "video/mp4"
+      ],
+      "availability": "available",
+      "capabilities": {
+        "metadata": true,
+        "play": true,
+        "view": false,
+        "launch": false
+      }
+    },
+    {
+      "id": "m4v",
+      "name": "M4V",
+      "extensions": [
+        "m4v"
+      ],
+      "mimeTypes": [
+        "video/mp4"
+      ],
+      "availability": "available",
+      "capabilities": {
+        "metadata": true,
+        "play": true,
+        "view": false,
+        "launch": false
+      }
+    },
+    {
+      "id": "mkv",
+      "name": "Matroska",
+      "extensions": [
+        "mkv"
+      ],
+      "mimeTypes": [
+        "video/x-matroska"
+      ],
+      "availability": "available",
+      "capabilities": {
+        "metadata": true,
+        "play": true,
+        "view": false,
+        "launch": false
+      }
+    },
+    {
+      "id": "webm",
+      "name": "WebM",
+      "extensions": [
+        "webm"
+      ],
+      "mimeTypes": [
+        "video/webm"
+      ],
+      "availability": "available",
+      "capabilities": {
+        "metadata": true,
+        "play": true,
+        "view": false,
+        "launch": false
+      }
+    },
+    {
+      "id": "avi",
+      "name": "AVI",
+      "extensions": [
+        "avi"
+      ],
+      "mimeTypes": [
+        "video/x-msvideo"
+      ],
+      "availability": "available",
+      "capabilities": {
+        "metadata": true,
+        "play": true,
+        "view": false,
+        "launch": false
+      }
+    },
+    {
+      "id": "ts",
+      "name": "MPEG transport stream",
+      "extensions": [
+        "ts"
+      ],
+      "mimeTypes": [
+        "video/mp2t"
+      ],
+      "availability": "available",
+      "capabilities": {
+        "metadata": true,
+        "play": true,
+        "view": false,
+        "launch": false
+      }
+    },
+    {
+      "id": "m2ts",
+      "name": "M2TS",
+      "extensions": [
+        "m2ts"
+      ],
+      "mimeTypes": [
+        "video/mp2t"
+      ],
+      "availability": "available",
+      "capabilities": {
+        "metadata": true,
+        "play": true,
+        "view": false,
+        "launch": false
+      }
+    },
+    {
+      "id": "mov",
+      "name": "QuickTime",
+      "extensions": [
+        "mov"
+      ],
+      "mimeTypes": [
+        "video/quicktime"
+      ],
+      "availability": "available",
+      "capabilities": {
+        "metadata": true,
+        "play": true,
+        "view": false,
+        "launch": false
+      }
+    },
+    {
+      "id": "mpg",
+      "name": "MPEG video",
+      "extensions": [
+        "mpg"
+      ],
+      "mimeTypes": [
+        "video/mpeg"
+      ],
+      "availability": "available",
+      "capabilities": {
+        "metadata": true,
+        "play": true,
+        "view": false,
+        "launch": false
+      }
+    },
+    {
+      "id": "mpeg",
+      "name": "MPEG video",
+      "extensions": [
+        "mpeg"
+      ],
+      "mimeTypes": [
+        "video/mpeg"
+      ],
+      "availability": "available",
+      "capabilities": {
+        "metadata": true,
+        "play": true,
+        "view": false,
+        "launch": false
+      }
+    },
+    {
+      "id": "wmv",
+      "name": "Windows Media Video",
+      "extensions": [
+        "wmv"
+      ],
+      "mimeTypes": [
+        "video/x-ms-wmv"
+      ],
+      "availability": "available",
+      "capabilities": {
+        "metadata": true,
+        "play": true,
+        "view": false,
+        "launch": false
+      }
+    },
+    {
+      "id": "vob",
+      "name": "DVD video",
+      "extensions": [
+        "vob"
+      ],
+      "mimeTypes": [
+        "video/mpeg"
+      ],
+      "availability": "available",
+      "capabilities": {
+        "metadata": true,
+        "play": true,
+        "view": false,
+        "launch": false
+      }
+    }
+  ]
+}

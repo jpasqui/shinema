@@ -28,6 +28,8 @@ scripts/             Generated fixtures and host integration checks
 
 ## Product direction
 
+Shinema pairs sensible defaults with configurable organization and presentation, while keeping playback, security and data integrity dependable. See the lasting [design principles](docs/design-principles.md), [server and client architecture](docs/server-client-architecture.md) and [library and navigation configuration](docs/libraries.md).
+
 NVIDIA Shield / Android TV is the first required television target. React web, React Native phone clients and an Apple TV route are planned; desktop delivery is undecided. Those platforms are not validated by this Android slice. Shared domain logic and API contracts should coexist with platform-specific input, cache and playback adapters.
 
 CPU compatibility transcoding and full-duration web playback are under development; see [full-library setup](docs/full-library.md).

@@ -9,6 +9,10 @@ The unauthenticated development server accepts only `localhost` or literal loopb
 | `GET /health` | Status, API version, active codec jobs and bounded-cache statistics |
 | `GET /api/catalog` | A bounded page: API version, items, total, offset, limit and nextOffset |
 | `GET /api/library` | Total media, TV, Movies and series counts |
+| `GET /api/libraries` | Versioned library descriptors: stable ID, display name, content type policy, order, visibility and registry snapshot |
+| `GET /api/content-registry` | Public versioned content-type and format descriptors with availability and action capabilities |
+| `GET /api/admin/libraries` | Operator-authorized library configuration and approved relative source choices |
+| `PUT /api/admin/libraries` | Operator-authorized configuration update with revision conflict checking |
 | `GET /api/series` | Paged series titles, episode counts and season counts |
 | `GET /api/series/{id}/seasons` | Season numbers and episode counts |
 | `GET /api/media/{id}/playback` | Full source duration, direct/transcode mode and its exact playback path |
@@ -28,9 +32,45 @@ Progress has finite `positionSeconds` and `durationSeconds`; position must be be
 Supported range forms are `bytes=start-end`, `bytes=start-`, and `bytes=-suffix`. Invalid, multiple and unsatisfiable ranges receive 416 and `Content-Range: bytes */size`. The original range endpoint does not implement multipart ranges or conditional `If-Range` validation. Compatibility playback is a separate full-duration HLS path. Files are opened for reading relative to a directory capability and streamed in chunks; they are not loaded entirely into memory.
 
 
-Catalog filters are `collection=all|tv|movies`, an opaque `series` ID, integer `season`, literal `search`, `offset` and `limit`. Limit is 1–500; the web browser uses 60. The legacy default is a first page of 500, with `total` and `nextOffset` explicitly reporting the rest. The index itself has no 500-item or eight-directory-depth truncation. `/api/series` supports paged literal search. SQL values are bound parameters.
+Catalog filters are a stable `library` ID, `collection=all|tv|movies`, an opaque `series` ID, integer `season`, literal `search`, `offset` and `limit`. Limit is 1-500; the web browser uses 60. The legacy default is a first page of 500, with `total` and `nextOffset` explicitly reporting the rest. The index itself has no 500-item or eight-directory-depth truncation. `/api/series` supports library-scoped paged literal search. SQL values are bound parameters. The older `collection` filter describes media type independently of library labels. See [libraries and navigation](libraries.md) for descriptor contracts, operator authorization, approved folder matching, migration and client preferences.
 
-Media optionally includes `collection`, `seriesId`, `seriesTitle`, `season` and `episode`. TV grouping uses the top-level series folder and S01E02-style filenames, with a Season N folder fallback. Unknown episode numbers stay unknown; they are not fabricated. MP4, M4V, MKV, WebM, AVI, TS, M2TS, MOV, MPG, MPEG, WMV and VOB are indexed. Non-video sidecars are not presented as videos. SSH source IDs include an opaque source/root namespace; source paths, hostnames and credentials are not returned.
+Media optionally includes `contentTypeId`, `collection`, `seriesId`, `seriesTitle`, `season` and `episode`. `collection` is a deprecated compatibility classification field. When an explicit canonical `contentTypeId` is also present, shared contracts require agreement, including explicit `null`, and reject conflicting payloads to preserve unknown identity. TV grouping uses the top-level series folder and S01E02-style filenames, with a Season N folder fallback. Unknown episode numbers stay unknown; they are not fabricated. MP4, M4V, MKV, WebM, AVI, TS, M2TS, MOV, MPG, MPEG, WMV and VOB are indexed. Non-video sidecars are not presented as videos. SSH source IDs include an opaque source/root namespace; source paths, hostnames and credentials are not returned.
+
+## Content registry
+
+`GET /api/content-registry` returns a data-only registry with the following shape. Library responses also carry it in the additive `registry` field, allowing clients to retain the capability snapshot with cached descriptors. The shared initial manifest is `packages/contracts/content-registry.json`.
+
+```ts
+type Capabilities = {
+  metadata: boolean;
+  play: boolean;
+  view: boolean;
+  launch: boolean;
+};
+type ContentDescriptor = {
+  id: string;
+  name: string;
+  availability: 'available' | 'unavailable';
+  capabilities: Capabilities;
+  reason?: string;
+};
+type ContentRegistry = {
+  version: 1;
+  contentTypes: ContentDescriptor[];
+  formats: (ContentDescriptor & {
+    extensions: string[];
+    mimeTypes: string[];
+  })[];
+};
+```
+
+Type and format IDs are validated, bounded open identifiers. Extension and MIME descriptors use strict safe syntax. Unknown well-formed IDs are preserved; a client without their renderer shows an explicit unsupported state. Format descriptors can be carried by the contract without enabling their indexing or playback. An implemented registered adapter is required before an additional format can be scanned or used.
+
+Library descriptors use canonical `contentTypeId: string | null`; `null` is unrestricted policy over the currently registered video inventory. The legacy `mediaType` alias is derived as the content type ID or `mixed` for `null`; `mixed` is reserved and rejected as a canonical type ID. Conflicting explicitly supplied canonical/legacy values receive 400. Legacy-only stored configuration migrates in place, and a legacy-only PUT preserves a saved unknown content ID. This does not change library/media IDs, source authority or progress. See [library migration](libraries.md#migration-and-data-preservation).
+
+Registry capabilities describe implemented metadata/play/view/launch actions, not codec guarantees or permissions. A usable client action requires both an available server capability and client renderer support. Unknown/unavailable content types retain catalog membership and progress; clients block unsupported details/play actions, and the server rejects stream, HLS and playback preparation before probing or source reads. The initial registry retains only Movies/TV handlers and the twelve video extensions listed above, plus generic video inventory behavior. No music, audiobook, game or document handler, arbitrary code loader or new filesystem authority is added; every current `launch` flag is false.
+
+## Playback and metadata
 
 `Playback` has finite positive `durationSeconds`, `mode` (`direct` or `transcode`) and `streamPath`. The client validates that this path belongs to the selected media ID. HLS covers the complete original source timeline, so progress and seeks use source seconds. Compatibility output and cache limits are documented in [full-library development](full-library.md). A source that changed since indexing receives 409; unsupported playback preparation receives 422. Refreshing a browser page does not rescan storage; restart the development server to rescan.
 

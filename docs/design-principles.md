@@ -1,0 +1,17 @@
+# Design principles
+
+Shinema provides a cohesive media experience with sensible defaults and room to make it your own. Its default organization is a starting point, not a required way to organize a collection.
+
+- **Keep the core dependable.** Playback, resume progress, stable media identity, source access boundaries and data integrity remain reliable as users change their setup. Presentation choices must not weaken security or discard state.
+- **Let people choose their organization.** Library names, source folder membership, order and visibility are configuration. A library called Anime can contain TV episodes; its label does not determine its media type. Server library configuration and each client's navigation preferences have separate responsibilities. Navigation entries have stable identities, editable labels and supported destinations; Settings and reset remain reachable.
+- **Keep content types and formats extensible.** Use stable registered identifiers and explicit capabilities rather than treating the initial Movies/TV handlers or video formats as a permanent closed list. Preserve unknown identifiers and explain unsupported actions; a new descriptor alone does not add a handler, executable launcher or filesystem access.
+- **Make presentation replaceable.** Full skins can change layout, typography, visual hierarchy and navigation presentation while consuming the same library and playback contracts. A skin should not need to rename media, duplicate the catalog or take ownership of progress.
+- **Build features around clear interfaces.** Optional capabilities should have explicit inputs, outputs, lifecycle and failure behavior so they can be disabled, improved or replaced without rewriting the core. Shared domain contracts coexist with platform-specific input, storage and playback adapters.
+- **Keep future capabilities discoverable.** A feature that an owner enables and promotes should remain discoverable when its client module is absent. A future capability contract should distinguish advertised capability, user permission and client renderer support, explain unsupported states, and offer a supported install or web fallback when available. This future feature interface is distinct from today's supported navigation destinations; it does not introduce runtime loading or installation.
+- **Ship useful defaults together.** Modularity is an implementation and customization capability. The default product should work as one coherent app without requiring users to assemble separate tools or understand its internal modules.
+
+Apply these principles through small architecture seams now: stable identifiers, versioned contracts, validated configuration, isolated adapters and replaceable presentation components. Declarative navigation chooses from supported destinations rather than loading URLs or scripts. Owner permissions belong behind the management authorization interface, independently of library configuration. These seams do not require a runtime plugin loader, arbitrary downloaded code or additional plugin permissions. Any future account or extension system needs its own design and security review.
+
+[Configurable libraries](libraries.md) are one application of this direction: keep media identity and progress stable while allowing the organization and labels around them to change.
+
+[Server and client architecture](server-client-architecture.md) records ownership, appearance overrides, future capability discovery and open decisions.

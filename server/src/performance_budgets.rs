@@ -73,9 +73,9 @@ pub(super) fn record_statement(statement: &rusqlite::Statement<'_>) {
 pub(super) fn record_representative_lookup() {
     OBSERVED.with_borrow_mut(|observed| {
         if let Some(work) = observed {
-            // One indexed representative lookup and one indexed entry lookup.
-            // A page must exercise this path once per series, never rescan the
-            // full library. The preserved-first-id test checks its semantics.
+            // The page SQL performs one indexed canonical representative
+            // lookup per series. Its executed work is included in the same
+            // statement counters; startup entry classifications are not used.
             work.representative_lookups += 1;
         }
     });
@@ -348,17 +348,37 @@ fn series_representatives_preserve_the_first_media_id_without_full_page_scans() 
         .unwrap();
     let _runtime = runtime.enter();
     let (_temp, library) = performance_tests::fixture(30, 10, 3);
-    assert_eq!(library.series_entries.len(), 10);
-    for (sid, id) in &library.series_entries {
+    let db = library.database.lock().unwrap();
+    let (_, representatives) =
+        catalog::series_with_representatives(&db, catalog::CatalogQuery::default()).unwrap();
+    assert_eq!(representatives.len(), 10);
+    for (sid, representative) in &representatives {
         let former = library
             .entries
             .values()
             .find(|entry| entry.media.classification.series_id.as_ref() == Some(sid))
             .unwrap();
-        assert_eq!(&former.media.id, id);
-        assert_eq!(
-            series_representative(&library, sid).unwrap().media.id,
-            former.media.id
-        );
+        assert_eq!(representative.id, former.media.id);
     }
+    let (sid, representative) = representatives.first_key_value().unwrap();
+    let mut canonical = representative.clone();
+    canonical.presentation.summary = Some("Updated canonical presentation".into());
+    db.execute(
+        "UPDATE media_catalog SET media_json=?1 WHERE id=?2",
+        params![serde_json::to_string(&canonical).unwrap(), canonical.id],
+    )
+    .unwrap();
+    let (_, refreshed) =
+        catalog::series_with_representatives(&db, catalog::CatalogQuery::default()).unwrap();
+    assert_eq!(
+        refreshed[sid].presentation.summary.as_deref(),
+        Some("Updated canonical presentation")
+    );
+    assert!(
+        library.entries[&canonical.id]
+            .media
+            .presentation
+            .summary
+            .is_none()
+    );
 }

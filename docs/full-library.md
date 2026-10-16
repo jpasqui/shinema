@@ -1,6 +1,6 @@
 # Full-library development
 
-The Rust server recursively indexes all supported video files. It stores the full catalog and playback progress in local SQLite; HTTP queries return bounded pages. The web client separates Movies from TV series, seasons and episodes, preserves navigation through detail/player/back, and caches the twelve most recently browsed pages. Folder and filename metadata drive grouping. Optional direct TMDB/TVmaze adapters supply conservatively matched metadata and artwork through Shinema-owned caches. Live provider access is unconfigured in this development environment. Missing artwork is displayed plainly.
+The Rust server recursively indexes all supported video files. It stores the full catalog and playback progress in local SQLite; HTTP queries return bounded pages. The web client browses configured libraries, including TV series, seasons and episodes, preserves navigation through detail/player/back, and caches the twelve most recently browsed pages. Folder and filename metadata drive grouping. See [library and navigation configuration](libraries.md) for editable labels, folder membership, ordering, visibility and safe migration. Optional direct TMDB/TVmaze adapters supply conservatively matched metadata and artwork through Shinema-owned caches. Live provider access is unconfigured in this development environment. Missing artwork is displayed plainly.
 
 ## Existing read-only SSH source
 
@@ -71,7 +71,7 @@ node scripts/full-library-smoke.mjs
 
 The final command uses generated full-duration media, 1,457 recursive media entries, an isolated full Chromium browser and separate loopback ports. It verifies complete paging, TV grouping, decoding, beginning/middle/end seeks, resume and cached browsing. CI runs POSIX helper path/link tests using local generated fixtures; no real NAS configuration or media enters CI.
 
-This is an interactive development server, not a persistent deployment. There is one development profile and no production authentication/TLS termination. The native TV client still has its original flat first-page UI; this change does not validate Shield playback or deliver its full-library navigation. Automatic rescans, new metadata matching beyond configured providers, subtitles, alternate audio selection, production GPU encoding and adaptive bitrate remain unfinished. Indexed formats may still contain an unsupported or corrupt codec; playback preparation fails visibly instead of inventing a playable result. Desktop timings do not establish TV input or frame performance.
+This is an interactive development server, not a persistent deployment. There is one development profile and no production authentication/TLS termination. The native TV client consumes configured library labels, order and visibility, but loads at most the first 500 items per library and does not offer per-client top-navigation editing. This change does not validate Shield playback. Automatic rescans, new metadata matching beyond configured providers, subtitles, alternate audio selection, production GPU encoding and adaptive bitrate remain unfinished. Indexed formats may still contain an unsupported or corrupt codec; playback preparation fails visibly instead of inventing a playable result. Desktop timings do not establish TV input or frame performance.
 
 
 ## Independent metadata and artwork

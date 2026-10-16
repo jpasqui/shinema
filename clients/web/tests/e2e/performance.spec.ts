@@ -11,7 +11,8 @@ import type { SyntheticApi } from './fixtures.ts';
 
 // Structural ceilings, not wall-clock targets. This suite uses the Vite dev
 // server: React.StrictMode repeats mount effects. Bootstrap and LibraryBrowser
-// each fetch twice. These ceilings allow current development behavior and allow
+// each fetch twice. App and LibraryBrowser also discover libraries separately,
+// each twice. These ceilings allow current development behavior and allow
 // future reductions; they are not production request-count guarantees.
 const initialBrowseBudget = {
   mountedCards: 60,
@@ -19,7 +20,8 @@ const initialBrowseBudget = {
   invalidLimits: 0,
   catalogRequests: 4,
   summaryRequests: 2,
-  totalApiRequests: 6,
+  descriptorRequests: 4,
+  totalApiRequests: 10,
   unrequestedPages: 0,
   mediaRequests: 0,
   externalRequests: 0,
@@ -85,6 +87,8 @@ async function browseCounts(
     ).length,
     catalogRequests: catalog.length,
     summaryRequests: api.requests.filter((path) => path === '/api/library')
+      .length,
+    descriptorRequests: api.requests.filter((path) => path === '/api/libraries')
       .length,
     totalApiRequests: api.requests.length,
     unrequestedPages: catalog.filter(
@@ -160,7 +164,7 @@ test('10,001-title first/next/back browsing stays within card and request budget
   enforceBudgets(await browseCounts(page, api, [0, 60]), {
     ...initialBrowseBudget,
     catalogRequests: 5,
-    totalApiRequests: 7,
+    totalApiRequests: 11,
   });
 
   await page
@@ -180,7 +184,7 @@ test('10,001-title first/next/back browsing stays within card and request budget
   enforceBudgets(await browseCounts(page, api, [0, 60]), {
     ...initialBrowseBudget,
     catalogRequests: 6,
-    totalApiRequests: 8,
+    totalApiRequests: 12,
   });
 });
 

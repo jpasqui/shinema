@@ -1,7 +1,9 @@
 import {parseCatalog, parseProgress} from '../../../packages/contracts/index.ts';
-import type {Catalog, Progress} from '../../../packages/contracts/index.ts';
+import type {Catalog, Media, Progress} from '../../../packages/contracts/index.ts';
 import {fresh} from './domain.ts';
 import type {Stored} from './domain.ts';
+import type {LibraryNavigation} from './libraries.ts';
+import {nativeMediaContentSupport} from './libraries.ts';
 
 export type ConnectionStamp = {origin: string; generation: number};
 export type PlaybackTicket = ConnectionStamp & {playback: number};
@@ -80,26 +82,33 @@ export async function connectValidated(
   origin: string,
   load: (origin: string) => Promise<unknown>,
   state: ConnectionIO,
+  navigation?: LibraryNavigation,
 ): Promise<{catalog: Catalog; switched: boolean; stamp: ConnectionStamp} | null> {
   const catalog = parseCatalog(await load(origin));
+  const scope = navigation ? {libraries:navigation.libraries,selectedLibraryId:navigation.selectedLibraryId} : {};
   return state.queue.run(async () => {
     if (!guard.currentAttempt(attempt)) return null;
     const current = state.read();
     const switched = current.origin !== origin;
-    const candidate = switched ? {...fresh(), origin, catalog} : {...current, catalog};
+    // Another final activation can finish while this response waits for its
+    // storage slot. Its newly confirmed revision must remain authoritative.
+    if(!switched && navigation && current.libraries && (!navigation.libraries || navigation.libraries.revision<current.libraries.revision))throw new Error('Stale library configuration');
+    const scopeChanged = navigation!==undefined && (current.selectedLibraryId!==navigation.selectedLibraryId || current.libraries?.revision!==navigation.libraries?.revision);
+    const activating = switched || scopeChanged;
+    const candidate = switched ? {...fresh(), origin, catalog,...scope} : {...current, catalog,...scope};
     // This separate file is never read as the confirmed cache, including after
     // restart. Cancellation requires no rollback or cleanup write to protect A.
     await state.stageDisk(candidate);
-    if (!guard.startCommit(attempt, switched)) return null;
+    if (!guard.startCommit(attempt, activating)) return null;
     try {
-      const confirmed = switched ? candidate : {...state.read(), catalog};
+      const confirmed = switched ? candidate : {...state.read(), catalog,...scope};
       // The explicit atomic confirmation commit is the point after which a
-      // switch cannot be canceled. Navigation may continue, but playback waits
+      // server or library activation cannot be canceled. Navigation may continue, but playback waits
       // for this short phase; an I/O rejection still leaves confirmed A intact.
       await state.writeDisk(confirmed);
-      if (!switched && !guard.currentAttempt(attempt)) return null;
+      if (!activating && !guard.currentAttempt(attempt)) return null;
       const stamp = switched ? guard.confirm(origin) : guard.capture(origin);
-      state.write(switched ? confirmed : {...state.read(), catalog});
+      state.write(switched ? confirmed : {...state.read(), catalog,...scope});
       if (!guard.currentAttempt(attempt)) return null;
       return {catalog, switched, stamp};
     } finally { guard.finishCommit(); }
@@ -173,6 +182,22 @@ export async function resolveResume(
     return {progress: current.progress[id] ?? initial, local: true};
   if (local) progress = current.progress[id] ?? initial;
   return {progress, local};
+}
+
+/** Unsupported content never reaches progress loading or the native player. */
+export async function resolvePlayableResume(
+  guard:SessionGuard,
+  ticket:PlaybackTicket,
+  media:Media,
+  read:()=>Stored,
+  load:(origin:string,id:string)=>Promise<unknown>,
+):Promise<{supported:false;reason?:string}|{supported:true;progress:Progress|null;local:boolean}|null>{
+  const support=nativeMediaContentSupport(media,read());
+  if(!support.supported)return {supported:false,reason:support.reason};
+  const result=await resolveResume(guard,ticket,media.id,read,load);
+  if(!result)return null;
+  const currentSupport=nativeMediaContentSupport(media,read());
+  return currentSupport.supported?{supported:true,...result}:{supported:false,reason:currentSupport.reason};
 }
 
 export function backDestination(route: string, hasCatalog: boolean): 'detail' | 'library' | 'exit' {

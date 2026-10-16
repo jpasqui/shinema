@@ -2,6 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {fresh,recover} from '../src/domain.ts';
 import type {Stored} from '../src/domain.ts';
+import {parseCatalog} from '../../../packages/contracts/index.ts';
 import {SessionGuard,StorageQueue,ProgressQueue,connectValidated,persistThenSync,syncProgress,resolveResume,backDestination} from '../src/session.ts';
 
 const first='https://first.example';const second='https://second.example';const id='a'.repeat(64);
@@ -202,7 +203,7 @@ test('canceled B stage plus failed rollback writes still reopens confirmed A wit
   guard.cancelConnection();slow.resolve();assert.equal(await connecting,null);
   assert.equal(attemptedConfirmedWrites,0);assert.equal(JSON.parse(staged.at(-1)!).origin,second);
   const reopened=recover(disk.at(-1)??original);
-  assert.equal(reopened.origin,first);assert.deepEqual(reopened.pending[id],progress);assert.deepEqual(reopened.catalog,catalog);
+  assert.equal(reopened.origin,first);assert.deepEqual(reopened.pending[id],progress);assert.deepEqual(reopened.catalog,parseCatalog(catalog));
 });
 
 test('rejected final confirmation commit reopens A even though candidate B is already staged',async()=>{

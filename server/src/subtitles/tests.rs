@@ -187,6 +187,24 @@ async fn request(app: axum::Router, uri: &str) -> (StatusCode, axum::http::Heade
 }
 
 #[tokio::test]
+async fn removed_media_blocks_cached_subtitle_discovery_and_sidecar_delivery() {
+    let (temporary, library, id) = fixture();
+    let root = temporary.path().join("media");
+    std::fs::write(root.join("Movie.en.srt"), SRT).unwrap();
+    let app = crate::router(library);
+    let (status, _, bytes) = request(app.clone(), &format!("/api/media/{id}/subtitles")).await;
+    assert_eq!(status, StatusCode::OK);
+    let tracks: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let content = tracks["tracks"][0]["contentPath"].as_str().unwrap();
+    std::fs::remove_file(root.join("Movie.mp4")).unwrap();
+    for path in [format!("/api/media/{id}/subtitles"), content.to_owned()] {
+        let (status, _, body) = request(app.clone(), &path).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        assert!(body.is_empty());
+    }
+}
+
+#[tokio::test]
 async fn sidecar_api_discovers_same_stem_tracks_and_serves_only_plain_utf8_vtt() {
     let (temporary, library, id) = fixture();
     let root = temporary.path().join("media");

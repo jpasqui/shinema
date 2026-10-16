@@ -498,6 +498,7 @@ pub async fn list(
     State(library): State<Arc<Library>>,
     ApiPath(id): ApiPath<String>,
 ) -> Result<Json<Tracks>, StatusCode> {
+    crate::require_playable(&library, &id)?;
     let entry = library.entries.get(&id).ok_or(StatusCode::NOT_FOUND)?;
     crate::verify_source(&library, entry).await?;
     let mut warnings = Vec::new();
@@ -538,6 +539,7 @@ pub async fn content(
         .strip_suffix(".vtt")
         .filter(|id| valid_track_id(id))
         .ok_or(StatusCode::NOT_FOUND)?;
+    crate::require_playable(&library, &id)?;
     let entry = library.entries.get(&id).ok_or(StatusCode::NOT_FOUND)?;
     crate::verify_source(&library, entry).await?;
     let body = if track_id.starts_with("external-") {

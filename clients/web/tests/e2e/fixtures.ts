@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type { Progress } from '../../../../packages/contracts/index.ts';
+import { defaultLibraries } from '../../../../packages/contracts/index.ts';
 
 export const duration = 90;
 export const idFor = (index: number) => index.toString(16).padStart(64, '0');
@@ -15,6 +16,7 @@ export const mediaFor = (index: number) => ({
   sizeBytes: 100000,
   streamPath: `/api/media/${idFor(index)}/stream`,
   collection: 'movies',
+  libraryId: 'movies',
 });
 export type SyntheticApi = {
   remote: Map<string, Progress>;
@@ -126,10 +128,17 @@ export const test = base.extend<
         });
       if (url.pathname === '/api/library')
         return json({ movies: api.total, tv: 0, series: 0, total: api.total });
+      if (url.pathname === '/api/libraries')
+        return json({ ...defaultLibraries(), revision: 1 });
       if (url.pathname === '/api/catalog') {
         const offset = Number(url.searchParams.get('offset') ?? 0);
         const limit = Number(url.searchParams.get('limit') ?? 60);
-        const total = url.searchParams.get('search') ? 0 : api.total;
+        const total =
+          url.searchParams.get('search') ||
+          (url.searchParams.has('library') &&
+            url.searchParams.get('library') !== 'movies')
+            ? 0
+            : api.total;
         const count = Math.max(0, Math.min(limit, total - offset));
         return json({
           apiVersion: 1,
