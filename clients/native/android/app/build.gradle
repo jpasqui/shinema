@@ -17,7 +17,15 @@ android {
     externalNativeBuild { cmake { version '3.30.5' } }
     buildTypes { release { minifyEnabled false } }
 }
+androidComponents {
+    // AGP 9 enables only the tested (debug) build type by default. Exercise
+    // the release transport policy used by the downloadable development APK.
+    beforeVariants(selector().withBuildType('release')) { variant ->
+        variant.enableUnitTest = true
+    }
+}
 dependencies {
     implementation('com.facebook.react:react-android')
     implementation('com.facebook.react:hermes-android')
+    testImplementation('junit:junit:4.13.2')
 }

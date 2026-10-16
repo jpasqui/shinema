@@ -1,4 +1,8 @@
-import { serverOrigin } from './index.ts';
+import {
+  localHttpOrigin,
+  serverOrigin,
+  type ServerTransport,
+} from './index.ts';
 
 export type RequestKind = 'movie' | 'series';
 export type RequestStatus = 'requested' | 'available' | 'uncertain' | 'failed';
@@ -255,9 +259,27 @@ export class RequestClient {
   private token = '';
   private generation = 0;
   private readonly origin: string;
+  private readonly responseOrigin: string;
+  private readonly serverTransport: ServerTransport;
   private readonly transport: typeof fetch;
-  constructor(origin = '', transport: typeof fetch = fetch) {
-    this.origin = origin ? serverOrigin(origin) : '';
+  constructor(
+    origin = '',
+    transport: typeof fetch = fetch,
+    serverTransport?: ServerTransport,
+  ) {
+    const grant =
+      serverTransport === undefined ? null : serverTransport.localHttpOrigin;
+    if (
+      grant !== null &&
+      (typeof grant !== 'string' || localHttpOrigin(grant) !== grant)
+    )
+      throw new Error('Use a canonical local HTTP origin grant');
+    this.serverTransport = Object.freeze({ localHttpOrigin: grant });
+    this.origin = origin ? serverOrigin(origin, this.serverTransport) : '';
+    this.responseOrigin =
+      this.origin ||
+      (globalThis as { location?: { origin?: string } }).location?.origin ||
+      '';
     // Browser fetch requires its normal receiver. Do not call a saved native
     // function as a RequestClient instance method.
     this.transport = (input, init) => transport(input, init);
@@ -385,13 +407,27 @@ export class RequestClient {
           body: body === undefined ? undefined : JSON.stringify(body),
           signal: controller.signal,
           credentials: 'omit',
-          // Native fetch has no redirect mode; the same-origin browser client
-          // can enforce it. Request endpoints themselves never redirect.
-          ...(this.origin ? {} : { redirect: 'error' as const }),
+          // Native transports must also enforce this before following a redirect.
+          ...{ redirect: 'error' as const },
         },
       );
       if (!publicRequest && generation !== this.generation)
         throw new RequestError('canceled');
+      if (response.url) {
+        const finalUrl = new URL(response.url);
+        if (
+          Array.from(response.url).some(
+            (character) =>
+              character.charCodeAt(0) < 32 ||
+              character.charCodeAt(0) === 127 ||
+              character === '\\',
+          ) ||
+          finalUrl.username ||
+          finalUrl.password ||
+          finalUrl.origin !== this.responseOrigin
+        )
+          throw new RequestError('connection');
+      }
       const value: unknown = await response.json();
       if (!publicRequest && generation !== this.generation)
         throw new RequestError('canceled');

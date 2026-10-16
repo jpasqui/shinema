@@ -202,7 +202,7 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: clients/native
       # React Native otherwise embeds the runner's host IP in a debugger resource.
-      - run: gradle --no-daemon :app:assembleRelease -PreactNativeDevServerIp=127.0.0.1
+      - run: gradle --no-daemon :app:testReleaseUnitTest :app:assembleRelease -PreactNativeDevServerIp=127.0.0.1
         working-directory: clients/native/android
         env:
           CI: 'true'

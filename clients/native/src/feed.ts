@@ -8,12 +8,14 @@ import type {
   Catalog,
   Media,
   PageInfo,
+  ServerTransport,
 } from '../../../packages/contracts/index.ts';
 
 export const FEED_BATCH_SIZE = 48;
 export const FEED_CACHE_BATCHES = 5;
 export type FeedScope = {
   origin: string;
+  localHttpOrigin?: string | null;
   /** Null is an explicitly legacy, unconfigured server scope. */
   libraryId: string | null;
   revision?: number;
@@ -35,7 +37,9 @@ const offsetFor = (index: number) =>
   Math.floor(Math.max(0, index) / FEED_BATCH_SIZE) * FEED_BATCH_SIZE;
 
 export function normalizeFeedScope(value: FeedScope): FeedScope {
-  const origin = serverOrigin(value.origin);
+  const origin = serverOrigin(value.origin, {
+    localHttpOrigin: value.localHttpOrigin ?? null,
+  });
   if (
     (value.libraryId !== null && !validLibraryId(value.libraryId)) ||
     (value.libraryId === null
@@ -54,6 +58,9 @@ export function normalizeFeedScope(value: FeedScope): FeedScope {
     throw new Error('Invalid library scope');
   return {
     origin,
+    ...(value.localHttpOrigin
+      ? { localHttpOrigin: value.localHttpOrigin }
+      : {}),
     libraryId: value.libraryId,
     ...(value.revision !== undefined ? { revision: value.revision } : {}),
     collection: value.collection,
@@ -258,6 +265,7 @@ export class NativeFeed {
       origin: string,
       path: string,
       signal: AbortSignal,
+      transport: ServerTransport,
     ) => Promise<unknown>,
     focus: number,
     retry = false,
@@ -281,6 +289,9 @@ export class NativeFeed {
       return false;
     const generation = this.generation;
     const scope = this.scope;
+    const transport = Object.freeze({
+      localHttpOrigin: scope.localHttpOrigin ?? null,
+    });
     const controller = new AbortController();
     this.controllers.set(offset, controller);
     this.errors.delete(offset);
@@ -294,6 +305,7 @@ export class NativeFeed {
               scope.origin,
               feedPath(scope, offset),
               controller.signal,
+              transport,
             );
           }),
           scope,

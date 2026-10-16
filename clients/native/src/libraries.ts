@@ -61,7 +61,10 @@ export function nativeMediaContentSupport(
 
 /** Unsupported registry identities never become a generic video query. */
 export function nativeFeedScope(
-  value: LibraryNavigation & { origin: string },
+  value: LibraryNavigation & {
+    origin: string;
+    localHttpOrigin?: string | null;
+  },
 ): FeedScope | null {
   if (!navigationContentSupport(value).supported) return null;
   const library = value.libraries?.libraries.find(
@@ -71,6 +74,9 @@ export function nativeFeedScope(
     return null;
   return normalizeFeedScope({
     origin: value.origin,
+    ...(value.localHttpOrigin
+      ? { localHttpOrigin: value.localHttpOrigin }
+      : {}),
     libraryId: library?.id ?? null,
     ...(library && value.libraries
       ? { revision: value.libraries.revision }

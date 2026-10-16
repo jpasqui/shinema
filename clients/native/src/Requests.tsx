@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { MutableRefObject } from 'react';
+import type { ServerTransport } from '../../../packages/contracts/index.ts';
 import {
   Pressable,
   ScrollView,
@@ -79,14 +80,21 @@ function SonarrStatus({
 
 export function Requests({
   origin,
+  transport,
   onBack,
   backHandler,
 }: {
   origin: string;
+  transport?: ServerTransport;
   onBack: () => void;
   backHandler: MutableRefObject<() => void>;
 }) {
-  const client = useMemo(() => new RequestClient(origin), [origin]);
+  const localHttpOrigin = transport?.localHttpOrigin ?? null;
+  const client = useMemo(
+    () =>
+      new RequestClient(origin, undefined, Object.freeze({ localHttpOrigin })),
+    [origin, localHttpOrigin],
+  );
   const [capabilities, setCapabilities] = useState<RequestCapabilities | null>(
     null,
   );
@@ -183,6 +191,19 @@ export function Requests({
   }
 
   useEffect(() => {
+    lock();
+    setNotice('');
+    setCapabilities(null);
+    return () => {
+      epoch.current++;
+      searchSequence.current++;
+      listSequence.current++;
+      sonarrSequence.current++;
+      client.lock();
+    };
+  }, [client]);
+
+  useEffect(() => {
     let active = true;
     setChecking(true);
     setProblem('');
@@ -206,17 +227,6 @@ export function Requests({
       active = false;
     };
   }, [client, capabilityAttempt]);
-
-  useEffect(
-    () => () => {
-      epoch.current++;
-      searchSequence.current++;
-      listSequence.current++;
-      sonarrSequence.current++;
-      client.lock();
-    },
-    [client],
-  );
 
   backHandler.current = () => {
     if (selected && !submitting) setSelected(null);

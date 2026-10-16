@@ -1,11 +1,11 @@
-import {parseCatalog, parseProgress} from '../../../packages/contracts/index.ts';
-import type {Catalog, Media, Progress} from '../../../packages/contracts/index.ts';
+import {parseCatalog, parseProgress, serverOrigin} from '../../../packages/contracts/index.ts';
+import type {Catalog, Media, Progress, ServerTransport} from '../../../packages/contracts/index.ts';
 import {fresh} from './domain.ts';
 import type {Stored} from './domain.ts';
 import type {LibraryNavigation} from './libraries.ts';
 import {nativeMediaContentSupport} from './libraries.ts';
 
-export type ConnectionStamp = {origin: string; generation: number};
+export type ConnectionStamp = {origin: string; generation: number; localHttpOrigin?:string|null};
 export type PlaybackTicket = ConnectionStamp & {playback: number};
 
 /** Tracks request cancellation separately from the confirmed server identity. */
@@ -24,16 +24,17 @@ export class SessionGuard {
     this.invalidatePlayback();
   }
   currentAttempt(attempt: number): boolean { return attempt === this.attempt; }
-  capture(origin: string): ConnectionStamp { return {origin, generation: this.generation}; }
-  confirm(origin: string): ConnectionStamp {
+  capture(origin: string, transport?:ServerTransport): ConnectionStamp { const canonical=serverOrigin(origin,transport);return Object.freeze({origin:canonical,generation:this.generation,...(canonical.startsWith('http:')?{localHttpOrigin:transport!.localHttpOrigin}:{})}); }
+  confirm(origin: string, transport?:ServerTransport): ConnectionStamp {
     ++this.generation;
     this.invalidatePlayback();
-    return this.capture(origin);
+    return this.capture(origin,transport);
   }
   current(stamp: ConnectionStamp, origin: string): boolean {
     return stamp.origin === origin && stamp.generation === this.generation;
   }
   invalidatePlayback(): void { ++this.playback; }
+  invalidateTransport(): void { ++this.generation;this.cancelConnection(); }
   startCommit(attempt: number, switching: boolean): boolean {
     if (!this.currentAttempt(attempt)) return false;
     this.switchingCommit = switching;
@@ -41,12 +42,12 @@ export class SessionGuard {
   }
   finishCommit(): void { this.switchingCommit = false; }
   isSwitchCommitting(): boolean { return this.switchingCommit; }
-  beginPlayback(origin: string): PlaybackTicket {
+  beginPlayback(origin: string, transport?:ServerTransport): PlaybackTicket {
     if (this.switchingCommit) throw new Error('Server switch commit is finishing');
     // Explicit playback from cache supersedes an unfinished startup refresh.
     // Its late response must not confirm a session or replace the player route.
     this.cancelConnection();
-    return {...this.capture(origin), playback: ++this.playback};
+    return Object.freeze({...this.capture(origin,transport), playback: ++this.playback});
   }
   currentPlayback(ticket: PlaybackTicket, origin: string): boolean {
     return this.current(ticket, origin) && ticket.playback === this.playback;
@@ -83,7 +84,11 @@ export async function connectValidated(
   load: (origin: string) => Promise<unknown>,
   state: ConnectionIO,
   navigation?: LibraryNavigation,
+  transport?:ServerTransport,
 ): Promise<{catalog: Catalog; switched: boolean; stamp: ConnectionStamp} | null> {
+  transport=Object.freeze({localHttpOrigin:transport?.localHttpOrigin??null});
+  origin=serverOrigin(origin,transport);
+  const localHttpOrigin=origin.startsWith('http:')?transport!.localHttpOrigin:null;
   const catalog = parseCatalog(await load(origin));
   const scope = navigation ? {libraries:navigation.libraries,selectedLibraryId:navigation.selectedLibraryId} : {};
   return state.queue.run(async () => {
@@ -94,21 +99,22 @@ export async function connectValidated(
     // storage slot. Its newly confirmed revision must remain authoritative.
     if(!switched && navigation && current.libraries && (!navigation.libraries || navigation.libraries.revision<current.libraries.revision))throw new Error('Stale library configuration');
     const scopeChanged = navigation!==undefined && (current.selectedLibraryId!==navigation.selectedLibraryId || current.libraries?.revision!==navigation.libraries?.revision);
-    const activating = switched || scopeChanged;
-    const candidate = switched ? {...fresh(), origin, catalog,...scope} : {...current, catalog,...scope};
+    const transportChanged=(current.localHttpOrigin??null)!==localHttpOrigin;
+    const activating = switched || scopeChanged || transportChanged;
+    const candidate = switched ? {...fresh(), origin,localHttpOrigin, catalog,...scope} : {...current,localHttpOrigin, catalog,...scope};
     // This separate file is never read as the confirmed cache, including after
     // restart. Cancellation requires no rollback or cleanup write to protect A.
     await state.stageDisk(candidate);
     if (!guard.startCommit(attempt, activating)) return null;
     try {
-      const confirmed = switched ? candidate : {...state.read(), catalog,...scope};
+      const confirmed = switched ? candidate : {...state.read(),localHttpOrigin, catalog,...scope};
       // The explicit atomic confirmation commit is the point after which a
       // server or library activation cannot be canceled. Navigation may continue, but playback waits
       // for this short phase; an I/O rejection still leaves confirmed A intact.
       await state.writeDisk(confirmed);
       if (!activating && !guard.currentAttempt(attempt)) return null;
-      const stamp = switched ? guard.confirm(origin) : guard.capture(origin);
-      state.write(switched ? confirmed : {...state.read(), catalog,...scope});
+      const stamp = switched||transportChanged ? guard.confirm(origin,transport) : guard.capture(origin,transport);
+      state.write(switched ? confirmed : {...state.read(),localHttpOrigin, catalog,...scope});
       if (!guard.currentAttempt(attempt)) return null;
       return {catalog, switched, stamp};
     } finally { guard.finishCommit(); }

@@ -7,7 +7,8 @@ import com.facebook.react.uimanager.ViewManager
 import java.io.File
 class ShinemaHostModule(private val context:ReactApplicationContext):ReactContextBaseJavaModule(context){
   companion object{
-    private var instance:ShinemaHostModule?=null
+    private val authorityLock=Any()
+    @Volatile private var instance:ShinemaHostModule?=null
     @Volatile var requestNavigation=false
       private set
     fun sendKey(code:Int,action:Int,repeat:Int):Boolean{
@@ -19,8 +20,32 @@ class ShinemaHostModule(private val context:ReactApplicationContext):ReactContex
     }
   }
   override fun getName()="ShinemaHost"
-  override fun initialize(){super.initialize();requestNavigation=false;instance=this}
-  override fun invalidate(){if(instance===this){instance=null;requestNavigation=false};super.invalidate()}
+  override fun initialize(){
+    super.initialize()
+    synchronized(authorityLock){
+      if(instance!==this){
+        // Fence the former module's pending DNS and request/body tickets before
+        // publishing a new authority. No DNS work waits under this lock.
+        ShinemaNetwork.revoke()
+        instance=this
+      }
+      requestNavigation=false
+    }
+  }
+  override fun invalidate(){
+    synchronized(authorityLock){
+      if(instance===this){instance=null;requestNavigation=false;ShinemaNetwork.revoke()}
+    }
+    super.invalidate()
+  }
+  @ReactMethod fun setLocalHttpOrigin(origin:String?,promise:Promise){
+    synchronized(authorityLock){
+      // Identity check and synchronous beginUpdate share the handover lock;
+      // asynchronous DNS completion is fenced by the native generation.
+      if(instance!==this){promise.reject("LOCAL_HTTP_INACTIVE","Local HTTP requires the current app instance");return}
+      ShinemaNetwork.setLocalHttpOrigin(origin,promise)
+    }
+  }
   @ReactMethod fun setRequestNavigation(enabled:Boolean){requestNavigation=enabled}
   @ReactMethod fun addListener(eventName:String){}
   @ReactMethod fun removeListeners(count:Int){}

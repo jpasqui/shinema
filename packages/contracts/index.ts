@@ -370,10 +370,105 @@ export function parseProgress(value: unknown): Progress | null {
     durationSeconds: value.durationSeconds,
   };
 }
-export function serverOrigin(value: string): string {
+export type ServerTransport = Readonly<{ localHttpOrigin: string | null }>;
+
+function localIpv4(parts: readonly number[]): boolean {
+  const [first, second] = parts;
+  return (
+    parts.length === 4 &&
+    parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255) &&
+    (first === 10 ||
+      first === 127 ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168) ||
+      (first === 169 && second === 254))
+  );
+}
+
+function localIpv6(hostname: string): boolean {
+  // URL has already validated and normalized the literal, including embedded
+  // IPv4 addresses. Expand its hexadecimal form to classify the address bits.
+  const [left, right] = hostname.slice(1, -1).split('::');
+  const words = (part: string) =>
+    part ? part.split(':').map((word) => Number.parseInt(word, 16)) : [];
+  const leading = words(left);
+  const trailing = right === undefined ? [] : words(right);
+  const address =
+    right === undefined
+      ? leading
+      : [
+          ...leading,
+          ...Array(8 - leading.length - trailing.length).fill(0),
+          ...trailing,
+        ];
+  if (address.length !== 8) return false;
+  if (
+    (address[0] & 0xfe00) === 0xfc00 ||
+    (address[0] & 0xffc0) === 0xfe80 ||
+    (address.slice(0, 7).every((word) => word === 0) && address[7] === 1)
+  )
+    return true;
+  return (
+    address.slice(0, 5).every((word) => word === 0) &&
+    address[5] === 0xffff &&
+    localIpv4([
+      address[6] >>> 8,
+      address[6] & 0xff,
+      address[7] >>> 8,
+      address[7] & 0xff,
+    ])
+  );
+}
+
+/**
+ * Canonical HTTP candidate for an explicit origin grant. DNS names are only
+ * candidates: the native transport must check that every resolved address is
+ * local before connecting, and enforce the grant again on redirects.
+ */
+export function localHttpOrigin(value: string): string {
+  const invalid = () =>
+    new Error('Use a local HTTP server origin without credentials or a path');
+  if (
+    typeof value !== 'string' ||
+    Array.from(value).some(
+      (character) =>
+        character.charCodeAt(0) < 32 ||
+        character.charCodeAt(0) === 127 ||
+        character === '\\',
+    )
+  )
+    throw invalid();
+  const match = /^http:\/\/([^/?#]+)\/?$/i.exec(value.trim());
+  if (!match || /[@%\s]/.test(match[1]) || match[1].endsWith(':'))
+    throw invalid();
+  const url = new URL(value.trim());
+  const host = url.hostname;
+  if (host.startsWith('[')) {
+    if (!localIpv6(host)) throw invalid();
+  } else if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+    // Reject integer, shortened, octal, hex and encoded spellings even when URL
+    // would normalize them to an otherwise eligible private IPv4 address.
+    if (
+      match[1].split(':')[0] !== host ||
+      !localIpv4(host.split('.').map(Number))
+    )
+      throw invalid();
+  } else if (
+    host.length > 253 ||
+    !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.?$/i.test(
+      host,
+    )
+  )
+    throw invalid();
+  return url.origin;
+}
+
+export function serverOrigin(
+  value: string,
+  transport?: ServerTransport,
+): string {
   const url = new URL(value.trim());
   if (
-    url.protocol !== 'https:' ||
     url.username ||
     url.password ||
     url.search ||
@@ -381,7 +476,16 @@ export function serverOrigin(value: string): string {
     !['', '/'].includes(url.pathname)
   )
     throw new Error('Use an HTTPS server origin without credentials or a path');
-  return url.origin;
+  if (url.protocol === 'https:') return url.origin;
+  if (
+    url.protocol === 'http:' &&
+    transport?.localHttpOrigin === localHttpOrigin(value) &&
+    localHttpOrigin(transport.localHttpOrigin) === transport.localHttpOrigin
+  )
+    return url.origin;
+  throw new Error(
+    'Use HTTPS or explicitly allow this local HTTP server origin',
+  );
 }
 export function resumeAt(progress: Progress | null, duration: number): number {
   return progress && progress.positionSeconds < duration - 3
