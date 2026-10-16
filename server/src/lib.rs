@@ -23,6 +23,7 @@ mod catalog;
 mod metadata;
 mod playback;
 mod request_boundary;
+pub mod requests;
 mod ssh;
 mod web;
 pub use catalog::Classification;
@@ -446,6 +447,14 @@ pub fn router(library: Arc<Library>) -> Router {
     router_at(library, "127.0.0.1:8787".parse().expect("Loopback literal"))
 }
 pub fn router_at(library: Arc<Library>, bind: std::net::SocketAddr) -> Router {
+    router_at_with_requests(library, bind, requests::Engine::disabled())
+}
+
+pub fn router_at_with_requests(
+    library: Arc<Library>,
+    bind: std::net::SocketAddr,
+    requests: Arc<requests::Engine>,
+) -> Router {
     library.playback.set_origin(bind);
     Router::new()
         .route(
@@ -466,8 +475,9 @@ pub fn router_at(library: Arc<Library>, bind: std::net::SocketAddr) -> Router {
         .route("/api/media/{id}/progress", get(progress).put(save_progress))
         .layer(DefaultBodyLimit::max(4096))
         .fallback(static_web)
-        .layer(axum::middleware::from_fn(request_boundary::guard))
         .with_state(library)
+        .merge(requests::router(requests, bind))
+        .layer(axum::middleware::from_fn(request_boundary::guard))
 }
 
 async fn static_web(

@@ -26,6 +26,7 @@ import {
 import type { Cache } from './model.ts';
 import { Artwork } from './Artwork.tsx';
 import { MediaPoster } from './MediaPoster.tsx';
+import { Requests } from './Requests.tsx';
 
 const storageKey = 'shinema.web.cache.v1';
 const demo = import.meta.env.VITE_DEMO_MODE === 'true';
@@ -71,9 +72,9 @@ export default function App() {
   const cache = useRef<Cache>(empty());
   const [version, render] = useState(0);
   const [browseNavigation, setBrowseNavigation] = useState(initialBrowse);
-  const [route, setRoute] = useState<'library' | 'detail' | 'player'>(
-    'library',
-  );
+  const [route, setRoute] = useState<
+    'library' | 'detail' | 'player' | 'requests'
+  >('library');
   const [selected, setSelected] = useState<Media | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -264,7 +265,11 @@ export default function App() {
   }, [route]);
   useEffect(() => {
     const key = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape' && route === 'detail') {
+      if (
+        !event.defaultPrevented &&
+        event.key === 'Escape' &&
+        (route === 'detail' || route === 'requests')
+      ) {
         event.preventDefault();
         showLibrary();
       }
@@ -329,6 +334,18 @@ export default function App() {
           >
             Library
           </button>
+          <button
+            className={route === 'requests' ? 'nav-link active' : 'nav-link'}
+            onClick={() => {
+              guard.current.next();
+              setOpening(false);
+              if (route === 'library') libraryScroll.current = window.scrollY;
+              setRoute('requests');
+              window.scrollTo(0, 0);
+            }}
+          >
+            Requests
+          </button>
         </nav>
         <span className="context-label">
           {demo ? 'Demo library' : 'Connected library'}
@@ -340,7 +357,9 @@ export default function App() {
           session only.
         </div>
       )}
-      {route === 'player' && selected ? (
+      {route === 'requests' ? (
+        <Requests onBack={showLibrary} />
+      ) : route === 'player' && selected ? (
         <Player
           item={selected}
           progress={resume}

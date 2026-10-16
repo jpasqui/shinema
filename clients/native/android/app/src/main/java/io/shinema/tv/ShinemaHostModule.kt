@@ -8,6 +8,8 @@ import java.io.File
 class ShinemaHostModule(private val context:ReactApplicationContext):ReactContextBaseJavaModule(context){
   companion object{
     private var instance:ShinemaHostModule?=null
+    @Volatile var requestNavigation=false
+      private set
     fun sendKey(code:Int,action:Int,repeat:Int):Boolean{
       val module=instance?:return false
       if(!module.context.hasActiveReactInstance())return false
@@ -17,8 +19,9 @@ class ShinemaHostModule(private val context:ReactApplicationContext):ReactContex
     }
   }
   override fun getName()="ShinemaHost"
-  override fun initialize(){super.initialize();instance=this}
-  override fun invalidate(){if(instance===this)instance=null;super.invalidate()}
+  override fun initialize(){super.initialize();requestNavigation=false;instance=this}
+  override fun invalidate(){if(instance===this){instance=null;requestNavigation=false};super.invalidate()}
+  @ReactMethod fun setRequestNavigation(enabled:Boolean){requestNavigation=enabled}
   @ReactMethod fun addListener(eventName:String){}
   @ReactMethod fun removeListeners(count:Int){}
   @ReactMethod fun readState(promise:Promise){
