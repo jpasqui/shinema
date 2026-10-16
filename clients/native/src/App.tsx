@@ -2,7 +2,7 @@ import React,{useEffect,useMemo,useRef,useState} from 'react';
 import {AccessibilityInfo,Animated,AppState,BackHandler,NativeEventEmitter,NativeModules,Pressable,ScrollView,StyleSheet,Text,TextInput,View,useWindowDimensions} from 'react-native';
 import Video,{SelectedTrackType} from 'react-native-video';
 import type {VideoRef} from 'react-native-video';
-import {parseCatalog,resumeAt,serverOrigin,localHttpOrigin} from '../../../packages/contracts/index.ts';
+import {parseCatalog,serverOrigin,localHttpOrigin} from '../../../packages/contracts/index.ts';
 import type {Media,Progress,LibraryDescriptor,ServerTransport} from '../../../packages/contracts/index.ts';
 import {fresh,recover,move} from './domain.ts';
 import type {Stored} from './domain.ts';
@@ -21,6 +21,9 @@ import type {FeedScope} from './feed.ts';
 import {encryptedTransport,NativeTransportPolicy,selectionTransport,readyTransport,restoreSelection} from './transport.ts';
 import {moveSetupFocus,setupScrollOffset} from './setup-focus.ts';
 import type {SetupControl,SetupBounds} from './setup-focus.ts';
+import {initialPlayback,loadedPlayback} from './playback.ts';
+import type {InitialPlayback} from './playback.ts';
+import {headerTarget,moveHeaderCursor} from './header-navigation.ts';
 import {Requests} from './Requests.tsx';
 import {SubtitleController,SubtitleClock,SUBTITLE_SEEK_RECOVERY_MS,emptySubtitles,subtitleAt} from './subtitles.ts';
 
@@ -63,7 +66,7 @@ export default function App(){
   const [caption,setCaption]=useState('');const subtitleTime=useRef(new SubtitleClock());
   const subtitleRecovery=useRef<ReturnType<typeof setTimeout>|null>(null);
   const video=useRef<VideoRef>(null);const input=useRef<React.ComponentRef<typeof TextInput>>(null);const position=useRef(0);const total=useRef(0);
-  const resume=useRef<Progress|null>(null);const waitingSeek=useRef(false);const backHeld=useRef(false);const lastSave=useRef(0);
+  const playback=useRef<InitialPlayback|null>(null);const waitingSeek=useRef(false);const backHeld=useRef(false);const lastSave=useRef(0);
   const activeItem=useRef<Media|null>(null);
   const activeDestination=useRef<ConnectionStamp|null>(null);
   const session=useRef(new SessionGuard());const handler=useRef<(key:Key)=>void>(()=>{});
@@ -89,10 +92,9 @@ export default function App(){
   const sceneOpacity=useRef(new Animated.Value(1)).current;
   feed.current.focus(cursor);const totalItems=feedSnapshot.total;const selected=route==='player'?activeItem.current??undefined:feed.current.itemAt(cursor);
   const selectedSupport=selected?nativeMediaContentSupport(selected,stored):{supported:true};
-  const playbackOrigin=route==='player'?activeDestination.current?.origin:stored.origin;
   const selectedTransport=useMemo(()=>{try{return selectionTransport(stored);}catch{return null;}},[stored.origin,stored.localHttpOrigin]);
   const transportReady=selectedTransport!==null&&policy.current.permits(stored.origin,selectedTransport);
-  const source=useMemo(()=>({uri:transportReady?(playbackOrigin??stored.origin)+(selected?.streamPath??''):undefined}),[playbackOrigin,stored.origin,selected?.streamPath,transportReady]);
+  const source=transportReady?playback.current?.source:undefined;
 
   useEffect(()=>{setCaption(subtitleAt(subtitles.cues,subtitleTime.current.current()));},[subtitles.cues]);
 
@@ -184,6 +186,12 @@ export default function App(){
     else if(setupFocus==='http')toggleLocalHttp();else if(setupFocus==='address')input.current?.focus();
     else if(!busy)void connect(originText);
   }
+  function openServer(){
+    if(route==='player')return;
+    if(session.current.isSwitchCommitting()){setMessage('Finishing the current server change. Try again in a moment.');return;}
+    activity.current.interact();cancelConnection();feed.current.cancelPending();setFeedSnapshot(feed.current.snapshot());
+    setBusy(false);focusSetup('connect');setRoute('setup');setMessage('Edit server address, then connect.');
+  }
 
   function loadFeed(index:number,retry=false){
     const context=readyTransport(policy.current!,store.current);if(!context)return;
@@ -210,7 +218,7 @@ export default function App(){
     if(library.id===store.current.selectedLibraryId&&(feed.current.snapshot().known||!librarySupport.supported)){cancelConnection();setBusy(false);setHeaderFocused(!librarySupport.supported);setRoute('library');return;}
     void connect(store.current.origin,true,library.id,store.current.localHttpOrigin??null);
   }
-  useEffect(()=>{setHeaderCursor(current=>Math.min(current,visibleLibraries.length+1));},[visibleLibraries.length]);
+  useEffect(()=>{setHeaderCursor(current=>Math.min(current,visibleLibraries.length+(route==='library'?2:1)));},[visibleLibraries.length,route]);
   useEffect(()=>{setRenderAnchor(current=>clampFeedAnchor(current,feedSnapshot.known,totalItems));},[feedSnapshot.known,totalItems]);
 
   function revealFocus(top:number,focusHeight:number){
@@ -385,10 +393,11 @@ export default function App(){
     const result=await resolvePlayableResume(session.current,ticket,item,()=>store.current,(origin,id)=>scopedRequest(origin,`/api/media/${id}/progress`,'GET',undefined,undefined,transport));
     if(!result)return;
     if(!result.supported){setBusy(false);setMessage(result.reason??'This content is not supported on this device.');return;}
-    activeItem.current=item;activeDestination.current=ticket;resume.current=result.progress;position.current=0;total.current=0;waitingSeek.current=false;lastSave.current=Date.now();
-    clearSubtitleRecovery();subtitleTime.current.reset();setCaption('');setSubtitleMenu(false);setSubtitleCursor(0);
+    const initial=initialPlayback(ticket.origin+item.streamPath,result.progress);
+    playback.current=initial;activeItem.current=item;activeDestination.current=ticket;position.current=initial.positionSeconds;total.current=0;waitingSeek.current=false;lastSave.current=Date.now();
+    clearSubtitleRecovery();subtitleTime.current.reset(initial.positionSeconds);setCaption('');setSubtitleMenu(false);setSubtitleCursor(0);
     void subtitleController.current.start(ticket.origin,item.id,deviceLanguages(),transport);
-    setClock(0);setDuration(0);setPaused(false);setLoading(true);setRoute('player');setBusy(false);setMessage('');
+    setClock(initial.positionSeconds);setDuration(0);setPaused(false);setLoading(true);setRoute('player');setBusy(false);setMessage('');
   }
 
   useEffect(()=>{
@@ -438,13 +447,12 @@ export default function App(){
       else if((key.code===23 || key.code===66)&&key.repeat===0)activateSetup();
       return;
     }
-    if(key.code===82 && route!=='player'){cancelConnection();setBusy(false);setHeaderFocused(false);setRoute('setup');setMessage('Edit server address, then connect.');return;}
+    if(key.code===82 && route!=='player'){openServer();return;}
     if(route==='library'){
       if(headerFocused){
         if(key.code===20&&librarySupport.supported)setHeaderFocused(false);
-        else if(key.code===21)setHeaderCursor(current=>Math.max(0,current-1));
-        else if(key.code===22)setHeaderCursor(current=>Math.min(visibleLibraries.length+1,current+1));
-        else if([23,66].includes(key.code) && key.repeat===0){const library=visibleLibraries[headerCursor];if(library)chooseLibrary(library);else if(headerCursor===visibleLibraries.length)openAppearance();else openRequests();}
+        else if([21,22].includes(key.code))setHeaderCursor(current=>moveHeaderCursor(visibleLibraries.length,current,key.code===21?-1:1,true));
+        else if([23,66].includes(key.code) && key.repeat===0){const target=headerTarget(visibleLibraries.length,headerCursor,true);if(target?.type==='library'){const library=visibleLibraries[target.index];if(library)chooseLibrary(library);}else if(target?.type==='appearance')openAppearance();else if(target?.type==='requests')void openRequests();else if(target?.type==='server')openServer();}
         return;
       }
       if(!librarySupport.supported){setHeaderFocused(true);setMessage(librarySupport.reason??'This content is not supported on this device.');return;}
@@ -487,13 +495,14 @@ export default function App(){
       <Video ref={video} style={StyleSheet.absoluteFill} source={source} selectedTextTrack={disabledTextTrack} paused={paused} resizeMode="contain" playInBackground={false} playWhenInactive={false} progressUpdateInterval={subtitles.cues.length?100:1000}
         onLoad={event=>{
           total.current=event.duration;setDuration(event.duration);setLoading(false);
-          const target=resumeAt(resume.current,event.duration);waitingSeek.current=target>0;
-          if(target>0)hideCaptionForSeek(target);else captionAt(0);
-          if(target>0){position.current=target;setClock(target);video.current?.seek(target);}
+          const initial=playback.current;if(!initial)return;
+          const loaded=loadedPlayback(initial,event.duration,event.currentTime);waitingSeek.current=loaded.seekTo!==null;
+          position.current=loaded.positionSeconds;setClock(loaded.positionSeconds);
+          if(loaded.seekTo!==null){hideCaptionForSeek(loaded.seekTo);video.current?.seek(loaded.seekTo);}else captionAt(loaded.positionSeconds);
         }}
         onSeek={event=>{if(!subtitleTime.current.acceptsSeek(event.seekTime))return;waitingSeek.current=false;position.current=event.currentTime;setClock(event.currentTime);captionAt(event.currentTime,event.seekTime);}}
         onProgress={event=>{
-          captionAt(event.currentTime);if(waitingSeek.current)return;position.current=event.currentTime;setClock(current=>Math.floor(current)===Math.floor(event.currentTime)?current:event.currentTime);
+          captionAt(event.currentTime);if(waitingSeek.current){if(!Number.isFinite(subtitleTime.current.current()))return;waitingSeek.current=false;}position.current=event.currentTime;setClock(current=>Math.floor(current)===Math.floor(event.currentTime)?current:event.currentTime);
           if(Date.now()-lastSave.current>=5000){lastSave.current=Date.now();void save(selected);}
         }}
         onBuffer={event=>setLoading(event.isBuffering)}
@@ -510,7 +519,7 @@ export default function App(){
         <Text style={styles.small}>Up / Down: browse | Select: choose | Back: close{subtitleChoices.length>5?` | ${Math.min(subtitleCursor+1,subtitleChoices.length)} / ${subtitleChoices.length}`:''}</Text>
       </View>:null}
     </>:route==='player'&&selected?<NativeUnavailable theme={preferences.theme} width={width} height={height} name={selected.title} reason={!transportReady?'The selected server transport is not approved or ready.':selectedSupport.reason??'This content is not supported on this device.'} instructions="Saved progress stays on this device. Press Back to return to details." />:<>
-      <NativeHeader theme={preferences.theme} width={width} focused={route==='setup'?(setupFocus==='appearance'||setupFocus==='requests'):headerFocused} headerCursor={route==='detail'?visibleLibraries.length:headerCursor} libraries={visibleLibraries} selectedLibraryId={selectedLibrary?.id} onLibrary={chooseLibrary} onAppearance={openAppearance} onRequests={()=>{void openRequests();}} onActionFocus={action=>{if(route==='setup')focusSetup(action);}} />
+      <NativeHeader theme={preferences.theme} width={width} focused={route==='setup'?(setupFocus==='appearance'||setupFocus==='requests'):headerFocused} headerCursor={route==='detail'?visibleLibraries.length:headerCursor} libraries={visibleLibraries} selectedLibraryId={selectedLibrary?.id} onLibrary={chooseLibrary} onAppearance={openAppearance} onRequests={()=>{void openRequests();}} onServer={route==='library'?openServer:undefined} onActionFocus={action=>{if(route==='setup'&&action!=='server')focusSetup(action);else if(route==='library'){setHeaderFocused(true);setHeaderCursor(visibleLibraries.length+(action==='appearance'?0:action==='requests'?1:2));}}} />
       {route==='requests'&&transportReady?<Requests key={stored.origin} origin={stored.origin} transport={selectedTransport??undefined} backHandler={requestsBack} onBack={()=>{setHeaderFocused(true);setHeaderCursor(visibleLibraries.length+1);setRoute('library');}} />:<>
       {route==='appearance'?<Text accessibilityLiveRegion="polite" numberOfLines={2} style={[styles.notice,{height:40,marginTop:0,marginBottom:12}]}>{appearanceMessage||'System motion respects device accessibility. A still theme always disables animation.'}</Text>:null}
       <ScrollView ref={sceneScroll} style={styles.scroller} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled" onLayout={event=>setViewportHeight(event.nativeEvent.layout.height)} onScrollBeginDrag={()=>{activity.current.interact();navigationMode.current='touch';}} onScroll={event=>{const y=event.nativeEvent.contentOffset.y;sceneOffset.current=y;if(route==='library'){libraryScroll.current=y;withinLibraryRow.current=Math.max(0,y-libraryTop.current)%(cardHeight+gap);setRenderAnchor(feedScrollAnchor(y,libraryTop.current,columns,cardHeight+gap,feedSnapshot.known,totalItems));}}} scrollEventThrottle={16}>

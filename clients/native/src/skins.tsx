@@ -21,6 +21,7 @@ import type {
 import type { LibraryDescriptor } from '../../../packages/contracts/index.ts';
 import { feedSlotCount, feedWindow } from './feed.ts';
 import { artworkUri } from './preferences.ts';
+import { headerStripIndex } from './header-navigation.ts';
 import {
   nativeGridFrame,
   nativeReservedGeometry,
@@ -76,6 +77,7 @@ export function NativeHeader({
   onLibrary,
   onAppearance,
   onRequests,
+  onServer,
   onActionFocus,
 }: {
   theme: Theme;
@@ -87,7 +89,8 @@ export function NativeHeader({
   onLibrary: (library: LibraryDescriptor) => void;
   onAppearance: () => void;
   onRequests?: () => void;
-  onActionFocus?: (action: 'appearance' | 'requests') => void;
+  onServer?: () => void;
+  onActionFocus?: (action: 'appearance' | 'requests' | 'server') => void;
 }) {
   const archive = theme.design.skin === 'archive';
   const colors = theme.colors;
@@ -97,7 +100,10 @@ export function NativeHeader({
   useEffect(() => {
     if (focused)
       tabs.current?.scrollTo({
-        x: Math.max(0, Math.min(headerCursor, libraries.length) * 136 - 16),
+        x: Math.max(
+          0,
+          headerStripIndex(libraries.length, headerCursor) * 136 - 16,
+        ),
         animated: false,
       });
   }, [focused, headerCursor, libraries.length]);
@@ -259,6 +265,41 @@ export function NativeHeader({
               }}
             >
               Requests
+            </Text>
+          </Pressable>
+        ) : null}
+        {onServer ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{
+              selected: focused && headerCursor === libraries.length + 2,
+            }}
+            onPress={onServer}
+            onFocus={() => onActionFocus?.('server')}
+            style={{
+              width: 128,
+              height: 44,
+              paddingHorizontal: 12,
+              justifyContent: 'center',
+              borderWidth: 2,
+              borderColor:
+                focused && headerCursor === libraries.length + 2
+                  ? colors.focus
+                  : 'transparent',
+              backgroundColor: colors.surface,
+              borderRadius: archive ? 0 : 6,
+            }}
+          >
+            <Text
+              numberOfLines={1}
+              style={{
+                color: colors.text,
+                lineHeight: 18,
+                height: 18,
+                fontFamily: layout.fontFamily,
+              }}
+            >
+              Server
             </Text>
           </Pressable>
         ) : null}

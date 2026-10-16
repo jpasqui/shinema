@@ -71,7 +71,9 @@ For a trusted local network, setup also offers explicit HTTP consent for the exa
 
 Device testing requires current operator authorization and availability; do not interrupt a device in use. Temporary device routing for an isolated test must remain bounded to the approved local server and be removed after the session.
 
-Remote controls: arrows browse the eight-card page; Select opens detail/plays; player Select pauses, Left/Right seeks ten seconds, Back returns player to detail to the same library page, then exits at root. Held Back is gated until release. Menu opens server setup outside playback. Up in setup focuses the address field. Cached browsing is available offline; streaming still needs the server.
+Remote controls: arrows browse; Select opens detail/plays; player Select pauses, Left/Right seeks ten seconds, Back returns player to detail to the same library page, then exits at root. Held Back is gated until release. Menu opens server setup outside playback. The library header also offers a Server action for devices that do not deliver Menu. In setup, Up/Down chooses the address, HTTP consent and Connect controls, scrolling the selected control into view. Cached browsing is available offline; streaming still needs the server.
+
+Native playback snapshots validated resume progress before mounting the player and passes the initial position in milliseconds through React Native Video's source. Android applies it before preparation, avoiding an initial frame at the wrong position. A changed actual duration can still require a corrective seek after load.
 
 ## Checks and limits
 
