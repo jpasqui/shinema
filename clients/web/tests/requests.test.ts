@@ -76,7 +76,7 @@ test('request client keeps bearer in memory, sends identity only, and does not f
         : {}),
     });
     assert.equal(call.init.cache, undefined);
-    assert.equal(call.init.redirect, 'error');
+    assert.equal(call.init.redirect, undefined);
     assert.equal(call.init.credentials, 'omit');
   }
   client.lock();
@@ -132,6 +132,7 @@ test('capabilities never sends auth; incomplete refresh and safe server errors a
     sequence++;
     if (sequence === 1) {
       assert.deepEqual(init?.headers, {});
+      assert.equal(init?.redirect, 'error');
       return json({
         apiVersion: 1,
         enabled: false,

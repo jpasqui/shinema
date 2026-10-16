@@ -475,20 +475,25 @@ try {
   result.browserChannel = browserChannel || 'chromium-headless-shell';
   diagnostics = browserDiagnostics(browser, evidence);
 
-  const baseline = await startServer('before-state', {}, await beforeBuild());
-  let context = await contextFor(baseline);
-  let page = await context.newPage();
-  await page.goto(baseline.origin);
-  await expect(
-    page.getByRole('heading', { name: 'Library', exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole('button', { name: 'Requests', exact: true }),
-  ).toHaveCount(0);
-  await capture(page, 'before-no-requests');
-  await context.close();
-  await stopServer(baseline);
-  result.checks.push('Pinned public baseline has no Requests navigation');
+  let context, page;
+  // Public review capture is opt-in: ordinary CI uses a shallow checkout and
+  // still executes every actual request-flow assertion against the built app.
+  if (process.env.SHINEMA_REQUESTS_CAPTURE_BEFORE === '1') {
+    const baseline = await startServer('before-state', {}, await beforeBuild());
+    context = await contextFor(baseline);
+    page = await context.newPage();
+    await page.goto(baseline.origin);
+    await expect(
+      page.getByRole('heading', { name: 'Library', exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: 'Requests', exact: true }),
+    ).toHaveCount(0);
+    await capture(page, 'before-no-requests');
+    await context.close();
+    await stopServer(baseline);
+    result.checks.push('Pinned public baseline has no Requests navigation');
+  }
 
   const disabled = await startServer('disabled-state');
   assert.equal((await api(disabled, '/capabilities')).value.enabled, false);
@@ -543,7 +548,9 @@ try {
     assert.equal(unauthorized.value.error.code, 'unauthorized');
   }
   const crossOrigin = await api(server, '', {
-    headers: { Origin: 'http://example.invalid' },
+    // The global host boundary permits loopback origins. Requests additionally
+    // require this exact server origin, even when the other origin is loopback.
+    headers: { Origin: 'http://127.0.0.1:1' },
   });
   assert.equal(crossOrigin.status, 403);
   assert.equal(crossOrigin.value.error.code, 'forbidden_origin');

@@ -734,6 +734,35 @@ fn provider_configuration_rejects_secret_urls_and_invalid_policy() {
 }
 
 #[tokio::test]
+async fn merged_router_preserves_global_cross_site_protection_for_requests() {
+    let temp = tempfile::tempdir().unwrap();
+    let media = temp.path().join("empty-media");
+    std::fs::create_dir(&media).unwrap();
+    let library = shinema_server::Library::open(&media, &temp.path().join("state")).unwrap();
+    let app =
+        shinema_server::router_at_with_requests(library, HOST.parse().unwrap(), Engine::disabled());
+    for (fetch_site, expected) in [
+        (None, StatusCode::OK),
+        (Some("cross-site"), StatusCode::FORBIDDEN),
+    ] {
+        let mut request = axum::http::Request::builder()
+            .uri("/api/requests/capabilities")
+            .header(header::HOST, HOST);
+        if let Some(fetch_site) = fetch_site {
+            request = request.header("Sec-Fetch-Site", fetch_site);
+        }
+        // Omit Origin deliberately: this must be caught by the global guard,
+        // applied after router merge, rather than the request-local Origin gate.
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+    }
+}
+
+#[tokio::test]
 async fn request_state_migrates_without_losing_an_uncertain_identity() {
     let mock = Mock::start().await;
     let temp = tempfile::tempdir().unwrap();

@@ -307,7 +307,9 @@ export class RequestClient {
           body: body === undefined ? undefined : JSON.stringify(body),
           signal: controller.signal,
           credentials: 'omit',
-          redirect: 'error',
+          // Native fetch has no redirect mode; the same-origin browser client
+          // can enforce it. Request endpoints themselves never redirect.
+          ...(this.origin ? {} : { redirect: 'error' as const }),
         },
       );
       if (!publicRequest && generation !== this.generation)
