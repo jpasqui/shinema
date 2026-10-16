@@ -143,20 +143,103 @@ export function subtitleAt(
   return active.join('\n');
 }
 
-/** A seek hides captions until its acknowledgement, ignoring old progress. */
+export const SUBTITLE_SEEK_RECOVERY_MS = 2000;
+
+/** Hide queued old times while a seek settles; callbacks are not its only exit. */
 export class SubtitleClock {
   private seconds = 0;
-  private seeking = false;
-  current(): number {
-    return this.seconds;
+  private latest = 0;
+  private pending: {
+    target: number;
+    started: number;
+    observed: number;
+  } | null = null;
+  private requested: number | null = null;
+  private generation = 0;
+  private stopped = false;
+  private now: () => number;
+
+  constructor(now: () => number = Date.now) {
+    this.now = now;
   }
-  seek(): void {
-    this.seeking = true;
+
+  current(): number {
+    return this.recover();
+  }
+
+  reset(seconds = 0): void {
+    ++this.generation;
+    this.pending = null;
+    this.requested = null;
+    this.stopped = false;
+    this.seconds = seconds;
+    this.latest = seconds;
+  }
+
+  stop(): void {
+    ++this.generation;
+    this.pending = null;
+    this.requested = null;
+    this.stopped = true;
     this.seconds = NaN;
   }
-  update(seconds: number, acknowledged = false): number {
-    if (acknowledged) this.seeking = false;
-    if (!this.seeking) this.seconds = seconds;
+
+  seek(target: number): number {
+    if (!Number.isFinite(target) || target < 0)
+      throw new Error('Invalid subtitle seek');
+    const observed = this.pending?.observed ?? this.latest;
+    this.pending = { target, started: this.now(), observed };
+    this.requested = target;
+    this.stopped = false;
+    this.seconds = NaN;
+    return ++this.generation;
+  }
+
+  acceptsSeek(target: number): boolean {
+    return (
+      Number.isFinite(target) &&
+      (this.requested === null || Math.abs(target - this.requested) <= 0.25)
+    );
+  }
+
+  recover(generation = this.generation): number {
+    if (
+      generation === this.generation &&
+      this.pending &&
+      this.now() - this.pending.started >= SUBTITLE_SEEK_RECOVERY_MS
+    ) {
+      this.seconds = this.pending.observed;
+      this.latest = this.seconds;
+      this.pending = null;
+    }
+    return this.seconds;
+  }
+
+  update(seconds: number, acknowledgedTarget?: number): number {
+    if (this.stopped || !Number.isFinite(seconds) || seconds < 0)
+      return this.current();
+    // onSeek has no request ID, but seekTime identifies an earlier target.
+    if (
+      acknowledgedTarget !== undefined &&
+      !this.acceptsSeek(acknowledgedTarget)
+    )
+      return this.current();
+    if (this.pending) {
+      this.pending.observed = seconds;
+      const elapsed = Math.max(0, this.now() - this.pending.started);
+      const nearTarget =
+        Math.abs(seconds - this.pending.target) <=
+        0.75 + Math.min(elapsed / 1000, 1.25);
+      if (
+        acknowledgedTarget === undefined &&
+        !nearTarget &&
+        elapsed < SUBTITLE_SEEK_RECOVERY_MS
+      )
+        return this.seconds;
+      this.pending = null;
+    }
+    this.seconds = seconds;
+    this.latest = seconds;
     return this.seconds;
   }
 }

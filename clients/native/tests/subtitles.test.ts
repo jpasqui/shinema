@@ -62,23 +62,92 @@ test('captions use media time for starts, ends, resume, backward/forward seeks a
   assert.equal(subtitleAt(cues, -1), '');
 });
 
-test('seek and resume hide old captions until native acknowledgement, including queued old progress', () => {
-  const clock = new SubtitleClock();
+test('playing and paused caption seeks accept target progress without an acknowledgement, hiding queued old times', () => {
+  let now = 0;
+  const clock = new SubtitleClock(() => now);
   const cues = parseSubtitleCues(vtt);
   assert.equal(subtitleAt(cues, clock.update(2.5)), 'First synthetic cue');
-  clock.seek();
+  clock.seek(10.5);
   assert.equal(subtitleAt(cues, clock.current()), '');
   assert.equal(subtitleAt(cues, clock.update(2.7)), '');
-  assert.equal(subtitleAt(cues, clock.update(10.5, true)), 'Resume cue');
-  clock.seek();
+  now = 100;
+  assert.equal(subtitleAt(cues, clock.update(10.5)), 'Resume cue');
+  assert.equal(subtitleAt(cues, clock.update(10.6)), 'Resume cue');
+  // A paused seek can report its new fixed position through progress alone.
+  clock.seek(2.5);
   assert.equal(subtitleAt(cues, clock.update(10.7)), '');
-  assert.equal(
-    subtitleAt(cues, clock.update(2.5, true)),
-    'First synthetic cue',
-  );
-  clock.seek();
+  now = 200;
+  assert.equal(subtitleAt(cues, clock.update(2.5)), 'First synthetic cue');
+  now = 1200;
+  assert.equal(subtitleAt(cues, clock.current()), 'First synthetic cue');
+});
+
+test('resume captions accept fresh target progress independently of the progress-saving seek guard', () => {
+  const clock = new SubtitleClock(() => 0);
+  const cues = parseSubtitleCues(vtt);
+  clock.reset();
+  clock.seek(10.5);
+  assert.equal(subtitleAt(cues, clock.update(0)), '');
+  assert.equal(subtitleAt(cues, clock.update(10.5)), 'Resume cue');
+  clock.seek(0);
   assert.equal(subtitleAt(cues, clock.update(2.7)), '');
-  assert.equal(subtitleAt(cues, clock.update(0, true)), '');
+  assert.equal(clock.update(0), 0);
+});
+
+test('imprecise or failed caption seeks recover after two seconds even while paused without another event', () => {
+  let now = 0;
+  const clock = new SubtitleClock(() => now);
+  const cues = parseSubtitleCues(vtt);
+  clock.update(2.5);
+  const request = clock.seek(10.5);
+  assert.equal(subtitleAt(cues, clock.update(2.7)), '');
+  now = 1999;
+  assert.equal(subtitleAt(cues, clock.recover(request)), '');
+  now = 2000;
+  assert.equal(subtitleAt(cues, clock.recover(request)), 'First synthetic cue');
+  assert.equal(clock.update(3), 3);
+  clock.seek(100);
+  now = 4000;
+  // A different keyframe/failed seek position also exits the guard on progress.
+  assert.equal(clock.update(10.5), 10.5);
+});
+
+test('an earlier seek acknowledgement cannot settle a newer target or overwrite its accepted caption time', () => {
+  const clock = new SubtitleClock(() => 0);
+  clock.update(2.5);
+  clock.seek(10);
+  clock.seek(30);
+  assert.equal(clock.acceptsSeek(10), false);
+  assert.equal(Number.isNaN(clock.update(10.2, 10)), true);
+  assert.equal(Number.isNaN(clock.update(2.7)), true);
+  assert.equal(clock.update(30.1), 30.1);
+  assert.equal(clock.update(10.3, 10), 30.1);
+  assert.equal(clock.acceptsSeek(30), true);
+  assert.equal(clock.update(30.2, 30), 30.2);
+});
+
+test('old recovery timers cannot release a newer caption seek, and stop/reset fence pending recovery', () => {
+  let now = 0;
+  const clock = new SubtitleClock(() => now);
+  clock.update(2.5);
+  const first = clock.seek(10);
+  now = 1500;
+  const second = clock.seek(30);
+  now = 2100;
+  assert.equal(Number.isNaN(clock.recover(first)), true);
+  assert.equal(Number.isNaN(clock.update(10.2, 10)), true);
+  assert.equal(Number.isNaN(clock.current()), true);
+  now = 3500;
+  assert.equal(clock.recover(second), 2.5);
+  const stopped = clock.seek(10);
+  clock.stop();
+  now = 6000;
+  assert.equal(Number.isNaN(clock.recover(stopped)), true);
+  assert.equal(Number.isNaN(clock.update(10.5)), true);
+  clock.reset();
+  assert.equal(clock.update(2.5), 2.5);
+  assert.throws(() => clock.seek(NaN));
+  assert.throws(() => clock.seek(-1));
 });
 
 class FakeXhr {

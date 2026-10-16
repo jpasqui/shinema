@@ -289,7 +289,9 @@ fn clean_label(value: &str) -> String {
                 && !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '<' | '>')
         })
         .take(200)
-        .collect()
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 fn valid_track_id(id: &str) -> bool {
     !id.is_empty()

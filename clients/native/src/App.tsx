@@ -8,7 +8,7 @@ import {fresh,recover,move,pageFor} from './domain.ts';
 import type {Stored} from './domain.ts';
 import {SessionGuard,StorageQueue,ProgressQueue,connectValidated,persistThenSync,syncProgress,resolveResume,backDestination} from './session.ts';
 import type {ConnectionStamp} from './session.ts';
-import {SubtitleController,SubtitleClock,emptySubtitles,subtitleAt} from './subtitles.ts';
+import {SubtitleController,SubtitleClock,SUBTITLE_SEEK_RECOVERY_MS,emptySubtitles,subtitleAt} from './subtitles.ts';
 
 const Host=NativeModules.ShinemaHost as {readState:()=>Promise<string>;stageState:(value:string)=>Promise<void>;writeState:(value:string)=>Promise<void>;finish:()=>void};
 type Route='setup'|'library'|'detail'|'player';
@@ -33,6 +33,7 @@ export default function App(){
   const [subtitles,setSubtitles]=useState(emptySubtitles);const [subtitleMenu,setSubtitleMenu]=useState(false);const [subtitleCursor,setSubtitleCursor]=useState(0);
   const subtitleController=useRef(new SubtitleController(setSubtitles));
   const [caption,setCaption]=useState('');const subtitleTime=useRef(new SubtitleClock());
+  const subtitleRecovery=useRef<ReturnType<typeof setTimeout>|null>(null);
   const video=useRef<VideoRef>(null);const input=useRef<React.ComponentRef<typeof TextInput>>(null);const position=useRef(0);const total=useRef(0);
   const resume=useRef<Progress|null>(null);const waitingSeek=useRef(false);const backHeld=useRef(false);const lastSave=useRef(0);
   const activeItem=useRef<Media|null>(null);
@@ -44,8 +45,10 @@ export default function App(){
   const source=useMemo(()=>({uri:stored.origin+(selected?.streamPath??'')}),[stored.origin,selected?.streamPath]);
   useEffect(()=>{setCaption(subtitleAt(subtitles.cues,subtitleTime.current.current()));},[subtitles.cues]);
 
-  function captionAt(seconds:number,acknowledged=false){const current=subtitleTime.current.update(seconds,acknowledged);setCaption(subtitleAt(subtitleController.current.snapshot().cues,current));}
-  function hideCaptionForSeek(){subtitleTime.current.seek();setCaption('');}
+  function captionAt(seconds:number,acknowledgedTarget?:number){const current=subtitleTime.current.update(seconds,acknowledgedTarget);setCaption(subtitleAt(subtitleController.current.snapshot().cues,current));}
+  function clearSubtitleRecovery(){if(subtitleRecovery.current!==null){clearTimeout(subtitleRecovery.current);subtitleRecovery.current=null;}}
+  function hideCaptionForSeek(target:number){clearSubtitleRecovery();const generation=subtitleTime.current.seek(target);setCaption('');subtitleRecovery.current=setTimeout(()=>{const current=subtitleTime.current.recover(generation);setCaption(subtitleAt(subtitleController.current.snapshot().cues,current));},SUBTITLE_SEEK_RECOVERY_MS);}
+  function stopCaption(){clearSubtitleRecovery();subtitleTime.current.stop();setCaption('');}
   function openSubtitles(){setSubtitleCursor(0);setSubtitleMenu(value=>!value);}
   function chooseSubtitle(key:string){
     if(key==='retry'){void subtitleController.current.retry();return;}
@@ -128,7 +131,7 @@ export default function App(){
     const result=await resolveResume(session.current,ticket,item.id,()=>store.current,(origin,id)=>request(origin,`/api/media/${id}/progress`));
     if(!result)return;
     activeItem.current=item;activeDestination.current=ticket;resume.current=result.progress;position.current=0;total.current=0;waitingSeek.current=false;lastSave.current=Date.now();
-    subtitleTime.current.update(0,true);setCaption('');setSubtitleMenu(false);setSubtitleCursor(0);
+    clearSubtitleRecovery();subtitleTime.current.reset();setCaption('');setSubtitleMenu(false);setSubtitleCursor(0);
     void subtitleController.current.start(ticket.origin,item.id,deviceLanguages());
     setClock(0);setDuration(0);setPaused(false);setLoading(true);setRoute('player');setBusy(false);setMessage('');
   }
@@ -146,7 +149,7 @@ export default function App(){
     const nativeBack=BackHandler.addEventListener('hardwareBackPress',()=>{
       handler.current({code:4,action:0,repeat:0});handler.current({code:4,action:1,repeat:0});return true;
     });
-    return()=>{alive=false;keys.remove();lifecycle.remove();nativeBack.remove();subtitleController.current.cancel();session.current.cancelConnection();};
+    return()=>{alive=false;keys.remove();lifecycle.remove();nativeBack.remove();clearSubtitleRecovery();subtitleTime.current.stop();subtitleController.current.cancel();session.current.cancelConnection();};
   },[]);
 
   handler.current=(key:Key)=>{
@@ -157,7 +160,7 @@ export default function App(){
       if(backHeld.current)return;backHeld.current=true;session.current.invalidatePlayback();
       if(route==='setup'){session.current.cancelConnection();setBusy(false);}
       const destination=backDestination(route,Boolean(store.current.catalog));
-      if(route==='player'){subtitleController.current.cancel();setCaption('');setPaused(true);void save();activeItem.current=null;activeDestination.current=null;setLoading(false);}
+      if(route==='player'){subtitleController.current.cancel();stopCaption();setPaused(true);void save();activeItem.current=null;activeDestination.current=null;setLoading(false);}
       if(destination==='exit')void persist().catch(()=>{}).then(()=>Host.finish());
       else {setRoute(destination);setBusy(false);}
       return;
@@ -183,7 +186,7 @@ export default function App(){
         return;
       }
       if([23,66,85].includes(key.code) && key.repeat===0)setPaused(value=>!value);
-      else if([21,22].includes(key.code) && total.current>0){const target=Math.max(0,Math.min(total.current,position.current+(key.code===21?-10:10)));hideCaptionForSeek();video.current?.seek(target);}
+      else if([21,22].includes(key.code) && total.current>0){const target=Math.max(0,Math.min(total.current,position.current+(key.code===21?-10:10)));hideCaptionForSeek(target);video.current?.seek(target);}
     }
   };
 
@@ -195,17 +198,17 @@ export default function App(){
         onLoad={event=>{
           total.current=event.duration;setDuration(event.duration);setLoading(false);
           const target=resumeAt(resume.current,event.duration);waitingSeek.current=target>0;
-          if(target>0)hideCaptionForSeek();else captionAt(0,true);
+          if(target>0)hideCaptionForSeek(target);else captionAt(0);
           if(target>0){position.current=target;setClock(target);video.current?.seek(target);}
         }}
-        onSeek={event=>{waitingSeek.current=false;position.current=event.currentTime;setClock(event.currentTime);captionAt(event.currentTime,true);}}
+        onSeek={event=>{if(!subtitleTime.current.acceptsSeek(event.seekTime))return;waitingSeek.current=false;position.current=event.currentTime;setClock(event.currentTime);captionAt(event.currentTime,event.seekTime);}}
         onProgress={event=>{
-          if(waitingSeek.current)return;position.current=event.currentTime;setClock(current=>Math.floor(current)===Math.floor(event.currentTime)?current:event.currentTime);captionAt(event.currentTime);
+          captionAt(event.currentTime);if(waitingSeek.current)return;position.current=event.currentTime;setClock(current=>Math.floor(current)===Math.floor(event.currentTime)?current:event.currentTime);
           if(Date.now()-lastSave.current>=5000){lastSave.current=Date.now();void save(selected);}
         }}
         onBuffer={event=>setLoading(event.isBuffering)}
-        onEnd={()=>{hideCaptionForSeek();position.current=total.current;void save(selected);setPaused(true);setMessage('Finished. Press Back to return.');}}
-        onError={()=>{hideCaptionForSeek();setLoading(false);setPaused(true);setMessage('Playback failed. This slice directly plays device-supported files only. Press Back.');}}
+        onEnd={()=>{stopCaption();position.current=total.current;void save(selected);setPaused(true);setMessage('Finished. Press Back to return.');}}
+        onError={()=>{stopCaption();setLoading(false);setPaused(true);setMessage('Playback failed. This slice directly plays device-supported files only. Press Back.');}}
       />
       {caption?<View pointerEvents="none" style={styles.captions}><Text style={styles.captionText} numberOfLines={4}>{caption}</Text></View>:null}
       <View style={styles.overlay}><Text style={styles.title}>{selected.title}</Text><Text style={styles.text}>{loading?'Loading...':paused?'Paused':'Playing'}  {Math.floor(clock)} / {Math.floor(duration)} s</Text><Text style={styles.text}>Select: pause / play   Left / Right: seek   Menu: subtitles   Back: details</Text><Pressable accessibilityRole="button" onPress={openSubtitles}><Text style={styles.notice}>{subtitleStatus}</Text></Pressable>{message?<Text style={styles.notice}>{message}</Text>:null}</View>

@@ -127,6 +127,8 @@ fn public_track_fields_have_bounded_safe_identifiers_and_labels() {
         assert!(!valid_language(language));
     }
     assert_eq!(clean_label("<title>\n\u{202e}"), "title");
+    assert_eq!(clean_label(" \t  "), "");
+    assert_eq!(clean_label("  English  "), "English");
     assert_eq!(clean_label(&"字幕".repeat(200)).chars().count(), 200);
     for codec in ["subrip", "webvtt", "mov_text"] {
         assert_eq!(unsupported_codec(codec), None);
