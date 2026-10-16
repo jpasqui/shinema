@@ -9,6 +9,7 @@ license = "MIT"
 futures-core = "0.3"
 axum = "=0.8.9"
 cap-std = "3"
+cap-primitives = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "fs", "io-util", "signal", "process", "time", "sync"] }
 tokio-util = { version = "0.7", features = ["io"] }
 serde = { version = "1", features = ["derive"] }

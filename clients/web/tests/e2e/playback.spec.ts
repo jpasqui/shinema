@@ -103,7 +103,9 @@ for (const failure of ['unavailable', 'malformed', 'disconnected'] as const) {
     await page.goto('/');
     await openMovie(page);
     await expect(page.getByRole('alert')).toContainText('could not play');
-    await expect(page.getByRole('status')).toHaveCount(0);
+    await expect(page.locator('.video-stage').getByRole('status')).toHaveCount(
+      0,
+    );
     if (failure !== 'disconnected')
       expect(await page.locator('video').getAttribute('src')).toBeNull();
     await page

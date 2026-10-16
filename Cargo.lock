@@ -1058,6 +1058,7 @@ name = "shinema-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "cap-primitives",
  "cap-std",
  "futures-core",
  "http-body-util",
