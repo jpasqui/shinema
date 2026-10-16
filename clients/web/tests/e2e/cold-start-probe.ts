@@ -36,6 +36,7 @@ export type StartupSample = {
   meaningful: boolean;
   terminalEmpty: boolean;
   collectionsPending: boolean;
+  catalogRevision: number | null;
   scroll: [number, number];
   overflow: number;
   anchors: Record<string, Anchor>;
@@ -267,6 +268,14 @@ export async function installStartupProbe(
           time: performance.now(),
           source,
           meaningful: !!anchors.app?.visible,
+          catalogRevision: (() => {
+            const value = Number(
+              document
+                .querySelector('[data-testid="library-feed"]')
+                ?.getAttribute('data-library-revision'),
+            );
+            return Number.isSafeInteger(value) && value > 0 ? value : null;
+          })(),
           collectionsPending:
             document
               .querySelector('.library-sidebar nav')
@@ -408,6 +417,7 @@ export function startupProblems(
     allowEmptySlots?: boolean;
     allLibrariesHidden?: boolean;
     removedPendingCollectionPositions?: number[];
+    allowCatalogRevisionReset?: boolean;
   } = {},
 ) {
   const problems: Array<{
@@ -443,6 +453,8 @@ export function startupProblems(
   );
   const baselines = new Map<string, Anchor>();
   const loadedSlots = new Map<string, number>();
+  let catalogRevision: number | null = null;
+  const pendingArtwork = new Set<string>();
   const realCollectionPositions = new Set(
     remaining.flatMap((sample) =>
       Object.entries(sample.anchors)
@@ -474,6 +486,54 @@ export function startupProblems(
       .map((position) => `collectionPosition${position}`),
   );
   for (const sample of remaining) {
+    if (
+      sample.catalogRevision !== null &&
+      catalogRevision !== null &&
+      sample.catalogRevision < catalogRevision
+    )
+      problems.push({
+        frame: sample.frame,
+        anchor: 'catalogRevision',
+        kind: 'revision-regressed',
+        delta: sample.catalogRevision - catalogRevision,
+      });
+    if (
+      options.allowCatalogRevisionReset &&
+      sample.catalogRevision !== null &&
+      catalogRevision !== null &&
+      sample.catalogRevision > catalogRevision
+    ) {
+      // A confirmed newer scope may recreate data nodes. Its first decoded
+      // images establish new identity, while every reserved box stays fixed.
+      for (const name of loadedSlots.keys())
+        if (/^slot\d/.test(name)) loadedSlots.delete(name);
+      for (const name of baselines.keys())
+        if (/^slot\d+Artwork$/.test(name)) pendingArtwork.add(name);
+    }
+    if (
+      sample.catalogRevision !== null &&
+      (catalogRevision === null || sample.catalogRevision > catalogRevision)
+    )
+      catalogRevision = sample.catalogRevision;
+    for (const name of Object.keys(sample.anchors)) pendingArtwork.delete(name);
+    // The first painted shell must already reserve every logical slot. Learning
+    // a slot only when it appears later would accept a three-card opening.
+    if (!(options.allowEmptySlots && terminalFrames.has(sample.frame)))
+      for (let index = 0; index < 12; index++) {
+        const name = `slot${index}`;
+        if (!sample.anchors[name])
+          problems.push({
+            frame: sample.frame,
+            anchor: name,
+            kind: 'required-missing',
+          });
+        else if (!sample.anchors[name].rendered)
+          problems.push({
+            frame: sample.frame,
+            anchor: name,
+            kind: 'required-hidden',
+          });
+      }
     for (const name of trace.requiredAnchors ?? startupShellAnchors)
       if (!sample.anchors[name])
         problems.push({
@@ -544,6 +604,7 @@ export function startupProblems(
         continue;
       const current = sample.anchors[name];
       if (!current) {
+        if (pendingArtwork.has(name)) continue;
         problems.push({ frame: sample.frame, anchor: name, kind: 'missing' });
         continue;
       }

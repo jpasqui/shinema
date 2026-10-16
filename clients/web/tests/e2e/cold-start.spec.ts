@@ -38,6 +38,7 @@ async function coldStartup(
     cachedFeed?: boolean;
     beforeDescriptors?: (page: Page) => Promise<void>;
     retryDiscovery?: boolean;
+    expectedInitialSlots?: 3;
   } = {},
 ) {
   await page.setViewportSize({
@@ -164,12 +165,10 @@ async function coldStartup(
       .toBe(true);
     const held = await startupTrace(page);
     expect(
-      held.samples.some(
-        (sample) =>
-          Object.keys(sample.anchors).filter((name) => /^slot\d+$/.test(name))
-            .length >= (options.historical ? 3 : 12),
-      ),
-    ).toBe(true);
+      Object.keys(
+        held.samples.find((sample) => sample.meaningful)!.anchors,
+      ).filter((name) => /^slot\d+$/.test(name)).length,
+    ).toBe(options.expectedInitialSlots ?? (options.historical ? 3 : 12));
     await options.beforeDescriptors?.(page);
     phases.descriptorsReleased = Date.now();
     descriptors.release();
@@ -371,6 +370,7 @@ function expectStable(
   trace: Awaited<ReturnType<typeof startupTrace>>,
   allowEmptySlots = false,
   removedPendingCollectionPositions: number[] = [],
+  options: { allowCatalogRevisionReset?: boolean } = {},
 ) {
   expect(trace.initialStorage).toBe(0);
   expect(trace.firstContentfulPaint).not.toBeNull();
@@ -382,13 +382,10 @@ function expectStable(
       allowEmptySlots,
       allLibrariesHidden: allowEmptySlots,
       removedPendingCollectionPositions,
+      ...options,
     }).slice(0, 40),
   ).toEqual([]);
-  expect(
-    trace.shifts
-      .filter((entry) => !entry.recentInput)
-      .reduce((sum, entry) => sum + entry.value, 0),
-  ).toBe(0);
+  expect(trace.shifts.reduce((sum, entry) => sum + entry.value, 0)).toBe(0);
 }
 
 test('whole startup preserves the shell when authoritative libraries are all hidden', async ({
@@ -875,6 +872,63 @@ test('whole startup oracle rejects an entirely missing required header from the 
   expect(api.blockedRequests).toEqual([]);
 });
 
+test('whole startup oracle rejects three initial logical slots even when the reserved grid restores all twelve', async ({
+  page,
+  api,
+}, info) => {
+  await page.addInitScript(() => {
+    const removed = new Map<number, Element>();
+    const observer = new MutationObserver(() => {
+      for (const node of document.querySelectorAll('[data-browse-slot]')) {
+        const index = Number(node.getAttribute('data-browse-slot'));
+        if (index >= 3 && index < 12) {
+          removed.set(index, node);
+          node.remove();
+        }
+      }
+    });
+    observer.observe(document, { childList: true, subtree: true });
+    Object.assign(window, {
+      __restoreInitialSlots: () => {
+        observer.disconnect();
+        const grid = document.querySelector('[data-testid="library-feed"]')!;
+        for (const [, node] of [...removed].sort(([a], [b]) => a - b))
+          grid.append(node);
+      },
+    });
+  });
+  const trace = await coldStartup(page, info, {
+    expectedInitialSlots: 3,
+    beforeDescriptors: async (page) => {
+      const before = await startupTrace(page);
+      const initial = before.samples.find((sample) => sample.meaningful)!;
+      await page.evaluate(() =>
+        (
+          window as unknown as { __restoreInitialSlots: () => void }
+        ).__restoreInitialSlots(),
+      );
+      const restored = (await startupTrace(page)).samples.at(-1)!;
+      expect(restored.anchors.grid.rect).toEqual(initial.anchors.grid.rect);
+      expect(restored.anchors.slot0.rect).toEqual(initial.anchors.slot0.rect);
+      expect(
+        Object.keys(restored.anchors).filter((name) => /^slot\d+$/.test(name)),
+      ).toHaveLength(12);
+    },
+  });
+  const first = trace.samples.find((sample) => sample.meaningful)!;
+  expect(
+    Object.keys(first.anchors).filter((name) => /^slot\d+$/.test(name)),
+  ).toEqual(['slot0', 'slot1', 'slot2']);
+  expect(trace.samples.some((sample) => sample.terminalEmpty)).toBe(false);
+  for (let index = 3; index < 12; index++)
+    expect(startupProblems(trace)).toContainEqual({
+      frame: first.frame,
+      anchor: `slot${index}`,
+      kind: 'required-missing',
+    });
+  expect(api.blockedRequests).toEqual([]);
+});
+
 test('whole startup oracle catches inner nonfirst poster and title movement inside a fixed card', async ({
   page,
   api,
@@ -1020,6 +1074,239 @@ test('cached custom-first discovery failure reserves actionable order through re
   expect(api.blockedRequests).toEqual([]);
 });
 
+for (const result of ['hidden', 'removed', 'reordered'] as const) {
+  test(`healthy collections preserve physical slots through offline and online ${result} discovery`, async ({
+    page,
+    context,
+    api,
+  }, info) => {
+    const libraries = defaultLibraries();
+    const custom = {
+      id: 'custom',
+      name: 'Custom',
+      mediaType: 'movies',
+      contentTypeId: 'movies',
+      visible: true,
+      order: 0,
+    };
+    const initial = {
+      ...libraries,
+      revision: 7,
+      libraries: [
+        custom,
+        ...libraries.libraries.map((library) => ({
+          ...library,
+          order: library.order + 1,
+        })),
+      ],
+    };
+    expectStable(
+      await coldStartup(page, info, { width: 1600, libraries: initial }),
+    );
+    await expect(
+      page.getByRole('button', { name: 'Custom', exact: true }),
+    ).toBeVisible();
+    const next = {
+      ...libraries,
+      revision: 8,
+      libraries:
+        result === 'removed'
+          ? libraries.libraries
+          : [
+              ...libraries.libraries,
+              { ...custom, order: 2, visible: result !== 'hidden' },
+            ],
+    };
+    const refresh = latch();
+    let calls = 0;
+    const catalogScopes: string[] = [];
+    page.on('request', (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === '/api/catalog')
+        catalogScopes.push(url.searchParams.get('library') ?? 'legacy');
+    });
+    await page.route('**/api/libraries', async (route) => {
+      calls++;
+      await refresh.pending;
+      await route.fulfill({ json: next });
+    });
+    try {
+      await context.setOffline(true);
+      await expect
+        .poll(() => page.evaluate(() => navigator.onLine))
+        .toBe(false);
+      await startupTrace(page);
+      // There is no failed descriptor GET in this interval. Reconnection must
+      // preserve the real controls established by the earlier healthy result.
+      expect(calls).toBe(0);
+      await context.setOffline(false);
+      await expect.poll(() => calls).toBeGreaterThan(0);
+      await startupTrace(page);
+      refresh.release();
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              JSON.parse(localStorage.getItem('shinema.web.libraries.v1')!)
+                .revision,
+          ),
+        )
+        .toBe(8);
+      await expect(
+        page.getByRole('button', {
+          name: 'Open Generated movie 00000',
+          exact: true,
+        }),
+      ).toBeVisible();
+      await page.waitForFunction(() =>
+        [...document.images].every((image) => {
+          const box = image.getBoundingClientRect();
+          const visible =
+            box.bottom > 0 &&
+            box.right > 0 &&
+            box.top < innerHeight &&
+            box.left < innerWidth;
+          return (
+            (image.loading === 'lazy' && !visible) ||
+            (image.complete && image.naturalWidth > 0)
+          );
+        }),
+      );
+      await page.evaluate(async () => {
+        await Promise.all(
+          [...document.images]
+            .filter((image) => {
+              const box = image.getBoundingClientRect();
+              return (
+                image.loading !== 'lazy' ||
+                (box.bottom > 0 &&
+                  box.right > 0 &&
+                  box.top < innerHeight &&
+                  box.left < innerWidth)
+              );
+            })
+            .map((image) => image.decode()),
+        );
+      });
+      const trace = await startupTrace(page);
+      await writeFile(
+        info.outputPath('whole-reconnection.json'),
+        JSON.stringify(trace),
+      );
+      expectStable(trace, false, [], { allowCatalogRevisionReset: true });
+      if (result !== 'reordered') {
+        await expect(
+          page.getByRole('button', { name: 'Custom', exact: true }),
+        ).toHaveCount(0);
+        await expect(
+          page.locator('[data-collection-slot="custom"]'),
+        ).toHaveAttribute('aria-hidden', 'true');
+      }
+      expect(catalogScopes).not.toContain('custom');
+      expect(api.blockedRequests).toEqual([]);
+    } finally {
+      refresh.release();
+      await context.setOffline(false);
+    }
+  });
+}
+
+test('catalog revision calibration preserves geometry and rejects media replacements outside the one new-scope handoff', async ({
+  page,
+  api,
+}, info) => {
+  const healthy = await coldStartup(page, info, { width: 1600 });
+  expectStable(healthy);
+  const options = { allowCatalogRevisionReset: true };
+  const card = page.locator('[data-browse-slot="1"]');
+  await card.evaluate((node) => node.replaceWith(node.cloneNode(true)));
+  await card
+    .locator('img')
+    .evaluate((image: HTMLImageElement) => image.decode());
+  const premature = await startupTrace(page);
+  expect(
+    startupProblems(premature, options).some(
+      (problem) => problem.anchor === 'slot1' && problem.kind === 'replaced',
+    ),
+  ).toBe(true);
+  await page.evaluate(() => {
+    document
+      .querySelector('[data-testid="library-feed"]')!
+      .setAttribute('data-library-revision', '8');
+    const card = document.querySelector('[data-browse-slot="1"]')!;
+    card.replaceWith(card.cloneNode(true));
+  });
+  await card
+    .locator('img')
+    .evaluate((image: HTMLImageElement) => image.decode());
+  const handoff = await startupTrace(page);
+  const firstNewScope = handoff.samples.find(
+    (sample) => sample.catalogRevision === 8,
+  )!.frame;
+  expect(
+    startupProblems(handoff, options).filter(
+      (problem) =>
+        problem.frame >= firstNewScope &&
+        problem.anchor === 'slot1' &&
+        problem.kind === 'replaced',
+    ),
+  ).toEqual([]);
+  const handoffFrame = handoff.samples.at(-1)!.frame;
+  const replay = structuredClone(handoff);
+  const last = replay.samples.at(-1)!;
+  replay.samples.push(
+    { ...last, frame: handoffFrame + 1, catalogRevision: 7 },
+    {
+      ...last,
+      frame: handoffFrame + 2,
+      catalogRevision: 8,
+      anchors: {
+        ...last.anchors,
+        slot1: { ...last.anchors.slot1, id: last.anchors.slot1.id + 10000 },
+      },
+    },
+  );
+  expect(startupProblems(replay, options)).toContainEqual({
+    frame: handoffFrame + 1,
+    anchor: 'catalogRevision',
+    kind: 'revision-regressed',
+    delta: -1,
+  });
+  expect(startupProblems(replay, options)).toContainEqual({
+    frame: handoffFrame + 2,
+    anchor: 'slot1',
+    kind: 'replaced',
+  });
+  await page.evaluate(() => {
+    const card = document.querySelector('[data-browse-slot="1"]')!;
+    card.replaceWith(card.cloneNode(true));
+    const image = document.querySelector('[data-browse-slot="2"] img')!;
+    image.replaceWith(image.cloneNode(true));
+    document.querySelector('[data-browse-slot="3"] img')!.remove();
+    const header = document.querySelector('.header')!;
+    header.replaceWith(header.cloneNode(true));
+  });
+  await page
+    .locator('[data-browse-slot="2"] img')
+    .evaluate((image: HTMLImageElement) => image.decode());
+  const corrupted = await startupTrace(page);
+  const problems = startupProblems(corrupted, options).filter(
+    (problem) => problem.frame > handoffFrame,
+  );
+  for (const [anchor, kind] of [
+    ['slot1', 'replaced'],
+    ['slot2Artwork', 'replaced'],
+    ['slot3Artwork', 'missing'],
+    ['header', 'replaced'],
+  ])
+    expect(
+      problems.some(
+        (problem) => problem.anchor === anchor && problem.kind === kind,
+      ),
+    ).toBe(true);
+  expect(api.blockedRequests).toEqual([]);
+});
+
 test('whole startup CLS oracle detects text-only movement from an explicitly injected foreign font', async ({
   page,
   api,
@@ -1059,5 +1346,78 @@ test('whole startup CLS oracle detects text-only movement from an explicitly inj
         ),
     ),
   ).toBe(true);
+  expect(api.blockedRequests).toEqual([]);
+});
+
+test('whole startup raw CLS oracle also rejects text-only foreign font movement during recent input', async ({
+  page,
+  api,
+}, info) => {
+  const path = browsePath({
+    ...initialBrowse(),
+    libraryId: 'movies',
+    revision: 7,
+  });
+  const healthy = await coldStartup(page, info, {
+    width: 1600,
+    cachedFeed: true,
+    saved: {
+      'shinema.web.libraries.v1': JSON.stringify({
+        ...defaultLibraries(),
+        revision: 7,
+      }),
+      'shinema.web.browse.v1': JSON.stringify(
+        rememberPage({}, path, startupCatalog()),
+      ),
+    },
+  });
+  expectStable(healthy);
+  await page.evaluate(async () => {
+    const font = new FontFace(
+      'ColdRecentInputFixture',
+      'local("Arial"), local("Liberation Sans"), local("DejaVu Sans"), local("Segoe UI")',
+      { sizeAdjust: '130%' } as FontFaceDescriptors,
+    );
+    await font.load();
+    document.fonts.add(font);
+    document.addEventListener(
+      'keydown',
+      () => {
+        window.__shinemaStartup.fontAppliedAt = performance.now();
+        document.documentElement.style.setProperty(
+          '--font-ui',
+          'ColdRecentInputFixture, sans-serif',
+        );
+        document.documentElement.style.setProperty(
+          '--font-display',
+          'ColdRecentInputFixture, sans-serif',
+        );
+      },
+      { once: true },
+    );
+  });
+  // A real modifier key supplies recent input without scrolling or changing a
+  // focused control. The prepared foreign font is applied in that key event.
+  await page.keyboard.press('Shift');
+  const changed = await startupTrace(page);
+  await writeFile(
+    info.outputPath('recent-input-negative.json'),
+    JSON.stringify(changed),
+  );
+  expect(startupProblems(changed)).toEqual([]);
+  expect(changed.fontAppliedAt).not.toBeNull();
+  expect(
+    changed.shifts.some(
+      (shift) =>
+        shift.recentInput &&
+        shift.value > 0 &&
+        shift.time >= changed.fontAppliedAt! &&
+        shift.sources.some(
+          (source) =>
+            source.anchor === 'featureTitle' && source.kind === 'text',
+        ),
+    ),
+  ).toBe(true);
+  expect(() => expectStable(changed)).toThrow();
   expect(api.blockedRequests).toEqual([]);
 });
