@@ -2,6 +2,8 @@
 
 The Rust server and TypeScript client share the field definitions in `packages/contracts/api.schema.json` and the runtime parsers in `packages/contracts/index.ts`. Unknown API versions are rejected. Client stream paths must correspond exactly to the returned opaque media ID; catalog data cannot introduce arbitrary local or remote URLs.
 
+The unauthenticated development server accepts only `localhost` or literal loopback IP request authorities, with an optional valid port. Requests must supply one `Host` or a URI authority; conflicting or duplicate authorities are rejected. Browser `Origin`, when present, must be an HTTP(S) loopback origin, and cross-site Fetch Metadata requests are rejected. These checks run before API and static-file handlers and return 403. Loopback development proxies may forward their own host/port; clients such as FFmpeg may omit `Origin`. This boundary does not provide authentication against other local applications.
+
 | Method and path | Response |
 | --- | --- |
 | `GET /health` | Status, API version, active codec jobs and bounded-cache statistics |

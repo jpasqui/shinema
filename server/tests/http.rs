@@ -48,6 +48,7 @@ async fn catalog_stream_progress_and_restart() {
         .clone()
         .oneshot(
             Request::builder()
+                .header("host", "127.0.0.1:8787")
                 .uri("/api/catalog")
                 .body(Body::empty())
                 .unwrap(),
@@ -66,6 +67,7 @@ async fn catalog_stream_progress_and_restart() {
         .clone()
         .oneshot(
             Request::builder()
+                .header("host", "127.0.0.1:8787")
                 .uri(&uri)
                 .header("range", "bytes=2-5")
                 .body(Body::empty())
@@ -80,6 +82,7 @@ async fn catalog_stream_progress_and_restart() {
         .clone()
         .oneshot(
             Request::builder()
+                .header("host", "127.0.0.1:8787")
                 .method("HEAD")
                 .uri(&uri)
                 .body(Body::empty())
@@ -93,6 +96,7 @@ async fn catalog_stream_progress_and_restart() {
         .clone()
         .oneshot(
             Request::builder()
+                .header("host", "127.0.0.1:8787")
                 .uri(&uri)
                 .header("range", "bytes=20-")
                 .body(Body::empty())
@@ -108,7 +112,13 @@ async fn catalog_stream_progress_and_restart() {
     ] {
         let response = app
             .clone()
-            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .header("host", "127.0.0.1:8787")
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_ne!(response.status(), StatusCode::OK);
@@ -116,6 +126,7 @@ async fn catalog_stream_progress_and_restart() {
     let uri = format!("/api/media/{id}/progress");
     let request = |payload: &str| {
         Request::builder()
+            .header("host", "127.0.0.1:8787")
             .method("PUT")
             .uri(&uri)
             .header("content-type", "application/json")
@@ -141,7 +152,13 @@ async fn catalog_stream_progress_and_restart() {
     drop(app);
     let reopened = router(Library::open(&media, &state).unwrap());
     let response = reopened
-        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .header("host", "127.0.0.1:8787")
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let value: serde_json::Value = serde_json::from_slice(&body(response).await).unwrap();
@@ -177,6 +194,7 @@ async fn links_outside_library_are_not_served() {
         .clone()
         .oneshot(
             Request::builder()
+                .header("host", "127.0.0.1:8787")
                 .uri("/api/catalog")
                 .body(Body::empty())
                 .unwrap(),
@@ -191,6 +209,7 @@ async fn links_outside_library_are_not_served() {
     let response = app
         .oneshot(
             Request::builder()
+                .header("host", "127.0.0.1:8787")
                 .uri(format!("/api/media/{id}/stream"))
                 .body(Body::empty())
                 .unwrap(),
@@ -267,6 +286,7 @@ async fn literal_backslash_and_directory_separator_have_distinct_ids() {
         .clone()
         .oneshot(
             Request::builder()
+                .header("host", "127.0.0.1:8787")
                 .uri("/api/catalog")
                 .body(Body::empty())
                 .unwrap(),
@@ -283,6 +303,7 @@ async fn literal_backslash_and_directory_separator_have_distinct_ids() {
             .clone()
             .oneshot(
                 Request::builder()
+                    .header("host", "127.0.0.1:8787")
                     .uri(item["streamPath"].as_str().unwrap())
                     .body(Body::empty())
                     .unwrap(),
@@ -323,6 +344,7 @@ async fn unicode_catalog_uses_shared_scalar_length_contract() {
     let response = app
         .oneshot(
             Request::builder()
+                .header("host", "127.0.0.1:8787")
                 .uri("/api/catalog")
                 .body(Body::empty())
                 .unwrap(),
@@ -357,6 +379,7 @@ async fn invalid_utf8_names_do_not_collide_with_each_other_or_replacement_text()
         .clone()
         .oneshot(
             Request::builder()
+                .header("host", "127.0.0.1:8787")
                 .uri("/api/catalog")
                 .body(Body::empty())
                 .unwrap(),
@@ -378,6 +401,7 @@ async fn invalid_utf8_names_do_not_collide_with_each_other_or_replacement_text()
             .clone()
             .oneshot(
                 Request::builder()
+                    .header("host", "127.0.0.1:8787")
                     .uri(item["streamPath"].as_str().unwrap())
                     .body(Body::empty())
                     .unwrap(),
