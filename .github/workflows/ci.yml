@@ -65,6 +65,21 @@ jobs:
           retention-days: 14
       - run: node clients/web/node_modules/playwright/cli.js install --with-deps chromium
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Isolated client playback regressions
+        id: playback-regressions
+        run: npm --prefix clients/web run test:playback
+      - name: Audit playback failure diagnostics
+        id: audit-playback-diagnostics
+        if: failure() && steps.playback-regressions.outcome == 'failure'
+        run: python3 scripts/audit_ci_artifacts.py playback-diagnostics ci-artifacts/playback-failure
+      - name: Save playback failure diagnostics
+        if: failure() && steps.audit-playback-diagnostics.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shinema-playback-failure-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ci-artifacts/playback-failure/
+          if-no-files-found: error
+          retention-days: 7
       - run: node scripts/generate-test-media.mjs
       - name: Check out pinned public before-client source for comparison
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
