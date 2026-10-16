@@ -8,136 +8,163 @@ import {
   expect,
 } from '../clients/web/node_modules/@playwright/test/index.mjs';
 import { createServer } from '../clients/web/node_modules/vite/dist/node/index.js';
+import {
+  subtitleDiagnostics,
+  subtitleDiagnosticViewport,
+} from './subtitle-diagnostics.mjs';
 
 const root = resolve('.');
-await mkdir(join(root, '.local'), { recursive: true });
-const run = await mkdtemp(join(root, '.local', 'subtitles-'));
-const media = join(run, 'media');
-const evidence = join(root, '.local', 'subtitle-evidence');
-await mkdir(media);
-await mkdir(evidence, { recursive: true });
-const english =
-  '1\n00:00:01,000 --> 00:00:06,000\nEnglish: first cue\n\n2\n00:00:10,000 --> 00:00:15,000\nEnglish: after seek and resume\n\n3\n00:00:18,000 --> 00:00:23,000\nEnglish: final cue\n';
-await writeFile(join(run, 'english.srt'), english);
-await writeFile(
-  join(run, 'styled.ass'),
-  '[Script Info]\nScriptType: v4.00+\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,1\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:04.00,Default,,0,0,0,,Styled unsupported\n',
+const diagnostics = subtitleDiagnostics(
+  join(root, 'ci-artifacts', 'subtitle-failure'),
 );
-const generate = (args) => {
-  const result = spawnSync(
-    'ffmpeg',
-    ['-hide_banner', '-loglevel', 'error', '-nostdin', '-n', ...args],
-    { windowsHide: true, stdio: 'inherit' },
-  );
-  if (result.error || result.status !== 0)
-    throw new Error('Synthetic subtitle fixture generation failed');
-};
-generate([
-  '-f',
-  'lavfi',
-  '-i',
-  'color=c=0x163746:size=640x360:rate=24',
-  '-f',
-  'lavfi',
-  '-i',
-  'sine=frequency=440:sample_rate=48000',
-  '-i',
-  join(run, 'english.srt'),
-  '-i',
-  join(run, 'styled.ass'),
-  '-t',
-  '24',
-  '-map',
-  '0:v',
-  '-map',
-  '1:a',
-  '-map',
-  '2:s',
-  '-map',
-  '3:s',
-  '-c:v',
-  'libx264',
-  '-pix_fmt',
-  'yuv420p',
-  '-c:a',
-  'aac',
-  '-c:s:0',
-  'srt',
-  '-c:s:1',
-  'ass',
-  '-metadata:s:s:0',
-  'language=eng',
-  '-metadata:s:s:0',
-  'title=English',
-  '-disposition:s:0',
-  'default',
-  '-disposition:s:1',
-  '0',
-  join(media, 'Generated_Subtitle.mkv'),
-]);
-generate([
-  '-i',
-  join(media, 'Generated_Subtitle.mkv'),
-  '-map',
-  '0:v',
-  '-map',
-  '0:a',
-  '-map',
-  '0:s:0',
-  '-c:v',
-  'copy',
-  '-c:a',
-  'copy',
-  '-c:s',
-  'mov_text',
-  '-movflags',
-  '+faststart',
-  join(media, 'Generated_Direct.mp4'),
-]);
-const spanish =
-  'WEBVTT\n\n00:00:01.000 --> 00:00:06.000\nEspañol: primera señal\n\n00:00:10.000 --> 00:00:15.000\nEspañol: después del salto\n';
-for (const name of ['Generated_Subtitle', 'Generated_Direct'])
-  await writeFile(join(media, name + '.es.vtt'), spanish);
-
-const api = 'http://127.0.0.1:29887';
-process.env.SHINEMA_API_ORIGIN = api;
-process.env.VITE_DEMO_MODE = 'true';
-const server = spawn(
-  join(
-    root,
-    'target',
-    'debug',
-    'shinema-server' + (process.platform === 'win32' ? '.exe' : ''),
-  ),
-  [],
-  {
-    env: {
-      ...Object.fromEntries(
-        Object.entries(process.env).filter(
-          ([key]) => !key.startsWith('SHINEMA_'),
-        ),
-      ),
-      SHINEMA_MEDIA_ROOT: media,
-      SHINEMA_STATE_DIR: join(run, 'state'),
-      SHINEMA_BIND: '127.0.0.1:29887',
-    },
-    windowsHide: true,
-    stdio: ['ignore', 'ignore', 'pipe'],
-  },
-);
-let serverError = '';
-server.stderr.on('data', (chunk) => {
-  serverError += chunk;
-});
-let vite, browser;
+await diagnostics.prepare();
+const writeEvidence = process.env.SHINEMA_SUBTITLE_WRITE_EVIDENCE !== '0';
+let vite, browser, page, server;
+let serverState = 'not-started';
 const checks = [];
 try {
+  await mkdir(join(root, '.local'), { recursive: true });
+  const run = await mkdtemp(join(root, '.local', 'subtitles-'));
+  const media = join(run, 'media');
+  const evidence = join(root, '.local', 'subtitle-evidence');
+  await mkdir(media);
+  if (writeEvidence) await mkdir(evidence, { recursive: true });
+  const english =
+    '1\n00:00:01,000 --> 00:00:06,000\nEnglish: first cue\n\n2\n00:00:10,000 --> 00:00:15,000\nEnglish: after seek and resume\n\n3\n00:00:18,000 --> 00:00:23,000\nEnglish: final cue\n';
+  await writeFile(join(run, 'english.srt'), english);
+  await writeFile(
+    join(run, 'styled.ass'),
+    '[Script Info]\nScriptType: v4.00+\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,1\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:04.00,Default,,0,0,0,,Styled unsupported\n',
+  );
+  const generate = (args) => {
+    const result = spawnSync(
+      'ffmpeg',
+      ['-hide_banner', '-loglevel', 'error', '-nostdin', '-n', ...args],
+      { windowsHide: true, stdio: 'inherit' },
+    );
+    if (result.error || result.status !== 0)
+      throw new Error('Synthetic subtitle fixture generation failed');
+  };
+  generate([
+    '-f',
+    'lavfi',
+    '-i',
+    'color=c=0x163746:size=640x360:rate=24',
+    '-f',
+    'lavfi',
+    '-i',
+    'sine=frequency=440:sample_rate=48000',
+    '-i',
+    join(run, 'english.srt'),
+    '-i',
+    join(run, 'styled.ass'),
+    '-t',
+    '24',
+    '-map',
+    '0:v',
+    '-map',
+    '1:a',
+    '-map',
+    '2:s',
+    '-map',
+    '3:s',
+    '-c:v',
+    'libx264',
+    '-pix_fmt',
+    'yuv420p',
+    '-c:a',
+    'aac',
+    '-c:s:0',
+    'srt',
+    '-c:s:1',
+    'ass',
+    '-metadata:s:s:0',
+    'language=eng',
+    '-metadata:s:s:0',
+    'title=English',
+    '-disposition:s:0',
+    'default',
+    '-disposition:s:1',
+    '0',
+    join(media, 'Generated_Subtitle.mkv'),
+  ]);
+  generate([
+    '-i',
+    join(media, 'Generated_Subtitle.mkv'),
+    '-map',
+    '0:v',
+    '-map',
+    '0:a',
+    '-map',
+    '0:s:0',
+    '-c:v',
+    'copy',
+    '-c:a',
+    'copy',
+    '-c:s',
+    'mov_text',
+    '-movflags',
+    '+faststart',
+    join(media, 'Generated_Direct.mp4'),
+  ]);
+  const spanish =
+    'WEBVTT\n\n00:00:01.000 --> 00:00:06.000\nEspañol: primera señal\n\n00:00:10.000 --> 00:00:15.000\nEspañol: después del salto\n';
+  for (const name of ['Generated_Subtitle', 'Generated_Direct'])
+    await writeFile(join(media, name + '.es.vtt'), spanish);
+
+  const api = 'http://127.0.0.1:29887';
+  process.env.SHINEMA_API_ORIGIN = api;
+  process.env.VITE_DEMO_MODE = 'true';
+  diagnostics.at('server-startup');
+  server = spawn(
+    join(
+      root,
+      'target',
+      'debug',
+      'shinema-server' + (process.platform === 'win32' ? '.exe' : ''),
+    ),
+    [],
+    {
+      env: {
+        ...Object.fromEntries(
+          Object.entries(process.env).filter(
+            ([key]) => !key.startsWith('SHINEMA_'),
+          ),
+        ),
+        SHINEMA_MEDIA_ROOT: media,
+        SHINEMA_STATE_DIR: join(run, 'state'),
+        SHINEMA_BIND: '127.0.0.1:29887',
+      },
+      windowsHide: true,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    },
+  );
+  serverState = 'starting';
+  // Recognize only our own server's readiness, not another process on this port.
+  // Raw output stays bounded in memory and is never retained in diagnostics.
+  let startupOutput = '';
+  let serverListening = false;
+  server.stderr.on('data', (chunk) => {
+    if (serverListening) return;
+    startupOutput = (startupOutput + chunk.toString()).slice(-512);
+    serverListening = startupOutput.includes('Shinema listening on loopback');
+    if (serverListening) startupOutput = '';
+  });
+  server.once('error', () => {
+    serverState = 'exited';
+  });
+  server.once('exit', () => {
+    serverState = 'exited';
+  });
   let ready = false;
   for (let n = 0; n < 100; n++) {
-    if (server.exitCode !== null)
-      throw new Error('Synthetic server exited: ' + serverError);
+    if (server.exitCode !== null || serverState === 'exited')
+      throw new Error('Synthetic server exited');
     try {
-      if ((await fetch(api + '/health')).ok) {
+      if (
+        serverListening &&
+        (await fetch(api + '/health', { signal: AbortSignal.timeout(500) })).ok
+      ) {
         ready = true;
         break;
       }
@@ -145,11 +172,22 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   assert(ready);
+  serverState = 'running';
   const catalog = await (await fetch(api + '/api/catalog')).json();
+  assert.deepEqual(catalog.items.map((item) => item.title).sort(), [
+    'Generated Direct',
+    'Generated Subtitle',
+  ]);
+  diagnostics.at('browser-startup');
   vite = await createServer({
     root: join(root, 'clients/web'),
     configFile: join(root, 'clients/web/vite.config.ts'),
-    server: { host: '127.0.0.1', port: 29883, strictPort: true },
+    server: {
+      host: '127.0.0.1',
+      port: 29883,
+      strictPort: true,
+      hmr: { overlay: false },
+    },
   });
   await vite.listen();
   browser = await chromium.launch({
@@ -157,7 +195,7 @@ try {
     args: ['--mute-audio'],
   });
   const context = await browser.newContext({
-    viewport: { width: 1280, height: 1080 },
+    viewport: subtitleDiagnosticViewport,
     locale: 'en-US',
     reducedMotion: 'reduce',
   });
@@ -166,9 +204,12 @@ try {
       ? route.continue()
       : route.abort(),
   );
-  const page = await context.newPage();
-  const failures = [];
-  page.on('pageerror', (error) => failures.push(error.message));
+  page = await context.newPage();
+  diagnostics.observe(page);
+  let pageErrors = 0;
+  page.on('pageerror', () => {
+    pageErrors = Math.min(pageErrors + 1, 100);
+  });
   await page.addInitScript(() => {
     window.__videoLoads = 0;
     document.addEventListener(
@@ -203,6 +244,9 @@ try {
       .toBeCloseTo(seconds, 0);
   };
   for (const name of ['Subtitle', 'Direct']) {
+    diagnostics.at(
+      name === 'Subtitle' ? 'subtitle-playback' : 'direct-playback',
+    );
     const item = catalog.items.find(
       (item) => item.title === `Generated ${name}`,
     );
@@ -252,6 +296,11 @@ try {
       .toBe(true);
     await seek(3);
     await expect.poll(cue, { timeout: 60000 }).toContain('English: first cue');
+    if (
+      name === 'Subtitle' &&
+      process.env.SHINEMA_SUBTITLE_TEST_FAILURE === '1'
+    )
+      assert.fail('Intentional generated-fixture diagnostics check');
     await seek(12);
     await expect
       .poll(cue, { timeout: 60000 })
@@ -304,10 +353,11 @@ try {
         'content failure permits changing track and retry without video reload',
       );
     }
-    await page.screenshot({
-      path: join(evidence, `subtitles-${name.toLowerCase()}.png`),
-      fullPage: true,
-    });
+    if (writeEvidence)
+      await page.screenshot({
+        path: join(evidence, `subtitles-${name.toLowerCase()}.png`),
+        fullPage: true,
+      });
     await subtitles.selectOption('');
     await expect.poll(cue, { timeout: 60000 }).toBe('');
     await expect
@@ -404,6 +454,7 @@ try {
       .toContain('English: after seek and resume');
     checks.push(`${name}: explicit Off survives Back and Resume`);
   }
+  diagnostics.at('discovery-recovery');
   await page.getByRole('button', { name: 'Back to details' }).click();
   await page.route('**/subtitles', (route) =>
     route.fulfill({ status: 503, body: 'unavailable' }),
@@ -426,6 +477,7 @@ try {
     'discovery failure leaves playback usable; retry recovers subtitles',
   );
   // Off while discovery is pending must stay Off even when a default arrives.
+  diagnostics.at('discovery-cancellation');
   await page.getByRole('button', { name: 'Back to details' }).click();
   const direct = catalog.items.find(
     (item) => item.title === 'Generated Direct',
@@ -496,27 +548,45 @@ try {
   );
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Direct');
   await expect(video).toHaveCount(0);
-  assert.deepEqual(failures, []);
+  assert.equal(pageErrors, 0);
   checks.push('leaving during discovery discards completion');
-  await writeFile(
-    join(evidence, 'checks.json'),
-    JSON.stringify(
-      {
-        browser: browser.version(),
-        fixtures:
-          'Original FFmpeg color/sine + authored multilingual text; host loopback only.',
-        checks,
-      },
-      null,
-      2,
-    ),
-  );
+  if (writeEvidence)
+    await writeFile(
+      join(evidence, 'checks.json'),
+      JSON.stringify(
+        {
+          browser: browser.version(),
+          fixtures:
+            'Original FFmpeg color/sine + authored multilingual text; host loopback only.',
+          checks,
+        },
+        null,
+        2,
+      ),
+    );
   console.log(checks.join('\n'));
-  console.log('Synthetic subtitle screenshots: .local/subtitle-evidence');
+  if (writeEvidence)
+    console.log('Synthetic subtitle screenshots: .local/subtitle-evidence');
+} catch (error) {
+  try {
+    await diagnostics.save(error, {
+      page,
+      completedChecks: checks.length,
+      serverState,
+    });
+    console.error(
+      'Synthetic subtitle smoke failed; inspect audited subtitle failure diagnostics.',
+    );
+  } catch {
+    console.error(
+      'Synthetic subtitle diagnostics unavailable; upload audit must fail closed.',
+    );
+  }
+  process.exitCode = 1;
 } finally {
   await browser?.close();
   await vite?.close();
-  if (server.exitCode === null) {
+  if (server?.pid && server.exitCode === null && server.signalCode === null) {
     const stopped = new Promise((resolve) => server.once('exit', resolve));
     server.kill();
     await stopped;
