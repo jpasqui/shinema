@@ -122,6 +122,59 @@ test('rapid row navigation reveals the current global slot without a paging jump
   }
 });
 
+test('delayed first catalogue geometry preserves a newer touch anchor even while header state is retained', async () => {
+  const activity = new NativeActivity();
+  activity.beginConnection();
+  const ticket = activity.capture();
+  let finish!: () => void;
+  const catalogue = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const layout = nativeSkinLayout(defaultTheme, 960, 540);
+  const original = {
+    current: 0,
+    gridTop: 254,
+    cursor: 0,
+    columns: layout.columns,
+    cardHeight: layout.cardHeight,
+    gap: layout.gap,
+    viewport: 384,
+    headerFocused: true,
+  };
+  assert.equal(libraryFocusOffset(original), 0);
+  activity.interact();
+  const dragged = 428;
+  const settled = catalogue.then(() => ({
+    target: libraryEntryTarget(false, true, activity.current(ticket)),
+    offset: libraryFocusOffset({
+      ...original,
+      current: dragged,
+      navigationMode: 'touch',
+    }),
+  }));
+  finish();
+  assert.deepEqual(await settled, { target: 'preserve', offset: dragged });
+  // A later authoritative grid-height callback still cannot force header scroll.
+  assert.equal(
+    libraryFocusOffset({
+      ...original,
+      current: dragged,
+      viewport: 380,
+      navigationMode: 'touch',
+    }),
+    dragged,
+  );
+  // Only a new, explicit D-pad header action returns to the feature.
+  assert.equal(
+    libraryFocusOffset({
+      ...original,
+      current: dragged,
+      navigationMode: 'remote',
+    }),
+    0,
+  );
+});
+
 test('invalid or not-yet-measured focus geometry never causes an unbounded scroll', () => {
   const args = {
     current: 0,

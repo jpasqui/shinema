@@ -21,6 +21,7 @@ export function libraryFocusOffset({
   gap,
   viewport,
   headerFocused,
+  navigationMode = 'remote',
 }: {
   current: number;
   gridTop: number;
@@ -30,7 +31,10 @@ export function libraryFocusOffset({
   gap: number;
   viewport: number;
   headerFocused: boolean;
+  navigationMode?: 'remote' | 'touch';
 }): number {
+  if (navigationMode === 'touch')
+    return Number.isFinite(current) ? Math.max(0, current) : 0;
   if (headerFocused) return 0;
   if (
     ![current, gridTop, cursor, columns, cardHeight, gap, viewport].every(

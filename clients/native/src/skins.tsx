@@ -547,7 +547,14 @@ function Artwork({
           transform: [{ rotate: '-13deg' }],
         }}
       />
-      <View style={{ flex: 1, padding: cover.padding, gap: cover.gap }}>
+      <View
+        style={{
+          flex: 1,
+          padding: cover.padding,
+          gap: cover.gap,
+          backgroundColor: colors.elevated,
+        }}
+      >
         {cover.kicker ? (
           <Text
             numberOfLines={1}
