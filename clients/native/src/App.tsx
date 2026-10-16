@@ -6,9 +6,9 @@ import {resumeAt,serverOrigin} from '../../../packages/contracts/index.ts';
 import type {Media,Progress} from '../../../packages/contracts/index.ts';
 import {fresh,recover,move,pageFor} from './domain.ts';
 import type {Stored} from './domain.ts';
-import {SessionGuard,StorageQueue,ProgressQueue,connectValidated,persistThenSync,syncProgress,resolveResume,backDestination} from './session.ts';
+import {SessionGuard,StorageQueue,ProgressQueue,connectValidated,persistThenSync,syncProgress,resolvePlayableResume,backDestination} from './session.ts';
 import type {ConnectionStamp} from './session.ts';
-import {HttpStatusError,loadLibrarySnapshot,visibleLibraries} from './libraries.ts';
+import {HttpStatusError,loadLibrarySnapshot,visibleLibraries,navigationContentSupport,nativeMediaContentSupport} from './libraries.ts';
 import LibrariesNavigation from './LibrariesNavigation.tsx';
 
 const Host=NativeModules.ShinemaHost as {readState:()=>Promise<string>;stageState:(value:string)=>Promise<void>;writeState:(value:string)=>Promise<void>;finish:()=>void};
@@ -39,6 +39,8 @@ export default function App(){
   const syncQueue=useRef(new ProgressQueue());
   const items=stored.catalog?.items??[];const selected=items[cursor];
   const libraries=visibleLibraries(stored.libraries);
+  const librarySupport=navigationContentSupport(stored);
+  const selectedLibraryDescriptor=stored.libraries?.libraries.find(library=>library.id===stored.selectedLibraryId);
   const playbackItem=route==='player'?activeItem.current:null;
   const playbackOrigin=activeDestination.current?.origin;
   const source=useMemo(()=>({uri:(playbackOrigin??stored.origin)+(playbackItem?.streamPath??'')}),[playbackOrigin,stored.origin,playbackItem?.streamPath]);
@@ -49,8 +51,11 @@ export default function App(){
     update(value);
     setCursor(current=>switched?0:Math.min(current,Math.max(0,(value.catalog?.items.length??0)-1)));
   }
-  function openDetails(){
+  function openDetails(item=selected){
     if(session.current.isSwitchCommitting()){setMessage('Finishing library update. Try again in a moment.');return;}
+    if(!item)return;
+    const support=nativeMediaContentSupport(item,store.current);
+    if(!support.supported){setMessage(support.reason??'This content is not supported on this device.');return;}
     session.current.cancelConnection();setBusy(false);setRoute('detail');
   }
   function persist():Promise<void>{
@@ -92,7 +97,7 @@ export default function App(){
       if(!result)return;
       const {catalog,stamp}=result;
       setRoute('library');setNavigationFocus(null);
-      setMessage(catalog.items.length?'Library ready.':snapshot.libraries && snapshot.selectedLibraryId===null?'No libraries are visible. Update visibility in the server library settings.':'This library is empty.');
+      setMessage(!navigationContentSupport(snapshot).supported?'':catalog.items.length?'Library ready.':snapshot.libraries && snapshot.selectedLibraryId===null?'No libraries are visible. Update visibility in the server library settings.':'This library is empty.');
       for(const [id,pending] of Object.entries(store.current.pending))if(catalog.items.some(item=>item.id===id))void flush(id,pending,stamp);
     }catch{
       if(!session.current.currentAttempt(attempt))return;
@@ -111,8 +116,9 @@ export default function App(){
     if(session.current.isSwitchCommitting()){setMessage('Finishing library update. Try Play again in a moment.');return;}
     const item=selected;const ticket=session.current.beginPlayback(store.current.origin);
     setBusy(true);setMessage('Checking resume position...');
-    const result=await resolveResume(session.current,ticket,item.id,()=>store.current,(origin,id)=>request(origin,`/api/media/${id}/progress`));
+    const result=await resolvePlayableResume(session.current,ticket,item,()=>store.current,(origin,id)=>request(origin,`/api/media/${id}/progress`));
     if(!result)return;
+    if(!result.supported){setBusy(false);setMessage(result.reason??'This content is not supported on this device.');return;}
     activeItem.current=item;activeDestination.current=ticket;resume.current=result.progress;position.current=0;total.current=0;waitingSeek.current=false;lastSave.current=Date.now();
     setClock(0);setDuration(0);setPaused(false);setLoading(true);setRoute('player');setBusy(false);setMessage('');
   }
@@ -198,6 +204,11 @@ export default function App(){
         <TextInput ref={input} style={styles.input} value={originText} onChangeText={setOriginText} autoCapitalize="none" autoCorrect={false} keyboardType="url" onSubmitEditing={()=>{input.current?.blur();void connect(originText);}} returnKeyType="done" />
         {button(busy?'Connecting...':'Connect',()=>{input.current?.blur();if(!busy)void connect(originText);})}
         <Text style={styles.text}>Up: edit address   Select: connect   Back: return</Text>
+      </View>:route==='library' && !librarySupport.supported?<View key="unsupported" style={styles.detail}>
+        <Text style={styles.title}>{selectedLibraryDescriptor?.name??'Library'}</Text>
+        <Text style={styles.text}>Content unavailable on this device</Text>
+        <Text style={styles.text}>{librarySupport.reason??'This content type is not supported on this device.'}</Text>
+        <Text style={styles.text}>This library stays in your navigation. Choose another library above.</Text>
       </View>:route==='detail' && selected?<View key="detail" style={styles.detail}>
         <Text style={styles.title}>{selected.title}</Text><Text style={styles.text}>{selected.container.toUpperCase()}  /  {Math.round(selected.sizeBytes/1048576)} MiB</Text>
         <Text style={styles.text}>{remembered && remembered.positionSeconds<remembered.durationSeconds-3?`Resume from ${Math.floor(remembered.positionSeconds)} seconds`:'Ready to play'}</Text>
@@ -205,8 +216,8 @@ export default function App(){
       </View>:<View key="library" style={styles.grid}>
         {Array.from({length:8},(_,slot)=>{
           const index=pageFor(cursor)*8+slot;const item=items[index];
-          return <Pressable key={slot} style={[styles.card,{width:(width-94)/4},cursor===index&&navigationFocus===null&&styles.focus]} onPress={()=>{if(item){setCursor(index);setNavigationFocus(null);openDetails();}}}>
-            {item?<><View style={[styles.cover,{backgroundColor:`hsl(${parseInt(item.id.slice(0,4),16)%360},35%,25%)`}]}><Text style={styles.initials}>{item.title.slice(0,2).toUpperCase()}</Text></View><Text style={styles.cardTitle} numberOfLines={1}>{item.title}</Text><Text style={styles.small}>{item.container.toUpperCase()}{stored.progress[item.id]?`  ${Math.floor(stored.progress[item.id].positionSeconds)} s`:''}</Text></>:null}
+          return <Pressable key={slot} style={[styles.card,{width:(width-94)/4},cursor===index&&navigationFocus===null&&styles.focus]} onPress={()=>{if(item){setCursor(index);setNavigationFocus(null);openDetails(item);}}}>
+            {item?<><View style={[styles.cover,{backgroundColor:`hsl(${parseInt(item.id.slice(0,4),16)%360},35%,25%)`}]}><Text style={styles.initials}>{item.title.slice(0,2).toUpperCase()}</Text></View><Text style={styles.cardTitle} numberOfLines={1}>{item.title}</Text><Text style={styles.small}>{nativeMediaContentSupport(item,stored).supported?item.container.toUpperCase():'Unsupported'}{stored.progress[item.id]?`  ${Math.floor(stored.progress[item.id].positionSeconds)} s`:''}</Text></>:null}
           </Pressable>;
         })}
       </View>}

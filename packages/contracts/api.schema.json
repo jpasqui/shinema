@@ -2,15 +2,100 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Shinema API version 1",
   "$defs": {
-    "Media": {
+    "ContentId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,47}$",
+      "description": "An open stable registry identity; unknown IDs are preserved without enabling a handler."
+    },
+    "FormatExtension": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,47}$"
+    },
+    "ContentTypeId": {
+      "$ref": "#/$defs/ContentId",
+      "not": { "const": "mixed" },
+      "description": "mixed is reserved for the legacy library alias, represented canonically as null."
+    },
+    "MimeType": {
+      "type": "string",
+      "maxLength": 127,
+      "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$"
+    },
+    "ContentCapabilities": {
       "type": "object",
+      "additionalProperties": false,
+      "required": ["metadata", "play", "view", "launch"],
+      "properties": {
+        "metadata": { "type": "boolean" },
+        "play": { "type": "boolean" },
+        "view": { "type": "boolean" },
+        "launch": { "type": "boolean" }
+      }
+    },
+    "ContentTypeDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "availability", "capabilities"],
+      "properties": {
+        "id": { "$ref": "#/$defs/ContentTypeId" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "availability": { "enum": ["available", "unavailable"] },
+        "capabilities": { "$ref": "#/$defs/ContentCapabilities" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    },
+    "FormatDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
       "required": [
         "id",
-        "title",
-        "container",
-        "sizeBytes",
-        "streamPath"
+        "name",
+        "availability",
+        "capabilities",
+        "extensions",
+        "mimeTypes"
       ],
+      "properties": {
+        "id": { "$ref": "#/$defs/ContentId" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "availability": { "enum": ["available", "unavailable"] },
+        "capabilities": { "$ref": "#/$defs/ContentCapabilities" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "extensions": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/FormatExtension" }
+        },
+        "mimeTypes": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/MimeType" }
+        }
+      }
+    },
+    "ContentRegistry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "contentTypes", "formats"],
+      "properties": {
+        "version": { "const": 1 },
+        "contentTypes": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "$ref": "#/$defs/ContentTypeDescriptor" }
+        },
+        "formats": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "$ref": "#/$defs/FormatDescriptor" }
+        }
+      }
+    },
+    "Media": {
+      "type": "object",
+      "required": ["id", "title", "container", "sizeBytes", "streamPath"],
       "properties": {
         "id": {
           "type": "string",
@@ -21,22 +106,15 @@
           "maxLength": 200,
           "description": "Maximum 200 Unicode scalar values, matching Rust char counting."
         },
-        "container": {
-          "enum": [
-            "mp4",
-            "m4v",
-            "mkv",
-            "webm",
-            "avi",
-            "ts",
-            "m2ts",
-            "mov",
-            "mpg",
-            "mpeg",
-            "wmv",
-            "vob"
-          ]
+        "container": { "$ref": "#/$defs/FormatExtension" },
+        "contentTypeId": {
+          "type": ["string", "null"],
+          "pattern": "^[a-z][a-z0-9-]{0,47}$",
+          "not": { "const": "mixed" },
+          "description": "Canonical content identity. Missing values migrate from collection; null is unrestricted registered video inventory."
         },
+        "formatId": { "$ref": "#/$defs/ContentId" },
+        "mimeType": { "$ref": "#/$defs/MimeType" },
         "sizeBytes": {
           "type": "integer",
           "minimum": 0,
@@ -46,12 +124,7 @@
           "type": "string",
           "pattern": "^/api/media/[a-f0-9]{64}/stream$"
         },
-        "collection": {
-          "enum": [
-            "tv",
-            "movies"
-          ]
-        },
+        "collection": { "$ref": "#/$defs/ContentTypeId", "deprecated": true },
         "seriesId": {
           "type": "string",
           "pattern": "^[a-f0-9]{64}$"
@@ -105,10 +178,7 @@
           "maximum": 9999
         },
         "metadataSource": {
-          "enum": [
-            "tmdb",
-            "tvmaze"
-          ]
+          "enum": ["tmdb", "tvmaze"]
         },
         "metadataUrl": {
           "type": "string",
@@ -126,10 +196,7 @@
     },
     "Catalog": {
       "type": "object",
-      "required": [
-        "apiVersion",
-        "items"
-      ],
+      "required": ["apiVersion", "items"],
       "properties": {
         "apiVersion": {
           "const": 1
@@ -156,10 +223,7 @@
           "maximum": 500
         },
         "nextOffset": {
-          "type": [
-            "integer",
-            "null"
-          ],
+          "type": ["integer", "null"],
           "minimum": 0,
           "maximum": 10000000
         },
@@ -174,10 +238,7 @@
     "Progress": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "positionSeconds",
-        "durationSeconds"
-      ],
+      "required": ["positionSeconds", "durationSeconds"],
       "properties": {
         "positionSeconds": {
           "type": "number",
@@ -192,11 +253,7 @@
     },
     "Playback": {
       "type": "object",
-      "required": [
-        "durationSeconds",
-        "mode",
-        "streamPath"
-      ],
+      "required": ["durationSeconds", "mode", "streamPath"],
       "properties": {
         "durationSeconds": {
           "type": "number",
@@ -204,10 +261,7 @@
           "maximum": 604800
         },
         "mode": {
-          "enum": [
-            "direct",
-            "transcode"
-          ]
+          "enum": ["direct", "transcode"]
         },
         "streamPath": {
           "type": "string",
@@ -217,13 +271,7 @@
     },
     "LibraryDescriptor": {
       "type": "object",
-      "required": [
-        "id",
-        "name",
-        "mediaType",
-        "visible",
-        "order"
-      ],
+      "required": ["id", "name", "visible", "order"],
       "properties": {
         "id": {
           "type": "string",
@@ -235,11 +283,15 @@
           "maxLength": 80
         },
         "mediaType": {
-          "enum": [
-            "movies",
-            "tv",
-            "mixed"
-          ]
+          "$ref": "#/$defs/ContentId",
+          "deprecated": true,
+          "description": "Legacy alias of contentTypeId, or mixed for null. Conflicting aliases are rejected by runtime validation."
+        },
+        "contentTypeId": {
+          "type": ["string", "null"],
+          "pattern": "^[a-z][a-z0-9-]{0,47}$",
+          "not": { "const": "mixed" },
+          "description": "Canonical identity; mixed is reserved for the deprecated alias and must be represented as null."
         },
         "visible": {
           "type": "boolean"
@@ -249,15 +301,15 @@
           "minimum": 0,
           "maximum": 10000
         }
-      }
+      },
+      "anyOf": [
+        { "required": ["contentTypeId"] },
+        { "required": ["mediaType"] }
+      ]
     },
     "Libraries": {
       "type": "object",
-      "required": [
-        "version",
-        "revision",
-        "libraries"
-      ],
+      "required": ["version", "revision", "libraries"],
       "properties": {
         "version": {
           "const": 1
@@ -272,7 +324,8 @@
           "items": {
             "$ref": "#/$defs/LibraryDescriptor"
           }
-        }
+        },
+        "registry": { "$ref": "#/$defs/ContentRegistry" }
       }
     },
     "LibraryConfiguration": {
@@ -282,9 +335,7 @@
         },
         {
           "type": "object",
-          "required": [
-            "sourceFolders"
-          ],
+          "required": ["sourceFolders"],
           "properties": {
             "sourceFolders": {
               "type": "array",
@@ -306,26 +357,17 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "kind"
-          ],
+          "required": ["kind"],
           "properties": {
             "kind": {
-              "enum": [
-                "browse",
-                "search",
-                "settings"
-              ]
+              "enum": ["browse", "search", "settings"]
             }
           }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "kind",
-            "libraryId"
-          ],
+          "required": ["kind", "libraryId"],
           "properties": {
             "kind": {
               "const": "library"
@@ -341,10 +383,7 @@
     "TopNavigationPreferences": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "version",
-        "entries"
-      ],
+      "required": ["version", "entries"],
       "properties": {
         "version": {
           "const": 1
@@ -355,13 +394,7 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": [
-              "id",
-              "label",
-              "destination",
-              "order",
-              "visible"
-            ],
+            "required": ["id", "label", "destination", "order", "visible"],
             "properties": {
               "id": {
                 "type": "string",

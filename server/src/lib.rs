@@ -20,6 +20,7 @@ use tokio_util::io::ReaderStream;
 
 mod cache_lease;
 mod catalog;
+mod content_registry;
 mod libraries;
 mod metadata;
 mod playback;
@@ -331,7 +332,7 @@ impl Library {
                 .and_then(|s| s.to_str())
                 .unwrap_or("")
                 .to_ascii_lowercase();
-            if !catalog::CONTAINERS.contains(&container.as_str()) {
+            if !content_registry::supports_play(None, &container) {
                 return Err("Remote helper returned an unsupported container".into());
             }
             entries.insert(
@@ -452,7 +453,7 @@ impl Library {
                     .and_then(|s| s.to_str())
                     .unwrap_or("")
                     .to_ascii_lowercase();
-                if !catalog::CONTAINERS.contains(&extension.as_str()) {
+                if !content_registry::supports_play(None, &extension) {
                     continue;
                 }
                 let relative = path
@@ -524,6 +525,7 @@ fn configured_router(
         .route("/api/catalog", get(catalog))
         .route("/api/library", get(library_summary))
         .route("/api/libraries", get(libraries_public))
+        .route("/api/content-registry", get(registry_public))
         .route("/api/admin/libraries", get(libraries_admin).put(libraries_save).layer(DefaultBodyLimit::max(65_536)).layer(axum::middleware::from_fn(libraries::management_guard)))
         .route("/api/series", get(series))
         .route("/api/series/{id}/seasons", get(seasons))
@@ -552,6 +554,21 @@ async fn libraries_public(
     let value = libraries::read(&db, false, &library.source_folders)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(value)))
+}
+
+async fn registry_public(
+    State(library): State<Arc<Library>>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let db = library
+        .database
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let value = libraries::read(&db, false, &library.source_folders)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(value["registry"].clone()),
+    ))
 }
 
 async fn libraries_admin(
@@ -612,6 +629,17 @@ fn current_media(library: &Library, id: &str) -> Result<Media, StatusCode> {
         )
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     serde_json::from_str(&json).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn require_playable(library: &Library, id: &str) -> Result<(), StatusCode> {
+    let item = current_media(library, id)?;
+    if !content_registry::supports_play(
+        item.classification.content_type_id.as_deref(),
+        &item.container,
+    ) {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    Ok(())
 }
 
 async fn static_web(
@@ -768,6 +796,7 @@ async fn playback_info(
     State(library): State<Arc<Library>>,
     ApiPath(id): ApiPath<String>,
 ) -> Result<Json<playback::Playback>, StatusCode> {
+    require_playable(&library, &id)?;
     let entry = library.entries.get(&id).ok_or(StatusCode::NOT_FOUND)?;
     verify_source(&library, entry).await?;
     library
@@ -781,6 +810,7 @@ async fn hls(
     State(library): State<Arc<Library>>,
     ApiPath((id, segment)): ApiPath<(String, String)>,
 ) -> Result<Response, StatusCode> {
+    require_playable(&library, &id)?;
     let entry = library.entries.get(&id).ok_or(StatusCode::NOT_FOUND)?;
     verify_source(&library, entry).await?;
     let metadata = library
@@ -955,6 +985,7 @@ async fn stream(
     method: Method,
     headers: HeaderMap,
 ) -> Result<Response, StatusCode> {
+    require_playable(&library, &id)?;
     let entry = library.entries.get(&id).ok_or(StatusCode::NOT_FOUND)?;
     let size = entry.media.size_bytes;
     let remote_permit = if library.remote.is_some() {
@@ -1010,16 +1041,9 @@ async fn stream(
         None => (0, size.saturating_sub(1), StatusCode::OK),
     };
     let length = if size == 0 { 0 } else { end - start + 1 };
-    let mime = match entry.media.container.as_str() {
-        "mkv" => "video/x-matroska",
-        "webm" => "video/webm",
-        "avi" => "video/x-msvideo",
-        "ts" | "m2ts" => "video/mp2t",
-        "mov" => "video/quicktime",
-        "mpg" | "mpeg" | "vob" => "video/mpeg",
-        "wmv" => "video/x-ms-wmv",
-        _ => "video/mp4",
-    };
+    let mime = content_registry::format(&entry.media.container)
+        .and_then(|format| format.mime_types.first())
+        .ok_or(StatusCode::UNPROCESSABLE_ENTITY)?;
     let body = if method == Method::HEAD {
         Body::empty()
     } else if let Some(remote) = &library.remote {

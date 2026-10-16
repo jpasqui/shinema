@@ -9,6 +9,8 @@ import { initialBrowse } from './browse.ts';
 import {
   parseCatalog,
   parsePlayback,
+  libraryContentSupport,
+  mediaContentSupport,
 } from '../../../packages/contracts/index.ts';
 import type { Media, Progress } from '../../../packages/contracts/index.ts';
 import {
@@ -27,7 +29,7 @@ import type { Cache } from './model.ts';
 import { Artwork } from './Artwork.tsx';
 import { MediaPoster } from './MediaPoster.tsx';
 import { TopNavigation } from './TopNavigation.tsx';
-import { useLibraries } from './libraries.ts';
+import { libraryBrowseCollection, useLibraries } from './libraries.ts';
 import type { TopNavigationDestination } from '../../../packages/contracts/navigation.ts';
 
 const storageKey = 'shinema.web.cache.v1';
@@ -72,6 +74,8 @@ function Poster({ item, large = false }: { item: Media; large?: boolean }) {
 
 export default function App() {
   const libraryNavigation = useLibraries();
+  const currentLibraries = useRef(libraryNavigation.document);
+  currentLibraries.current = libraryNavigation.document;
   const [navigationIntent, setNavigationIntent] = useState<
     'settings' | 'search' | null
   >(null);
@@ -84,6 +88,7 @@ export default function App() {
   const [selected, setSelected] = useState<Media | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [capabilityNotice, setCapabilityNotice] = useState('');
   const [storageError, setStorageError] = useState(false);
   const [opening, setOpening] = useState(false);
   const [resume, setResume] = useState<Progress | null>(null);
@@ -233,7 +238,26 @@ export default function App() {
     },
     [persist, sync],
   );
+  const supportForMedia = (item: Media) => {
+    const document = currentLibraries.current;
+    const library = document.libraries.find(
+      (library) => library.id === item.libraryId,
+    );
+    if (library) {
+      const support = libraryContentSupport(library, document.registry);
+      if (!support.supported) return support;
+    }
+    return mediaContentSupport(item, document.registry);
+  };
   const showDetail = (item: Media, index: number) => {
+    const support = supportForMedia(item);
+    if (!support.supported) {
+      setCapabilityNotice(
+        support.reason ?? 'This content or format is unavailable.',
+      );
+      return;
+    }
+    setCapabilityNotice('');
     setNavigationIntent(null);
     guard.current.next();
     setOpening(false);
@@ -255,6 +279,13 @@ export default function App() {
   }, [focus]);
   const play = async () => {
     if (!selected || opening) return;
+    const support = supportForMedia(selected);
+    if (!support.supported) {
+      setCapabilityNotice(
+        support.reason ?? 'This content or format is unavailable.',
+      );
+      return;
+    }
     const item = selected;
     const ticket = guard.current.next();
     setOpening(true);
@@ -265,6 +296,13 @@ export default function App() {
     });
     if (!guard.current.current(ticket)) return;
     setOpening(false);
+    const currentSupport = supportForMedia(item);
+    if (!currentSupport.supported) {
+      setCapabilityNotice(
+        currentSupport.reason ?? 'This content or format is unavailable.',
+      );
+      return;
+    }
     setResume(value);
     setRoute('player');
   };
@@ -318,6 +356,7 @@ export default function App() {
   const fullLibrary =
     !demo &&
     (cache.current.catalog?.fullLibrary === true ||
+      libraryNavigation.document.revision > 0 ||
       items.some((item) => item.collection));
   useEffect(() => {
     if (!navigationIntent || route !== 'library' || !fullLibrary) return;
@@ -341,7 +380,7 @@ export default function App() {
         revision: libraryNavigation.legacy
           ? undefined
           : libraryNavigation.document.revision,
-        collection: library.mediaType === 'mixed' ? 'all' : library.mediaType,
+        collection: libraryBrowseCollection(library),
       });
     }
     showLibrary();
@@ -350,6 +389,9 @@ export default function App() {
   };
   const featured =
     items.find((item) => item.title.includes('Orbit')) ?? items[0];
+  const selectedSupport = selected
+    ? supportForMedia(selected)
+    : { supported: true, reason: undefined };
   return (
     <div className="app" data-cache-version={version}>
       <header className="header">
@@ -376,7 +418,12 @@ export default function App() {
           session only.
         </div>
       )}
-      {route === 'player' && selected ? (
+      {capabilityNotice && (
+        <p className="notice" role="status">
+          {capabilityNotice}
+        </p>
+      )}
+      {route === 'player' && selected && selectedSupport.supported ? (
         <Player
           item={selected}
           progress={resume}
@@ -386,7 +433,7 @@ export default function App() {
             setRoute('detail');
           }}
         />
-      ) : route === 'detail' && selected ? (
+      ) : (route === 'detail' || route === 'player') && selected ? (
         <main className={`detail${!demo ? ' connected-detail' : ''}`}>
           {!demo && selected.backdropPath && (
             <div className="detail-backdrop" aria-hidden="true">
@@ -432,7 +479,7 @@ export default function App() {
                 onClick={() => {
                   void play();
                 }}
-                disabled={opening}
+                disabled={opening || !selectedSupport.supported}
               >
                 {opening
                   ? 'Preparing playback...'
@@ -441,9 +488,15 @@ export default function App() {
                     ? '\u25b6 Resume'
                     : '\u25b6 Play'}
               </button>
-              <p className="quiet">
-                Starts muted &middot; progress saved automatically
-              </p>
+              {selectedSupport.supported ? (
+                <p className="quiet">
+                  Starts muted &middot; progress saved automatically
+                </p>
+              ) : (
+                <p className="notice" role="status">
+                  {selectedSupport.reason}
+                </p>
+              )}
               {selected.metadataUrl && (
                 <p className="quiet">
                   Metadata from{' '}

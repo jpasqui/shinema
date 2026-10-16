@@ -1,7 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseLibraries } from '../../../packages/contracts/index.ts';
-import type { Catalog, Libraries } from '../../../packages/contracts/index.ts';
+import {
+  parseLibraries,
+  parseCatalog,
+  builtinContentRegistry,
+} from '../../../packages/contracts/index.ts';
+import type {
+  Catalog,
+  Libraries,
+  ContentRegistry,
+} from '../../../packages/contracts/index.ts';
 import { fresh, recover } from '../src/domain.ts';
 import type { Stored } from '../src/domain.ts';
 import {
@@ -9,10 +17,14 @@ import {
   loadLibrarySnapshot,
   selectedLibrary,
   visibleLibraries,
+  nativeLibraryContentSupport,
+  navigationContentSupport,
+  nativeMediaContentSupport,
 } from '../src/libraries.ts';
 import {
   connectValidated,
   resolveResume,
+  resolvePlayableResume,
   SessionGuard,
   StorageQueue,
 } from '../src/session.ts';
@@ -42,8 +54,8 @@ const libraries: Libraries = {
     },
   ],
 };
-const catalog: Catalog = {
-  apiVersion: 1,
+const legacyCatalog = {
+  apiVersion: 1 as const,
   items: [
     {
       id,
@@ -56,7 +68,8 @@ const catalog: Catalog = {
     },
   ],
 };
-const movieCatalog: Catalog = {
+const catalog: Catalog = parseCatalog(legacyCatalog);
+const movieCatalog: Catalog = parseCatalog({
   apiVersion: 1,
   items: [
     {
@@ -65,10 +78,11 @@ const movieCatalog: Catalog = {
       title: 'Generated movie',
       libraryId: 'cinema',
       collection: 'movies',
+      contentTypeId: 'movies',
       streamPath: `/api/media/${otherId}/stream`,
     },
   ],
-};
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -157,7 +171,7 @@ test('a legacy cache migrates without changing progress or discarding its catalo
   const restored = recover(
     JSON.stringify({
       origin,
-      catalog,
+      catalog: legacyCatalog,
       progress: { [id]: progress },
       pending: { [id]: progress },
     }),
@@ -523,5 +537,378 @@ test('a newer request accepted during delayed activation cannot roll back the co
       3,
     );
     assert.deepEqual(io.read().pending[id], progress);
+  }
+});
+
+const allCapabilities = {
+  metadata: true,
+  play: true,
+  view: true,
+  launch: true,
+};
+function futureRegistry(): ContentRegistry {
+  const registry = builtinContentRegistry();
+  return {
+    ...registry,
+    contentTypes: [
+      ...registry.contentTypes,
+      {
+        id: 'music',
+        name: 'Music',
+        availability: 'available',
+        capabilities: allCapabilities,
+      },
+    ],
+    formats: [
+      ...registry.formats,
+      {
+        id: 'docx',
+        name: 'Word document',
+        extensions: ['docx'],
+        mimeTypes: [
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        ],
+        availability: 'available',
+        capabilities: allCapabilities,
+      },
+    ],
+  };
+}
+function futureLibraries(): Libraries {
+  return parseLibraries({
+    ...libraries,
+    revision: 4,
+    registry: futureRegistry(),
+    libraries: [
+      ...libraries.libraries,
+      {
+        id: 'music-shelf',
+        name: 'Music collection',
+        contentTypeId: 'music',
+        mediaType: 'music',
+        visible: true,
+        order: 3,
+      },
+    ],
+  });
+}
+
+test('unknown types stay discoverable and selected without requesting their catalog', async () => {
+  const configured = futureLibraries();
+  const paths: string[] = [];
+  const snapshot = await loadLibrarySnapshot(
+    origin,
+    'music-shelf',
+    libraries,
+    async (_origin, path) => {
+      paths.push(path);
+      return configured;
+    },
+  );
+  assert.deepEqual(paths, ['/api/libraries']);
+  assert.equal(snapshot.selectedLibraryId, 'music-shelf');
+  assert.deepEqual(snapshot.catalog.items, []);
+  assert(
+    visibleLibraries(snapshot.libraries).some(
+      (item) => item.id === 'music-shelf',
+    ),
+  );
+  assert.equal(
+    snapshot.libraries?.libraries.find((item) => item.id === 'music-shelf')
+      ?.contentTypeId,
+    'music',
+  );
+  assert.equal(navigationContentSupport(snapshot).supported, false);
+  assert.equal(
+    snapshot.libraries?.registry?.contentTypes.find(
+      (item) => item.id === 'music',
+    )?.availability,
+    'available',
+  );
+});
+
+test('unsupported selection, registry and unrelated progress survive commit and restart', async () => {
+  const { io, persisted } = fixture();
+  const guard = new SessionGuard();
+  const configured = futureLibraries();
+  const snapshot = await loadLibrarySnapshot(
+    origin,
+    'music-shelf',
+    libraries,
+    async () => configured,
+  );
+  assert(
+    await connectValidated(
+      guard,
+      guard.beginConnection(),
+      origin,
+      async () => snapshot.catalog,
+      io,
+      snapshot,
+    ),
+  );
+  const restored = recover(JSON.stringify(persisted.at(-1)));
+  assert.equal(restored.selectedLibraryId, 'music-shelf');
+  assert.equal(
+    restored.libraries?.libraries.find((item) => item.id === 'music-shelf')
+      ?.contentTypeId,
+    'music',
+  );
+  assert.equal(
+    restored.libraries?.registry?.formats.find((item) => item.id === 'docx')
+      ?.id,
+    'docx',
+  );
+  assert.equal(navigationContentSupport(restored).supported, false);
+  assert.deepEqual(restored.pending[id], progress);
+  assert.deepEqual(restored.progress[id], progress);
+  // Even an old cached title cannot make this unsupported library playable.
+  const requests: string[] = [];
+  const ticket = guard.beginPlayback(origin);
+  const result = await resolvePlayableResume(
+    guard,
+    ticket,
+    catalog.items[0],
+    () => ({ ...restored, pending: {} }),
+    async (_origin, key) => {
+      requests.push(key);
+      return progress;
+    },
+  );
+  assert.equal(result?.supported, false);
+  assert.deepEqual(requests, []);
+});
+
+test('unavailable server handlers remain selected but cannot load a catalog or resume position', async () => {
+  const registry = builtinContentRegistry();
+  const configured = parseLibraries({
+    ...libraries,
+    registry: {
+      ...registry,
+      contentTypes: registry.contentTypes.map((item) =>
+        item.id === 'tv'
+          ? {
+              ...item,
+              availability: 'unavailable',
+              reason: 'TV handler unavailable.',
+            }
+          : item,
+      ),
+    },
+  });
+  const paths: string[] = [];
+  const snapshot = await loadLibrarySnapshot(
+    origin,
+    'anime',
+    libraries,
+    async (_origin, path) => {
+      paths.push(path);
+      return configured;
+    },
+  );
+  assert.deepEqual(paths, ['/api/libraries']);
+  assert.equal(snapshot.selectedLibraryId, 'anime');
+  assert.equal(navigationContentSupport(snapshot).supported, false);
+  assert(navigationContentSupport(snapshot).reason);
+  const { io } = fixture();
+  io.write({ ...io.read(), ...snapshot, pending: {} });
+  const guard = new SessionGuard();
+  let requests = 0;
+  const result = await resolvePlayableResume(
+    guard,
+    guard.beginPlayback(origin),
+    catalog.items[0],
+    io.read,
+    async () => {
+      requests++;
+      return progress;
+    },
+  );
+  assert.equal(result?.supported, false);
+  assert.equal(requests, 0);
+  assert.deepEqual(io.read().progress[id], progress);
+});
+
+test('unknown formats remain cached and discoverable but server claims cannot enable native playback', async () => {
+  const configured = parseLibraries({
+    ...libraries,
+    registry: futureRegistry(),
+  });
+  const unknown = parseCatalog({
+    ...catalog,
+    items: [
+      {
+        ...catalog.items[0],
+        container: 'docx',
+        formatId: 'docx',
+        contentTypeId: 'tv',
+      },
+    ],
+  });
+  const { io } = fixture();
+  io.write({
+    ...io.read(),
+    catalog: unknown,
+    libraries: configured,
+    pending: {},
+  });
+  const restored = recover(JSON.stringify(io.read()));
+  assert.equal(restored.catalog?.items[0].container, 'docx');
+  assert.equal(restored.catalog?.items[0].formatId, 'docx');
+  const item = restored.catalog!.items[0];
+  assert.equal(nativeMediaContentSupport(item, restored).supported, false);
+  const guard = new SessionGuard();
+  let requests = 0;
+  const result = await resolvePlayableResume(
+    guard,
+    guard.beginPlayback(origin),
+    item,
+    () => restored,
+    async () => {
+      requests++;
+      return progress;
+    },
+  );
+  assert.equal(result?.supported, false);
+  assert.equal(requests, 0);
+  assert.deepEqual(restored.progress[id], progress);
+});
+
+test('a known unavailable format is blocked while installed Movies, TV and inventory types remain supported', async () => {
+  for (const library of libraries.libraries)
+    assert.equal(nativeLibraryContentSupport(library).supported, true);
+  const registry = builtinContentRegistry();
+  const configured = parseLibraries({
+    ...libraries,
+    registry: {
+      ...registry,
+      formats: registry.formats.map((item) =>
+        item.id === 'mp4'
+          ? {
+              ...item,
+              availability: 'unavailable',
+              reason: 'MP4 handler unavailable.',
+            }
+          : item,
+      ),
+    },
+  });
+  const navigation = { libraries: configured, selectedLibraryId: 'anime' };
+  assert.equal(
+    nativeMediaContentSupport(catalog.items[0], navigation).supported,
+    false,
+  );
+  const { io } = fixture();
+  io.write({ ...io.read(), ...navigation, pending: {} });
+  const guard = new SessionGuard();
+  let requests = 0;
+  const result = await resolvePlayableResume(
+    guard,
+    guard.beginPlayback(origin),
+    catalog.items[0],
+    io.read,
+    async () => {
+      requests++;
+      return progress;
+    },
+  );
+  assert.equal(result?.supported, false);
+  assert.equal(requests, 0);
+});
+
+test('availability is rechecked after a delayed resume response without changing stored progress', async () => {
+  const { io } = fixture();
+  io.write({ ...io.read(), pending: {} });
+  const before = structuredClone(io.read().progress);
+  const guard = new SessionGuard();
+  const reply = deferred<unknown>();
+  let requests = 0;
+  const pending = resolvePlayableResume(
+    guard,
+    guard.beginPlayback(origin),
+    catalog.items[0],
+    io.read,
+    async () => {
+      requests++;
+      return reply.promise;
+    },
+  );
+  const registry = builtinContentRegistry();
+  const unavailable = parseLibraries({
+    ...libraries,
+    registry: {
+      ...registry,
+      contentTypes: registry.contentTypes.map((item) =>
+        item.id === 'tv'
+          ? {
+              ...item,
+              availability: 'unavailable',
+              reason: 'Handler is unavailable.',
+            }
+          : item,
+      ),
+    },
+  });
+  io.write({ ...io.read(), libraries: unavailable });
+  reply.resolve(progress);
+  const result = await pending;
+  assert.equal(result?.supported, false);
+  assert.equal(requests, 1);
+  assert.deepEqual(io.read().progress, before);
+  assert.deepEqual(io.read().pending, {});
+});
+
+test('a later library selection cancels playable resume instead of opening a stale item', async () => {
+  const { io } = fixture();
+  io.write({ ...io.read(), pending: {} });
+  const guard = new SessionGuard();
+  const reply = deferred<unknown>();
+  const pending = resolvePlayableResume(
+    guard,
+    guard.beginPlayback(origin),
+    catalog.items[0],
+    io.read,
+    () => reply.promise,
+  );
+  guard.beginConnection();
+  io.write({
+    ...io.read(),
+    libraries: futureLibraries(),
+    selectedLibraryId: 'music-shelf',
+    catalog: { apiVersion: 1, items: [] },
+  });
+  reply.resolve(progress);
+  assert.equal(await pending, null);
+  assert.equal(io.read().selectedLibraryId, 'music-shelf');
+  assert.deepEqual(io.read().progress[id], progress);
+});
+
+test('unknown item types and explicit unknown format IDs never borrow an installed video renderer', async () => {
+  const { io } = fixture();
+  io.write({
+    ...io.read(),
+    libraries: parseLibraries({ ...libraries, registry: futureRegistry() }),
+    pending: {},
+  });
+  for (const item of [
+    { ...catalog.items[0], contentTypeId: 'music', collection: 'music' },
+    { ...catalog.items[0], formatId: 'docx' },
+  ]) {
+    const parsed = parseCatalog({ apiVersion: 1, items: [item] }).items[0];
+    assert.equal(nativeMediaContentSupport(parsed, io.read()).supported, false);
+    const guard = new SessionGuard();
+    let requests = 0;
+    const result = await resolvePlayableResume(
+      guard,
+      guard.beginPlayback(origin),
+      parsed,
+      io.read,
+      async () => {
+        requests++;
+        return progress;
+      },
+    );
+    assert.equal(result?.supported, false);
+    assert.equal(requests, 0);
   }
 });

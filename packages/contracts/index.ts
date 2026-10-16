@@ -1,13 +1,24 @@
 export * from './libraries.ts';
 export * from './navigation.ts';
+export * from './content.ts';
 import { validLibraryId } from './libraries.ts';
+import {
+  validContentId,
+  validContentTypeId,
+  validFormatExtension,
+  validMimeType,
+} from './content.ts';
 export type Media = {
   id: string;
   title: string;
   container: string;
   sizeBytes: number;
   streamPath: string;
-  collection?: 'tv' | 'movies';
+  /** @deprecated Legacy alias for contentTypeId. */
+  collection?: string;
+  contentTypeId?: string | null;
+  formatId?: string;
+  mimeType?: string;
   libraryId?: string;
   seriesId?: string;
   seriesTitle?: string;
@@ -76,31 +87,26 @@ export function parseCatalog(value: unknown): Catalog {
       ids.has(item.id) ||
       typeof item.title !== 'string' ||
       Array.from(item.title).length > 200 ||
-      typeof item.container !== 'string' ||
-      ![
-        'mp4',
-        'm4v',
-        'mkv',
-        'webm',
-        'avi',
-        'ts',
-        'm2ts',
-        'mov',
-        'mpg',
-        'mpeg',
-        'wmv',
-        'vob',
-      ].includes(item.container) ||
+      !validFormatExtension(item.container) ||
       !Number.isSafeInteger(item.sizeBytes) ||
       Number(item.sizeBytes) < 0 ||
       item.streamPath !== `/api/media/${item.id}/stream`
     )
       throw new Error('Invalid catalog item');
-    if (
-      item.collection !== undefined &&
-      !['tv', 'movies'].includes(String(item.collection))
-    )
+    if (item.collection !== undefined && !validContentTypeId(item.collection))
       throw new Error('Invalid collection');
+    if (
+      item.contentTypeId !== undefined &&
+      ((item.contentTypeId !== null &&
+        !validContentTypeId(item.contentTypeId)) ||
+        (item.collection !== undefined &&
+          item.collection !== item.contentTypeId))
+    )
+      throw new Error('Invalid or conflicting content type identity');
+    if (item.formatId !== undefined && !validContentId(item.formatId))
+      throw new Error('Invalid format identity');
+    if (item.mimeType !== undefined && !validMimeType(item.mimeType))
+      throw new Error('Invalid format MIME type');
     if (item.libraryId !== undefined && !validLibraryId(item.libraryId))
       throw new Error('Invalid library identity');
     if (
@@ -162,7 +168,14 @@ export function parseCatalog(value: unknown): Catalog {
   for (const key of ['fullLibrary', 'metadataPending'])
     if (value[key] !== undefined && typeof value[key] !== 'boolean')
       throw new Error('Invalid catalog state');
-  const items = (value.items as Media[]).map((item) => {
+  const items = (value.items as Media[]).map((raw) => {
+    const item: Media = {
+      ...raw,
+      contentTypeId:
+        raw.contentTypeId !== undefined
+          ? raw.contentTypeId
+          : (raw.collection ?? null),
+    };
     if (
       item.metadataExpiresAt === undefined ||
       item.metadataExpiresAt > Date.now() / 1000

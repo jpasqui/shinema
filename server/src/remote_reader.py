@@ -8,7 +8,15 @@ import os
 import stat
 import sys
 
-EXTENSIONS = {'mp4', 'm4v', 'mkv', 'webm', 'avi', 'ts', 'm2ts', 'mov', 'mpg', 'mpeg', 'wmv', 'vob'}
+def approved_extensions(values):
+    if not isinstance(values, list) or not values or len(values) > 4096:
+        raise ValueError('Approved format extensions required')
+    for value in values:
+        if not isinstance(value, str) or not 1 <= len(value) <= 48 or not value[0].isascii() or not value[0].isalnum() or any(not (char.isascii() and (char.islower() or char.isdigit() or char == '-')) for char in value):
+            raise ValueError('Invalid approved format extension')
+    if len(set(values)) != len(values):
+        raise ValueError('Duplicate approved format extension')
+    return set(values)
 
 
 def parts(path):
@@ -51,7 +59,8 @@ def opened(root, relative):
         os.close(fd)
 
 
-def scan(roots):
+def scan(roots, extensions):
+    extensions = approved_extensions(extensions)
     report = {'items': [], 'filesSeen': 0, 'ignoredFiles': 0, 'linksSkipped': 0}
 
     def walk(fd, prefix):
@@ -72,7 +81,7 @@ def scan(roots):
                 elif stat.S_ISREG(info.st_mode):
                     report['filesSeen'] += 1
                     extension = os.path.splitext(name)[1][1:].lower()
-                    if extension in EXTENSIONS:
+                    if extension in extensions:
                         report['items'].append({'relative': relative, 'sizeBytes': info.st_size, 'modifiedNs': str(info.st_mtime_ns)})
                     else:
                         report['ignoredFiles'] += 1
@@ -90,7 +99,7 @@ def scan(roots):
 def main(payload):
     operation = payload['operation']
     if operation == 'scan':
-        print(json.dumps(scan(payload['roots']), ensure_ascii=True))
+        print(json.dumps(scan(payload['roots'], payload['extensions']), ensure_ascii=True))
         return
     relative = payload['relative']
     collection, rest = relative.split('/', 1)

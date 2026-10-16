@@ -11,6 +11,16 @@ from contextlib import redirect_stdout
 spec = importlib.util.spec_from_file_location('reader', Path(__file__).parents[1] / 'src' / 'remote_reader.py')
 reader = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(reader)
+registry = json.loads((Path(__file__).parents[2] / 'packages' / 'contracts' / 'content-registry.json').read_text())
+extensions = [extension for value in registry['formats'] if value['availability'] == 'available' and value['capabilities']['play'] for extension in value['extensions']]
+
+
+class ExtensionPolicyTests(unittest.TestCase):
+    def test_extension_payload_is_explicit_and_cannot_contain_paths(self):
+        self.assertEqual(reader.approved_extensions(extensions), set(extensions))
+        for values in [None, [], ['../mp4'], ['.mp4'], ['MP4'], ['mp4','mp4'], ['mp4\x00']]:
+            with self.assertRaises(ValueError):
+                reader.approved_extensions(values)
 
 
 @unittest.skipUnless(os.name == 'posix', 'NOFOLLOW/dir_fd helper runs on the POSIX source host')
@@ -27,7 +37,7 @@ class ReaderTests(unittest.TestCase):
             (deep / 'deep.avi').write_bytes(b'deep')
             (folder / 'subtitle.srt').write_text('sidecar')
             (folder / 'escape.mkv').symlink_to('/etc/passwd')
-            result = reader.scan({'tv': str(root)})
+            result = reader.scan({'tv': str(root)}, extensions)
             self.assertEqual(len(result['items']), 602)
             self.assertEqual(result['linksSkipped'], 1)
             self.assertEqual(result['ignoredFiles'], 1)
@@ -61,6 +71,18 @@ class ReaderTests(unittest.TestCase):
             for value in ['link/secret.mkv', 'file.mkv']:
                 with self.assertRaises(OSError):
                     reader.opened(str(root), value)
+
+    def test_extension_choices_are_validated_without_expanding_to_all_files(self):
+        for values in [None, [], ['../mp4'], ['.mp4'], ['MP4'], ['mp4','mp4'], ['mp4\x00']]:
+            with self.assertRaises(ValueError):
+                reader.approved_extensions(values)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for extension in ['mp4','mp3','docx','exe','json']:
+                (root / f'fixture.{extension}').write_bytes(b'fixture')
+            result = reader.scan({'movies': str(root)},extensions)
+            self.assertEqual([value['relative'] for value in result['items']],['movies/fixture.mp4'])
+            self.assertEqual(result['ignoredFiles'],4)
 
 
 if __name__ == '__main__':

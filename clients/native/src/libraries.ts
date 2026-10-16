@@ -1,11 +1,16 @@
 import {
   parseCatalog,
   parseLibraries,
+  contentTypeForLibrary,
+  libraryContentSupport,
+  mediaContentSupport,
 } from '../../../packages/contracts/index.ts';
 import type {
   Catalog,
   Libraries,
   LibraryDescriptor,
+  ContentRegistry,
+  Media,
 } from '../../../packages/contracts/index.ts';
 
 /** Navigation is a device preference; descriptors are an origin-bound server snapshot. */
@@ -14,6 +19,43 @@ export type LibraryNavigation = {
   selectedLibraryId: string | null;
 };
 export type LibrarySnapshot = LibraryNavigation & { catalog: Catalog };
+export type NativeContentSupport = { supported: boolean; reason?: string };
+
+// A server registry describes availability. It cannot install a client renderer.
+const nativeRenderers = new Set(['movies', 'tv']);
+export function nativeLibraryContentSupport(
+  library: LibraryDescriptor,
+  registry?: ContentRegistry,
+): NativeContentSupport {
+  const type = contentTypeForLibrary(library);
+  if (type !== null && !nativeRenderers.has(type))
+    return {
+      supported: false,
+      reason: 'This content type is not supported on this device.',
+    };
+  return libraryContentSupport(library, registry);
+}
+export function navigationContentSupport(
+  navigation: LibraryNavigation,
+): NativeContentSupport {
+  if (!navigation.libraries || navigation.selectedLibraryId === null)
+    return { supported: true };
+  const library = navigation.libraries.libraries.find(
+    (item) => item.id === navigation.selectedLibraryId,
+  );
+  return library
+    ? nativeLibraryContentSupport(library, navigation.libraries.registry)
+    : { supported: false, reason: 'This library is unavailable.' };
+}
+export function nativeMediaContentSupport(
+  media: Media,
+  navigation: LibraryNavigation,
+): NativeContentSupport {
+  const library = navigationContentSupport(navigation);
+  return library.supported
+    ? mediaContentSupport(media, navigation.libraries?.registry)
+    : library;
+}
 
 export class HttpStatusError extends Error {
   status: number;
@@ -76,8 +118,9 @@ export async function loadLibrarySnapshot(
   if (previous && libraries.revision < previous.revision)
     throw new Error('Stale library configuration');
   const selectedLibraryId = selectedLibrary(libraries, preferred);
+  const support = navigationContentSupport({ libraries, selectedLibraryId });
   const catalog =
-    selectedLibraryId === null
+    selectedLibraryId === null || !support.supported
       ? { apiVersion: 1 as const, items: [] }
       : scopedCatalog(
           await request(

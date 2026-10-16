@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  builtinContentRegistry,
+  contentTypeForLibrary,
+  libraryContentSupport,
   parseLibraryConfiguration,
   visibleLibraries,
 } from '../../../packages/contracts/index.ts';
@@ -219,7 +222,7 @@ export function LibrarySettings({
       <hr />
       <h3>Server libraries</h3>
       <p>
-        Names, media grouping, sources and default navigation apply to all
+        Names, content types, sources and default navigation apply to all
         clients.
       </p>
       <details>
@@ -285,22 +288,54 @@ export function LibrarySettings({
                   />
                 </label>
                 <label>
-                  Media grouping
+                  Content type
                   <select
-                    value={item.mediaType}
+                    value={contentTypeForLibrary(item) ?? ''}
                     disabled={item.id === 'other'}
                     onChange={(event) =>
                       edit(index, {
-                        mediaType: event.target.value as
-                          'movies' | 'tv' | 'mixed',
+                        contentTypeId: event.target.value || null,
+                        mediaType: event.target.value || 'mixed',
                       })
                     }
                   >
-                    <option value="movies">Movies</option>
-                    <option value="tv">TV episodes</option>
-                    <option value="mixed">Mixed videos</option>
+                    <option value="">
+                      Existing video formats (unrestricted)
+                    </option>
+                    {(
+                      config.registry ?? builtinContentRegistry()
+                    ).contentTypes.map((type) => (
+                      <option
+                        key={type.id}
+                        value={type.id}
+                        disabled={
+                          type.availability !== 'available' &&
+                          type.id !== contentTypeForLibrary(item)
+                        }
+                      >
+                        {type.name}
+                        {type.availability === 'available'
+                          ? ''
+                          : ' (unavailable)'}
+                      </option>
+                    ))}
+                    {contentTypeForLibrary(item) !== null &&
+                      !(
+                        config.registry ?? builtinContentRegistry()
+                      ).contentTypes.some(
+                        (type) => type.id === contentTypeForLibrary(item),
+                      ) && (
+                        <option value={contentTypeForLibrary(item)!}>
+                          {contentTypeForLibrary(item)} (unavailable)
+                        </option>
+                      )}
                   </select>
                 </label>
+                {!libraryContentSupport(item, config.registry).supported && (
+                  <p role="status">
+                    {libraryContentSupport(item, config.registry).reason}
+                  </p>
+                )}
                 <label className="check-label">
                   <input
                     type="checkbox"
@@ -402,6 +437,7 @@ export function LibrarySettings({
                       {
                         id: `library-${Date.now().toString(36)}`,
                         name: 'New library',
+                        contentTypeId: null,
                         mediaType: 'mixed',
                         visible: true,
                         order: config.libraries.length,

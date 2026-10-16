@@ -18,8 +18,12 @@ import {
 } from './browse.ts';
 import type { BrowseNavigation, PageCache, PageValue } from './browse.ts';
 import { clock } from './model.ts';
-import { visibleLibraries } from '../../../packages/contracts/index.ts';
-import { useLibraries } from './libraries.ts';
+import {
+  libraryContentSupport,
+  mediaContentSupport,
+  visibleLibraries,
+} from '../../../packages/contracts/index.ts';
+import { libraryBrowseCollection, useLibraries } from './libraries.ts';
 import { LibrarySettings } from './LibrarySettings.tsx';
 
 const cacheKey = 'shinema.web.browse.v1';
@@ -162,6 +166,7 @@ export function LibraryBrowser({
   const [search, setSearch] = useState(navigation.search);
   const libraries = useLibraries();
   const [settings, setSettings] = useState(false);
+  const [unsupportedItem, setUnsupportedItem] = useState('');
   const restoreFocus = useRef(true);
   useEffect(() => {
     const open = () => {
@@ -189,9 +194,12 @@ export function LibraryBrowser({
     ) ??
     visible.find((item) => item.id === navigation.collection) ??
     visible[0];
+  const support = active
+    ? libraryContentSupport(active, libraries.document.registry)
+    : { supported: false, reason: '' };
   useEffect(() => {
     if (!active) return;
-    const collection = active.mediaType === 'mixed' ? 'all' : active.mediaType;
+    const collection = libraryBrowseCollection(active);
     const libraryId = libraries.legacy ? undefined : active.id;
     const revision = libraries.legacy ? undefined : libraries.document.revision;
     if (
@@ -214,6 +222,7 @@ export function LibraryBrowser({
   }, [
     active?.id,
     active?.mediaType,
+    active?.contentTypeId,
     libraries.document.revision,
     libraries.legacy,
     navigation,
@@ -221,18 +230,22 @@ export function LibraryBrowser({
   ]);
   const [refresh, setRefresh] = useState(0);
   const path =
-    !active || (libraries.document.revision === 0 && !libraries.legacy)
+    !active ||
+    !support.supported ||
+    (libraries.document.revision === 0 && !libraries.legacy)
       ? null
       : browsePath({
           ...navigation,
           libraryId: libraries.legacy ? undefined : active.id,
           revision: libraries.legacy ? undefined : libraries.document.revision,
-          collection: active.mediaType === 'mixed' ? 'all' : active.mediaType,
+          collection: libraryBrowseCollection(active),
         });
   const page = usePage<Catalog | SeriesPage>(path, cache);
   const summary = usePage<LibrarySummary>('/api/library', cache);
   const seasonCache = usePage<Seasons>(
-    navigation.series ? `/api/series/${navigation.series.id}/seasons` : null,
+    support.supported && navigation.series
+      ? `/api/series/${navigation.series.id}/seasons`
+      : null,
     cache,
   );
   const buttons = useRef<Array<HTMLButtonElement | null>>([]);
@@ -243,9 +256,10 @@ export function LibraryBrowser({
   useEffect(() => {
     if (refresh) window.dispatchEvent(new Event('online'));
   }, [refresh]);
-  const rows = active ? (page.value?.items ?? []) : [];
+  const rows = active && support.supported ? (page.value?.items ?? []) : [];
   const shows = navigation.collection === 'tv' && !navigation.series;
   const replace = (value: Partial<BrowseNavigation>) => {
+    setUnsupportedItem('');
     setNavigation({ ...navigation, ...value, focusId: null, scroll: 0 });
     setFocus(0);
     window.scrollTo(0, 0);
@@ -317,8 +331,7 @@ export function LibraryBrowser({
                   revision: libraries.legacy
                     ? undefined
                     : libraries.document.revision,
-                  collection:
-                    item.mediaType === 'mixed' ? 'all' : item.mediaType,
+                  collection: libraryBrowseCollection(item),
                   series: null,
                   season: null,
                   offset: 0,
@@ -374,6 +387,21 @@ export function LibraryBrowser({
               : 'Your connected library'}
           </p>
         </div>
+        {active && !support.supported && (
+          <section className="empty-state" aria-label="Unsupported library">
+            <h2>This content type is unavailable</h2>
+            <p>{support.reason}</p>
+            <p>
+              This library and its saved progress are retained. A compatible
+              server handler and client renderer are required to use it.
+            </p>
+          </section>
+        )}
+        {unsupportedItem && (
+          <p className="notice" role="status">
+            {unsupportedItem}
+          </p>
+        )}
         <div className="browse-toolbar">
           <form
             onSubmit={(event) => {
@@ -386,6 +414,7 @@ export function LibraryBrowser({
             </label>
             <input
               id="library-search"
+              disabled={!support.supported}
               onFocus={() => {
                 restoreFocus.current = false;
               }}
@@ -394,7 +423,11 @@ export function LibraryBrowser({
               maxLength={200}
               placeholder={shows ? 'Search series' : 'Search titles'}
             />
-            <button className="text-button" type="submit">
+            <button
+              className="text-button"
+              type="submit"
+              disabled={!support.supported}
+            >
               Search
             </button>
           </form>
@@ -443,130 +476,145 @@ export function LibraryBrowser({
             </label>
           </div>
         )}
-        <section className="library-section">
-          <div className="section-heading">
-            <h2>
-              {shows ? 'Series' : navigation.series ? 'Episodes' : 'Titles'}{' '}
-              <span className="title-count">{page.value?.total ?? 0}</span>
-            </h2>
-            <span className="quiet" role="status">
-              {page.loading
-                ? 'Loading…'
-                : page.offline
-                  ? 'Cached browsing'
-                  : 'Connected'}
-            </span>
-          </div>
-          {page.offline && (
-            <p className="notice">
-              {page.value
-                ? 'The server is unavailable. This saved page is still here.'
-                : 'The server is unavailable and this page has not been saved yet.'}
-            </p>
-          )}
-          {page.storageError && (
-            <p className="notice" role="alert">
-              Browser storage is unavailable. This page will only stay cached
-              for this session.
-            </p>
-          )}
-          {!page.value && page.loading ? (
-            <div
-              className="poster-grid"
-              aria-label="Loading library"
-              aria-busy="true"
-            >
-              {[0, 1, 2, 3].map((i) => (
-                <div className="skeleton" key={i} />
-              ))}
+        {support.supported && (
+          <section className="library-section">
+            <div className="section-heading">
+              <h2>
+                {shows ? 'Series' : navigation.series ? 'Episodes' : 'Titles'}{' '}
+                <span className="title-count">{page.value?.total ?? 0}</span>
+              </h2>
+              <span className="quiet" role="status">
+                {page.loading
+                  ? 'Loading…'
+                  : page.offline
+                    ? 'Cached browsing'
+                    : 'Connected'}
+              </span>
             </div>
-          ) : (
-            <div className="poster-grid">
-              {rows.map((row, index) => {
-                const item = row as Media;
-                const series = row as SeriesPage['items'][number];
-                const saved = progress[row.id];
-                return (
-                  <button
-                    key={row.id}
-                    data-browse-id={row.id}
-                    ref={(node) => {
-                      buttons.current[index] = node;
-                    }}
-                    className="media-card"
-                    tabIndex={index === focus ? 0 : -1}
-                    onFocus={() => setFocus(index)}
-                    onKeyDown={(event) => key(event, index)}
-                    aria-label={`Open ${row.title}`}
-                    onClick={() => {
-                      if (shows) {
-                        replace({
-                          series,
-                          season: null,
-                          search: '',
-                          offset: 0,
-                        });
-                      } else {
-                        setNavigation({
-                          ...navigation,
-                          focusId: item.id,
-                          scroll: window.scrollY,
-                        });
-                        onSelect(item, index);
-                      }
-                    }}
-                  >
-                    <MediaPoster
-                      key={`${row.id}:${refresh}`}
-                      source={row.posterPath}
-                      title={row.title}
-                    />
-                    <div className="card-copy">
-                      <h3>{row.title}</h3>
-                      <span>
-                        {shows
-                          ? `${series.episodes} episodes · ${series.seasons} seasons`
-                          : saved
-                            ? `Resume at ${clock(saved.positionSeconds)}`
-                            : item.collection === 'tv'
-                              ? `${item.season === undefined ? 'Season unknown' : `S${String(item.season).padStart(2, '0')}`} ${item.episode === undefined ? '' : `E${String(item.episode).padStart(2, '0')}`} · ${item.container.toUpperCase()}`
-                              : item.year
-                                ? String(item.year)
-                                : item.container.toUpperCase()}
-                      </span>
-                    </div>
-                  </button>
-                );
-              })}
+            {page.offline && (
+              <p className="notice">
+                {page.value
+                  ? 'The server is unavailable. This saved page is still here.'
+                  : 'The server is unavailable and this page has not been saved yet.'}
+              </p>
+            )}
+            {page.storageError && (
+              <p className="notice" role="alert">
+                Browser storage is unavailable. This page will only stay cached
+                for this session.
+              </p>
+            )}
+            {!page.value && page.loading ? (
+              <div
+                className="poster-grid"
+                aria-label="Loading library"
+                aria-busy="true"
+              >
+                {[0, 1, 2, 3].map((i) => (
+                  <div className="skeleton" key={i} />
+                ))}
+              </div>
+            ) : (
+              <div className="poster-grid">
+                {rows.map((row, index) => {
+                  const item = row as Media;
+                  const series = row as SeriesPage['items'][number];
+                  const saved = progress[row.id];
+                  const itemSupport = shows
+                    ? { supported: true, reason: undefined }
+                    : mediaContentSupport(item, libraries.document.registry);
+                  return (
+                    <button
+                      key={row.id}
+                      data-browse-id={row.id}
+                      ref={(node) => {
+                        buttons.current[index] = node;
+                      }}
+                      className="media-card"
+                      tabIndex={index === focus ? 0 : -1}
+                      onFocus={() => setFocus(index)}
+                      onKeyDown={(event) => key(event, index)}
+                      aria-label={`Open ${row.title}`}
+                      aria-disabled={!itemSupport.supported}
+                      onClick={() => {
+                        if (shows) {
+                          replace({
+                            series,
+                            season: null,
+                            search: '',
+                            offset: 0,
+                          });
+                        } else {
+                          if (!itemSupport.supported) {
+                            setUnsupportedItem(
+                              itemSupport.reason ??
+                                'This format is unavailable.',
+                            );
+                            return;
+                          }
+                          setNavigation({
+                            ...navigation,
+                            focusId: item.id,
+                            scroll: window.scrollY,
+                          });
+                          onSelect(item, index);
+                        }
+                      }}
+                    >
+                      <MediaPoster
+                        key={`${row.id}:${refresh}`}
+                        source={row.posterPath}
+                        title={row.title}
+                      />
+                      <div className="card-copy">
+                        <h3>{row.title}</h3>
+                        <span>
+                          {!itemSupport.supported
+                            ? 'Unsupported content or format'
+                            : shows
+                              ? `${series.episodes} episodes · ${series.seasons} seasons`
+                              : saved
+                                ? `Resume at ${clock(saved.positionSeconds)}`
+                                : item.collection === 'tv'
+                                  ? `${item.season === undefined ? 'Season unknown' : `S${String(item.season).padStart(2, '0')}`} ${item.episode === undefined ? '' : `E${String(item.episode).padStart(2, '0')}`} · ${item.container.toUpperCase()}`
+                                  : item.year
+                                    ? String(item.year)
+                                    : item.container.toUpperCase()}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            {!page.loading && page.value && !rows.length && (
+              <p className="empty-state">No titles match this search.</p>
+            )}
+            <div className="pagination" aria-label="Library pages">
+              <button
+                className="control-button"
+                disabled={navigation.offset === 0 || page.loading}
+                onClick={() =>
+                  replace({ offset: Math.max(0, navigation.offset - 60) })
+                }
+              >
+                Previous page
+              </button>
+              <span>
+                {page.value?.total
+                  ? `${navigation.offset + 1}–${navigation.offset + rows.length} of ${page.value.total}`
+                  : '0 titles'}
+              </span>
+              <button
+                className="control-button"
+                disabled={page.value?.nextOffset == null || page.loading}
+                onClick={() => replace({ offset: page.value!.nextOffset! })}
+              >
+                Next page
+              </button>
             </div>
-          )}
-          {!page.loading && page.value && !rows.length && (
-            <p className="empty-state">No titles match this search.</p>
-          )}
-          <div className="pagination" aria-label="Library pages">
-            <button
-              className="control-button"
-              disabled={navigation.offset === 0 || page.loading}
-              onClick={() =>
-                replace({ offset: Math.max(0, navigation.offset - 60) })
-              }
-            >
-              Previous page
-            </button>
-            <span>
-              {page.value?.total
-                ? `${navigation.offset + 1}–${navigation.offset + rows.length} of ${page.value.total}`
-                : '0 titles'}
-            </span>
-            <button
-              className="control-button"
-              disabled={page.value?.nextOffset == null || page.loading}
-              onClick={() => replace({ offset: page.value!.nextOffset! })}
-            >
-              Next page
-            </button>
-          </div>
-        </section>
+          </section>
+        )}
         <footer>
           <span>Shinema</span>
           <span>Library</span>

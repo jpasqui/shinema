@@ -1,7 +1,7 @@
 import {parseCatalog,parseProgress,serverOrigin} from '../../../packages/contracts/index.ts';
 import type {Catalog,Progress} from '../../../packages/contracts/index.ts';
 import {parseLibraries} from '../../../packages/contracts/index.ts';
-import {selectedLibrary,scopedCatalog} from './libraries.ts';
+import {selectedLibrary,scopedCatalog,navigationContentSupport} from './libraries.ts';
 import type {LibraryNavigation} from './libraries.ts';
 export type Stored=LibraryNavigation & {origin:string;catalog:Catalog|null;progress:Record<string,Progress>;pending:Record<string,Progress>};
 export const fresh=():Stored=>({origin:'https://localhost:8787',catalog:null,progress:{},pending:{},libraries:null,selectedLibraryId:null});
@@ -20,7 +20,7 @@ export function recover(raw:string):Stored {
         selectedLibraryId=selectedLibrary(libraries,preferred);
         // A renamed library keeps its ID. Removed/hidden selections must not
         // relabel another scope's cached titles while the server is offline.
-        if(selectedLibraryId!==preferred || selectedLibraryId===null)catalog={apiVersion:1,items:[]};
+        if(selectedLibraryId!==preferred || selectedLibraryId===null || !navigationContentSupport({libraries,selectedLibraryId}).supported)catalog={apiVersion:1,items:[]};
         else if(catalog)catalog=scopedCatalog(catalog,selectedLibraryId);
       }catch{libraries=null;selectedLibraryId=null;catalog=null;}
     }

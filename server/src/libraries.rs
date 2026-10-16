@@ -1,6 +1,6 @@
 //! Library configuration changes indexed membership, never the approved source
 //! roots, source identity, filesystem permissions, or saved playback progress.
-use crate::{Entry, Media, catalog, metadata};
+use crate::{Entry, Media, catalog, content_registry, metadata};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -61,22 +61,69 @@ pub(crate) async fn management_guard(
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase", from = "LibraryConfigInput")]
 pub(crate) struct LibraryConfig {
     pub id: String,
     pub name: String,
-    pub media_type: MediaType,
+    pub content_type_id: Option<String>,
+    pub media_type: String,
     pub visible: bool,
     pub order: u32,
     pub source_folders: Vec<String>,
+    #[serde(skip)]
+    canonical_explicit: bool,
+    #[serde(skip)]
+    alias_explicit: bool,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum MediaType {
-    Movies,
-    Tv,
-    Mixed,
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LibraryConfigInput {
+    id: String,
+    name: String,
+    #[serde(default, deserialize_with = "selected_type")]
+    content_type_id: Option<Option<String>>,
+    #[serde(default, deserialize_with = "legacy_type")]
+    media_type: Option<String>,
+    visible: bool,
+    order: u32,
+    source_folders: Vec<String>,
+}
+
+fn selected_type<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
+fn legacy_type<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
+}
+
+impl From<LibraryConfigInput> for LibraryConfig {
+    fn from(input: LibraryConfigInput) -> Self {
+        let canonical_explicit = input.content_type_id.is_some();
+        let alias_explicit = input.media_type.is_some();
+        let content_type_id = input
+            .content_type_id
+            .unwrap_or_else(|| input.media_type.clone().filter(|kind| kind != "mixed"));
+        let media_type = input
+            .media_type
+            .unwrap_or_else(|| content_type_id.clone().unwrap_or_else(|| "mixed".into()));
+        Self {
+            id: input.id,
+            name: input.name,
+            content_type_id,
+            media_type,
+            visible: input.visible,
+            order: input.order,
+            source_folders: input.source_folders,
+            canonical_explicit,
+            alias_explicit,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -134,8 +181,20 @@ fn validate(libraries: &[LibraryConfig]) -> Result<(), &'static str> {
         if library.order > 10000 || library.source_folders.len() > 64 {
             return Err("Library order or folder count exceeds its limit");
         }
+        if (!library.canonical_explicit && !library.alias_explicit)
+            || library
+                .content_type_id
+                .as_deref()
+                .is_some_and(|id| id == "mixed" || !content_registry::valid_id(id))
+            || !content_registry::valid_id(&library.media_type)
+            || (library.canonical_explicit
+                && library.alias_explicit
+                && library.media_type != library.content_type_id.as_deref().unwrap_or("mixed"))
+        {
+            return Err("Invalid or conflicting content type identifiers");
+        }
         if library.id == "other" {
-            if library.media_type != MediaType::Mixed || !library.source_folders.is_empty() {
+            if library.content_type_id.is_some() || !library.source_folders.is_empty() {
                 return Err("The Other library must retain mixed type and automatic membership");
             }
             catchall = true;
@@ -163,16 +222,21 @@ fn defaults(
         )
     });
     [
-        ("movies", "Movies", MediaType::Movies, true),
-        ("tv", "TV shows", MediaType::Tv, true),
-        ("other", "Other videos", MediaType::Mixed, uncovered),
+        ("movies", "Movies", true),
+        ("tv", "TV shows", true),
+        ("other", "Other videos", uncovered),
     ]
     .into_iter()
     .enumerate()
-    .map(|(order, (id, name, media_type, visible))| LibraryConfig {
+    .map(|(order, (id, name, visible))| LibraryConfig {
         id: id.into(),
         name: name.into(),
-        media_type,
+        content_type_id: if id == "other" { None } else { Some(id.into()) },
+        media_type: if id == "other" {
+            "mixed".into()
+        } else {
+            id.into()
+        },
         visible,
         order: order as u32,
         source_folders: if id == "other" {
@@ -189,6 +253,8 @@ fn defaults(
                 matching
             }
         },
+        canonical_explicit: true,
+        alias_explicit: true,
     })
     .collect()
 }
@@ -235,6 +301,11 @@ pub(crate) fn read(
     )?;
     let mut libraries: Vec<LibraryConfig> =
         serde_json::from_str(&json).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let registry = content_registry::for_types(
+        libraries
+            .iter()
+            .filter_map(|library| library.content_type_id.as_deref()),
+    );
     libraries.sort_by(|a, b| a.order.cmp(&b.order).then(a.id.cmp(&b.id)));
     let rows = libraries
         .into_iter()
@@ -249,7 +320,8 @@ pub(crate) fn read(
             value
         })
         .collect::<Vec<_>>();
-    let mut result = serde_json::json!({"version":1,"revision":revision,"libraries":rows});
+    let mut result =
+        serde_json::json!({"version":1,"revision":revision,"libraries":rows,"registry":registry});
     if admin {
         result["availableFolders"] = serde_json::to_value(
             folders
@@ -266,7 +338,7 @@ pub(crate) fn read(
 
 pub(crate) fn update(
     db: &mut Connection,
-    value: Update,
+    mut value: Update,
     entries: &std::collections::BTreeMap<String, Entry>,
     folders: &BTreeSet<String>,
 ) -> Result<(), axum::http::StatusCode> {
@@ -280,6 +352,22 @@ pub(crate) fn update(
     // harmless: configuration only assigns entries from the successful scan.
     let previous: Vec<LibraryConfig> = serde_json::from_value(current["libraries"].clone())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    for library in &mut value.libraries {
+        if !library.canonical_explicit
+            && let Some(old) = previous.iter().find(|old| old.id == library.id)
+            && old.content_type_id.as_deref().is_some_and(|id| {
+                !content_registry::builtin()
+                    .content_types
+                    .iter()
+                    .any(|kind| kind.id == id)
+            })
+        {
+            // Older clients may replace an unknown selector with their generic
+            // legacy alias. Omitting the canonical field must retain intent.
+            library.content_type_id = old.content_type_id.clone();
+            library.media_type = old.content_type_id.clone().expect("Unknown selected type");
+        }
+    }
     for library in &value.libraries {
         for folder in &library.source_folders {
             if !folders.contains(folder)
@@ -306,7 +394,7 @@ pub(crate) fn update(
                 (
                     library.id.clone(),
                     (
-                        library.media_type,
+                        library.content_type_id.clone(),
                         library
                             .source_folders
                             .iter()
@@ -384,15 +472,15 @@ pub(crate) fn assign(
                 .take(200)
                 .collect::<String>()
                 .replace('_', " ");
-            match library.media_type {
-                MediaType::Mixed => (),
-                MediaType::Movies => {
+            match library.content_type_id.as_deref() {
+                None => (),
+                Some("movies") => {
                     item.classification = catalog::Classification {
                         collection: Some("movies".into()),
                         ..Default::default()
                     }
                 }
-                MediaType::Tv => {
+                Some("tv") => {
                     let folder = folder.expect("TV source folder");
                     if !(library.id == "tv"
                         && folder.eq_ignore_ascii_case("tv")
@@ -418,10 +506,11 @@ pub(crate) fn assign(
                         }
                     }
                 }
+                Some(_) => item.classification = Default::default(),
             }
             // A mixed library may contain legacy TV rows; split series remain
             // scoped to the selected library rather than merging back into TV.
-            if library.media_type == MediaType::Mixed
+            if library.content_type_id.is_none()
                 && let Some(series) = &item.classification.series_id
             {
                 item.classification.series_id = Some(format!(
@@ -438,6 +527,14 @@ pub(crate) fn assign(
                 ));
             }
             item.classification.library_id = Some(library.id.clone());
+            item.classification.content_type_id = library
+                .content_type_id
+                .clone()
+                .or_else(|| item.classification.collection.clone());
+            if let Some(format) = content_registry::format(&item.container) {
+                item.classification.format_id = Some(format.id.clone());
+                item.classification.mime_type = format.mime_types.first().cloned();
+            }
             metadata::prepare(&mut item);
             if item.classification.collection.as_deref() == Some("movies")
                 && item.presentation.year.is_none()
