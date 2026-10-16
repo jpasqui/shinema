@@ -12,3 +12,5 @@ Shinema provides a cohesive media experience with sensible defaults and room to 
 Apply these principles through small architecture seams now: stable identifiers, versioned contracts, validated configuration, isolated adapters and replaceable presentation components. Declarative navigation chooses from supported destinations rather than loading URLs or scripts. Owner permissions belong behind the management authorization interface, independently of library configuration. These seams do not require a runtime plugin loader, arbitrary downloaded code or additional plugin permissions. Any future account or extension system needs its own design and security review.
 
 [Configurable libraries](libraries.md) are one application of this direction: keep media identity and progress stable while allowing the organization and labels around them to change.
+
+[Server and client architecture](server-client-architecture.md) records ownership, appearance overrides, future capability discovery and open decisions.
