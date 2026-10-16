@@ -296,6 +296,34 @@ export function LibraryBrowser({
   const consumedScroll = useRef(-1);
   const shows = navigation.collection === 'tv' && !navigation.series;
   const first = enabled ? feed.itemAt(0) : undefined;
+  // A configuration revision creates a new feed, but not a new programme.
+  // Keep its loaded presentation until the same query has an accepted batch;
+  // only the current feed can supply an actionable destination.
+  const featureScope = browseIdentity({ ...navigation, revision: undefined });
+  const retainedFeature = useRef<{ scope: string; item: FeedItem } | null>(
+    null,
+  );
+  const canRetainFeature =
+    enabled && visible.some((descriptor) => descriptor.id === library?.id);
+  const featureSupported = (item: FeedItem) =>
+    shows ||
+    mediaContentSupport(item as Media, libraryNavigation.document.registry)
+      .supported;
+  if (
+    retainedFeature.current?.scope !== featureScope ||
+    !canRetainFeature ||
+    state.total === 0 ||
+    (retainedFeature.current && !featureSupported(retainedFeature.current.item))
+  )
+    retainedFeature.current = null;
+  if (first)
+    retainedFeature.current =
+      canRetainFeature && featureSupported(first)
+        ? { scope: featureScope, item: first }
+        : null;
+  const featured =
+    first ?? (state.total === null ? retainedFeature.current?.item : undefined);
+  const featureDisabled = !first || !enabled || !featureSupported(first);
   const slots =
     state.loadedEnd ||
     (state.total === 0 || (ready && (!library || !support.supported))
@@ -727,11 +755,12 @@ export function LibraryBrowser({
         )}
         {!navigation.search && (
           <LibraryFeature
-            item={first}
+            item={featured}
             loading={!first && loading}
-            progress={first ? progress[first.id] : undefined}
+            disabled={featureDisabled}
+            progress={featured ? progress[featured.id] : undefined}
             onOpen={() => {
-              if (first) open(first, 0);
+              if (first && !featureDisabled) open(first, 0);
             }}
           />
         )}

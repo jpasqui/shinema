@@ -21,6 +21,20 @@ function latch() {
   return { pending, release };
 }
 
+async function startupCheckpoint(page: Page) {
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            window.__shinemaStartup.capture();
+            resolve();
+          }),
+        ),
+      ),
+  );
+}
+
 async function coldStartup(
   page: Page,
   info: TestInfo,
@@ -39,6 +53,7 @@ async function coldStartup(
     beforeDescriptors?: (page: Page) => Promise<void>;
     retryDiscovery?: boolean;
     expectedInitialSlots?: 3;
+    catalog?: ReturnType<typeof startupCatalog>;
   } = {},
 ) {
   await page.setViewportSize({
@@ -81,8 +96,26 @@ async function coldStartup(
       fulfilled: number;
       status: number;
     }>,
+    summary: [] as Array<{
+      started: number | null;
+      received: number;
+      released: number;
+      fulfilled: number;
+      status: number;
+    }>,
   };
   let completed = false;
+  // Routed mocks have no network startTime; record the actual request event
+  // separately from entering and releasing the response gate.
+  const summaryStarts = new WeakMap<object, number>();
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/api/library')
+      summaryStarts.set(request, Date.now());
+  });
+  const catalogDocument = options.catalog ?? startupCatalog();
+  const hasArtwork = catalogDocument.items.some(
+    (item) => item.posterPath || item.backdropPath,
+  );
   const descriptorDocument = options.libraries ?? {
     ...defaultLibraries(),
     revision: 7,
@@ -122,7 +155,7 @@ async function coldStartup(
   await page.route('**/api/catalog?**', async (route) => {
     calls.catalog++;
     await catalog.pending;
-    await route.fulfill({ json: startupCatalog() });
+    await route.fulfill({ json: catalogDocument });
   });
   await page.route(
     /\/api\/media\/[a-f0-9]{64}\/(poster|backdrop)$/,
@@ -137,8 +170,19 @@ async function coldStartup(
   );
   await page.route(/\/api\/library(?:\?.*)?$/, async (route) => {
     calls.summary++;
+    const phase = {
+      started: summaryStarts.get(route.request()) ?? null,
+      received: Date.now(),
+      released: 0,
+      fulfilled: 0,
+      status: 0,
+    };
+    phases.summary.push(phase);
     await summary.pending;
+    phase.released = Date.now();
+    phase.status = 200;
     await route.fulfill({ json: { movies: 60, tv: 0, series: 0, total: 60 } });
+    phase.fulfilled = Date.now();
   });
   try {
     const response = await page.goto(
@@ -150,24 +194,36 @@ async function coldStartup(
         '633b063e1ab7599d47569d659c9e0886896db92b',
       );
     await expect.poll(() => calls.entry).toBeGreaterThan(0);
-    const beforeMount = await startupTrace(page);
-    expect(beforeMount.samples.some((sample) => !sample.meaningful)).toBe(true);
-    expect(beforeMount.samples.some((sample) => sample.meaningful)).toBe(false);
+    await startupCheckpoint(page);
+    const beforeMount = await page.evaluate(() => ({
+      blank: window.__shinemaStartup.samples.some(
+        (sample) => !sample.meaningful,
+      ),
+      painted: window.__shinemaStartup.samples.some(
+        (sample) => sample.meaningful,
+      ),
+    }));
+    expect(beforeMount.blank).toBe(true);
+    expect(beforeMount.painted).toBe(false);
     phases.entryReleased = Date.now();
     entry.release();
     await expect
       .poll(() => calls.descriptors + calls.catalog)
       .toBeGreaterThan(0);
-    await expect
-      .poll(async () =>
-        (await startupTrace(page)).samples.some((sample) => sample.meaningful),
-      )
-      .toBe(true);
-    const held = await startupTrace(page);
+    await page.waitForFunction(
+      () => window.__shinemaStartup.samples.at(-1)?.meaningful,
+      undefined,
+      { timeout: 10000 },
+    );
+    await startupCheckpoint(page);
     expect(
-      Object.keys(
-        held.samples.find((sample) => sample.meaningful)!.anchors,
-      ).filter((name) => /^slot\d+$/.test(name)).length,
+      await page.evaluate(
+        () =>
+          Object.keys(
+            window.__shinemaStartup.samples.find((sample) => sample.meaningful)!
+              .anchors,
+          ).filter((name) => /^slot\d+$/.test(name)).length,
+      ),
     ).toBe(options.expectedInitialSlots ?? (options.historical ? 3 : 12));
     await options.beforeDescriptors?.(page);
     phases.descriptorsReleased = Date.now();
@@ -185,7 +241,7 @@ async function coldStartup(
           'Library discovery is unavailable. Refresh to retry.',
         );
       }
-      await startupTrace(page);
+      await startupCheckpoint(page);
       const previousDiscoveryCalls = calls.descriptors;
       discoveryRetryReleased = true;
       await page.getByRole('button', { name: 'Refresh', exact: true }).click();
@@ -202,7 +258,7 @@ async function coldStartup(
       catalog.release();
       await expect(
         page.getByRole('button', {
-          name: 'Open Generated movie 00000',
+          name: `Open ${catalogDocument.items[0].title}`,
           exact: true,
         }),
       ).toBeVisible();
@@ -210,8 +266,8 @@ async function coldStartup(
         await expect(page.locator('.section-heading')).toContainText(
           'Connected',
         );
-      await expect.poll(() => calls.artwork).toBeGreaterThan(0);
-      await startupTrace(page);
+      if (hasArtwork) await expect.poll(() => calls.artwork).toBeGreaterThan(0);
+      await startupCheckpoint(page);
     } else {
       catalog.release();
       await expect(
@@ -219,15 +275,16 @@ async function coldStartup(
       ).toBeVisible();
     }
     await expect.poll(() => calls.summary).toBeGreaterThan(0);
-    await startupTrace(page);
+    await startupCheckpoint(page);
     summary.release();
     await expect(page.locator('.page-title p')).toContainText(
       /60 movies.*0 episodes.*0 series/,
     );
     artwork.release();
     if (
-      descriptorDocument.libraries.some((library) => library.visible) ||
-      options.historical
+      (descriptorDocument.libraries.some((library) => library.visible) ||
+        options.historical) &&
+      hasArtwork
     )
       await page.waitForFunction(() => {
         const visible = [...document.images].filter((image) => {
@@ -1145,13 +1202,13 @@ for (const result of ['hidden', 'removed', 'reordered'] as const) {
       await expect
         .poll(() => page.evaluate(() => navigator.onLine))
         .toBe(false);
-      await startupTrace(page);
+      await startupCheckpoint(page);
       // There is no failed descriptor GET in this interval. Reconnection must
       // preserve the real controls established by the earlier healthy result.
       expect(calls).toBe(0);
       await context.setOffline(false);
       await expect.poll(() => calls).toBeGreaterThan(0);
-      await startupTrace(page);
+      await startupCheckpoint(page);
       refresh.release();
       await expect
         .poll(() =>
@@ -1225,6 +1282,214 @@ for (const result of ['hidden', 'removed', 'reordered'] as const) {
       expect(api.blockedRequests).toEqual([]);
     } finally {
       refresh.release();
+      await context.setOffline(false);
+    }
+  });
+}
+
+for (const viewport of [
+  { width: 1600, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`Archive artwork-free feature survives a held revision refresh at ${viewport.width}x${viewport.height}`, async ({
+    page,
+    context,
+    api,
+  }, info) => {
+    const catalog = startupCatalog({
+      artwork: false,
+      titlePrefix: 'GeneratedControl',
+    });
+    expect(
+      catalog.items.every(
+        (item) =>
+          !Object.hasOwn(item, 'posterPath') &&
+          !Object.hasOwn(item, 'backdropPath'),
+      ),
+    ).toBe(true);
+    const healthy = await coldStartup(page, info, {
+      ...viewport,
+      catalog,
+      saved: {
+        'shinema.appearance.v1': JSON.stringify({
+          version: 1,
+          theme: archiveTheme,
+          motion: 'system',
+        }),
+      },
+    });
+    expectStable(healthy);
+    await expect(page.locator('html')).toHaveAttribute('data-motion', 'full');
+    const feature = page.getByTestId('library-feature');
+    const action = feature.getByRole('button', {
+      name: 'View details',
+      exact: true,
+    });
+    await expect(feature.locator('.programme-copy h2')).toHaveText(
+      'GeneratedControl00',
+    );
+    await expect(
+      feature.locator(
+        '.programme-poster .poster-unavailable > span:last-child',
+      ),
+    ).toHaveText('GeneratedControl00');
+    await expect(action).toBeEnabled();
+    await page.evaluate(() => document.fonts.ready);
+    await action.focus();
+    const lifetime = await page.evaluateHandle(() => {
+      const feature = document.querySelector(
+        '[data-testid="library-feature"]',
+      )!;
+      const caption = feature.querySelector(
+        '.programme-poster .poster-unavailable > span:last-child',
+      )!;
+      const text = caption.firstChild;
+      const records: Array<{
+        title: string | null;
+        caption: string | null;
+        sameCaption: boolean;
+        sameText: boolean;
+        rendered: boolean;
+        time: number;
+      }> = [];
+      let running = true;
+      const rendered = (node: Element | null) => {
+        if (!node) return false;
+        const box = node.getBoundingClientRect();
+        if (!box.width || !box.height) return false;
+        for (
+          let ancestor: Element | null = node;
+          ancestor;
+          ancestor = ancestor.parentElement
+        ) {
+          const style = getComputedStyle(ancestor);
+          if (
+            style.display === 'none' ||
+            style.visibility === 'hidden' ||
+            Number(style.opacity) === 0
+          )
+            return false;
+        }
+        return true;
+      };
+      const capture = () => {
+        const current = feature.querySelector(
+          '.programme-poster .poster-unavailable > span:last-child',
+        );
+        records.push({
+          title:
+            feature.querySelector('.programme-copy h2')?.textContent ?? null,
+          caption: current?.textContent ?? null,
+          sameCaption: current === caption,
+          sameText: current?.firstChild === text,
+          rendered: rendered(current),
+          time: performance.now(),
+        });
+      };
+      const observer = new MutationObserver(capture);
+      observer.observe(feature, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: true,
+      });
+      const tick = () => {
+        if (running) {
+          capture();
+          requestAnimationFrame(tick);
+        }
+      };
+      capture();
+      requestAnimationFrame(tick);
+      return {
+        records,
+        capture,
+        stop: () => {
+          running = false;
+          observer.disconnect();
+        },
+      };
+    });
+    const replacement = latch();
+    let calls = 0;
+    const scopes: string[] = [];
+    await page.route('**/api/libraries', (route) =>
+      route.fulfill({ json: { ...defaultLibraries(), revision: 8 } }),
+    );
+    await page.route('**/api/catalog?**', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get('revision') !== '8') return route.fallback();
+      scopes.push(url.searchParams.get('library') ?? 'legacy');
+      calls++;
+      await replacement.pending;
+      await route.fulfill({ json: catalog });
+    });
+    try {
+      const fonts = await page.evaluate(() => document.fonts.status);
+      expect(fonts).toBe('loaded');
+      await context.setOffline(true);
+      const onlineRequestedAt = await page.evaluate(() => performance.now());
+      await context.setOffline(false);
+      await expect.poll(() => calls).toBeGreaterThan(0);
+      await expect(page.getByTestId('library-feed')).toHaveAttribute(
+        'data-library-revision',
+        '8',
+      );
+      await expect(page.getByTestId('library-feed')).toHaveAttribute(
+        'aria-busy',
+        'true',
+      );
+      await startupCheckpoint(page);
+      const pending = {
+        title: await feature.locator('.programme-copy h2').textContent(),
+        caption: await feature
+          .locator('.programme-poster .poster-unavailable > span:last-child')
+          .textContent(),
+        actionDisabled: await action.isDisabled(),
+      };
+      await page.keyboard.press('Enter');
+      await expect(page.locator('main.detail')).toHaveCount(0);
+      replacement.release();
+      await expect(page.getByTestId('library-feed')).toHaveAttribute(
+        'data-loaded-count',
+        '60',
+      );
+      await expect(page.getByTestId('library-feed')).toHaveAttribute(
+        'aria-busy',
+        'false',
+      );
+      await expect(action).toBeEnabled();
+      await lifetime.evaluate((state) => state.capture());
+      const records = await lifetime.evaluate((state) => state.records);
+      const trace = await startupTrace(page);
+      await writeFile(
+        info.outputPath('archive-no-art-refresh.json'),
+        JSON.stringify({ fonts, onlineRequestedAt, pending, records, trace }),
+      );
+      expect(scopes).toEqual(['movies']);
+      expect.soft(pending).toEqual({
+        title: 'GeneratedControl00',
+        caption: 'GeneratedControl00',
+        actionDisabled: true,
+      });
+      expect
+        .soft(
+          records.every(
+            (record) =>
+              record.title === 'GeneratedControl00' &&
+              record.caption === 'GeneratedControl00' &&
+              record.sameCaption &&
+              record.sameText &&
+              record.rendered,
+          ),
+        )
+        .toBe(true);
+      expectStable(trace, false, [], { allowCatalogRevisionReset: true });
+      await expect(page.locator('.real-poster img')).toHaveCount(0);
+      expect(api.blockedRequests).toEqual([]);
+    } finally {
+      replacement.release();
+      await lifetime.evaluate((state) => state.stop());
       await context.setOffline(false);
     }
   });

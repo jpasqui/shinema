@@ -17,6 +17,7 @@ export type FeatureProps = {
   progress?: Progress;
   demo?: boolean;
   loading?: boolean;
+  disabled?: boolean;
 };
 export function MarqueeHero({
   item,
@@ -24,6 +25,7 @@ export function MarqueeHero({
   progress,
   demo = false,
   loading = false,
+  disabled = false,
 }: FeatureProps) {
   const [loaded, setLoaded] = useState('');
   const [failed, setFailed] = useState('');
@@ -46,7 +48,7 @@ export function MarqueeHero({
     <section
       className="feature marquee-feature"
       aria-label="Featured title"
-      aria-busy={pending || undefined}
+      aria-busy={loading || undefined}
       data-testid="library-feature"
       data-feature-loading={pending || undefined}
     >
@@ -107,7 +109,11 @@ export function MarqueeHero({
           )}
         </p>
         <div className="feature-actions">
-          <button className="primary" onClick={onOpen} disabled={!item}>
+          <button
+            className="primary"
+            onClick={onOpen}
+            disabled={!item || disabled}
+          >
             View details <span aria-hidden="true">→</span>
           </button>
           <span className="hero-footnote">

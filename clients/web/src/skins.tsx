@@ -11,6 +11,7 @@ function ArchiveProgramme({
   progress,
   demo = false,
   loading = false,
+  disabled = false,
 }: FeatureProps) {
   const pending = loading && !item;
   const title = item
@@ -22,7 +23,7 @@ function ArchiveProgramme({
     <section
       className="archive-programme"
       aria-label="Featured title"
-      aria-busy={pending || undefined}
+      aria-busy={loading || undefined}
       data-testid="library-feature"
       data-feature-loading={pending || undefined}
     >
@@ -64,7 +65,11 @@ function ArchiveProgramme({
               'Choose a title and settle in. Your collection is ready when you are.'
             )}
           </p>
-          <button className="primary" onClick={onOpen} disabled={!item}>
+          <button
+            className="primary"
+            onClick={onOpen}
+            disabled={!item || disabled}
+          >
             View details <span aria-hidden="true">→</span>
           </button>
         </div>
