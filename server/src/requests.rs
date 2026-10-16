@@ -725,6 +725,13 @@ async fn create(
             "not_found",
             "This title could not be verified by the request provider.",
         ))?;
+    // Sonarr uses this classification when parsing episode names. Preserve only
+    // its verified supported values, and reject incomplete lookup data before
+    // reserving an identity or sending a provider write.
+    let series_type = match input.kind {
+        Kind::Movie => None,
+        Kind::Series => Some(verified_series_type(value)?),
+    };
     let mut record = new_record(input.kind, input.external_id, value, "uncertain")?;
     record.message =
         Some("Provider confirmation is pending. Refresh status before any further attempt.".into());
@@ -742,6 +749,9 @@ async fn create(
     if let Some(year) = record.year {
         payload["year"] = year.into();
     }
+    if let Some(series_type) = series_type {
+        payload["seriesType"] = series_type.into();
+    }
     payload[input.kind.id_key()] = input.external_id.into();
     if let Some(slug) = value
         .get("titleSlug")
@@ -756,7 +766,6 @@ async fn create(
             payload["addOptions"] = json!({"searchForMovie":false});
         }
         Kind::Series => {
-            payload["seriesType"] = "standard".into();
             payload["seasonFolder"] = true.into();
             // Monitoring is explicit and no historical episode search is triggered.
             let seasons = value
@@ -826,6 +835,13 @@ async fn create(
         Json(json!({"apiVersion":1,"item":record,"duplicate":false})),
     )
         .into_response())
+}
+
+fn verified_series_type(value: &Value) -> Result<&str, ApiError> {
+    match value.get("seriesType").and_then(Value::as_str) {
+        Some(series_type @ ("standard" | "daily" | "anime")) => Ok(series_type),
+        _ => Err(ApiError::provider()),
+    }
 }
 
 fn new_record(

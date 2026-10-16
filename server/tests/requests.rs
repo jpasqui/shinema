@@ -35,6 +35,7 @@ struct Fixture {
     oversized: bool,
     redirect: Option<String>,
     lookup_barrier: Option<Arc<tokio::sync::Barrier>>,
+    series_lookup_override: Option<Value>,
 }
 struct Mock {
     state: Arc<Mutex<Fixture>>,
@@ -82,7 +83,7 @@ fn lookup(kind: &str, id: u32) -> Value {
     if kind == "movie" {
         json!({"tmdbId":id,"title":format!("Synthetic Movie {id}"),"year":2025,"overview":"Generated fixture; no real media.","titleSlug":format!("synthetic-movie-{id}")})
     } else {
-        json!({"tvdbId":id,"title":format!("Synthetic Series {id}"),"year":2024,"overview":"Generated fixture; no real media.","titleSlug":format!("synthetic-series-{id}"),"seasons":[{"seasonNumber":0},{"seasonNumber":1}]})
+        json!({"tvdbId":id,"title":format!("Synthetic Series {id}"),"year":2024,"overview":"Generated fixture; no real media.","titleSlug":format!("synthetic-series-{id}"),"seriesType":"standard","seasons":[{"seasonNumber":0},{"seasonNumber":1}]})
     }
 }
 async fn provider(State(state): State<Arc<Mutex<Fixture>>>, request: Request) -> Response {
@@ -146,7 +147,15 @@ async fn provider(State(state): State<Arc<Mutex<Fixture>>>, request: Request) ->
                 .split_once(':')
                 .and_then(|(_, value)| value.parse().ok())
                 .unwrap_or(101);
-            return Json(json!([lookup(kind, id)])).into_response();
+            let result = if kind == "series" {
+                fixture
+                    .series_lookup_override
+                    .clone()
+                    .unwrap_or_else(|| lookup(kind, id))
+            } else {
+                lookup(kind, id)
+            };
+            return Json(json!([result])).into_response();
         }
         assert!(path == format!("/fixture/api/v3/{kind}"));
         if method == Method::GET {
@@ -175,6 +184,13 @@ async fn provider(State(state): State<Arc<Mutex<Fixture>>>, request: Request) ->
         if kind == "movie" {
             assert_eq!(payload["addOptions"]["searchForMovie"], false);
         } else {
+            let expected_type = fixture
+                .series_lookup_override
+                .as_ref()
+                .and_then(|value| value.get("seriesType"))
+                .cloned()
+                .unwrap_or_else(|| json!("standard"));
+            assert_eq!(payload["seriesType"], expected_type);
             assert_eq!(payload["addOptions"]["searchForMissingEpisodes"], false);
             assert_eq!(payload["addOptions"]["searchForCutoffUnmetEpisodes"], false);
             assert_eq!(
@@ -463,6 +479,96 @@ async fn series_payload_monitoring_and_complete_status_use_server_policy() {
         call(&app, "GET", "/api/requests", None, true).await.1["items"][0]["status"],
         "available"
     );
+}
+
+#[tokio::test]
+async fn verified_sonarr_series_type_is_preserved_for_every_supported_type() {
+    for series_type in ["standard", "daily", "anime"] {
+        let mock = Mock::start().await;
+        let temp = tempfile::tempdir().unwrap();
+        let mut verified = lookup("series", 202);
+        verified["seriesType"] = series_type.into();
+        mock.state.lock().unwrap().series_lookup_override = Some(verified);
+        let app = mock.app(temp.path());
+        let (status, value) = call(
+            &app,
+            "POST",
+            "/api/requests",
+            Some(json!({"kind":"series","externalId":202})),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "series type {series_type}");
+        assert_eq!(value["item"]["status"], "requested");
+        let fixture = mock.state.lock().unwrap();
+        assert_eq!(fixture.posts.len(), 1);
+        assert_eq!(fixture.posts[0]["seriesType"], series_type);
+    }
+}
+
+#[tokio::test]
+async fn invalid_sonarr_series_type_fails_before_reservation_or_provider_write() {
+    for (case, series_type) in [
+        ("missing", None),
+        ("null", Some(Value::Null)),
+        ("boolean", Some(json!(true))),
+        ("number", Some(json!(123))),
+        ("array", Some(json!(["standard"]))),
+        ("object", Some(json!({"type":"standard"}))),
+        ("unknown", Some(json!("unknown-series-type"))),
+        ("wrong case", Some(json!("Standard"))),
+        ("empty", Some(json!(""))),
+        ("whitespace", Some(json!("anime "))),
+    ] {
+        let mock = Mock::start().await;
+        let temp = tempfile::tempdir().unwrap();
+        let mut verified = lookup("series", 202);
+        if let Some(series_type) = series_type {
+            verified["seriesType"] = series_type;
+        } else {
+            verified.as_object_mut().unwrap().remove("seriesType");
+        }
+        mock.state.lock().unwrap().series_lookup_override = Some(verified);
+        let app = mock.app(temp.path());
+        let (status, value) = call(
+            &app,
+            "POST",
+            "/api/requests",
+            Some(json!({"kind":"series","externalId":202})),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "series type {case}");
+        assert_eq!(value["error"]["code"], "provider_unavailable");
+        assert_eq!(
+            value["error"]["message"],
+            "The request provider could not be reached or returned an invalid response. Try again later."
+        );
+        assert!(
+            mock.state.lock().unwrap().posts.is_empty(),
+            "series type {case}"
+        );
+        let (status, history) = call(&app, "GET", "/api/requests", None, true).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            history["items"].as_array().unwrap().is_empty(),
+            "series type {case}"
+        );
+        // A corrected provider lookup must remain submit-able for the same ID;
+        // invalid metadata must not leave a hidden duplicate reservation.
+        mock.state.lock().unwrap().series_lookup_override = Some(lookup("series", 202));
+        let (status, value) = call(
+            &app,
+            "POST",
+            "/api/requests",
+            Some(json!({"kind":"series","externalId":202})),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "corrected series type {case}");
+        assert_eq!(value["duplicate"], false);
+        assert_eq!(mock.state.lock().unwrap().posts.len(), 1);
+    }
 }
 
 #[tokio::test]

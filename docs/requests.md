@@ -73,8 +73,10 @@ profile from its own configuration. Arbitrary client titles, URLs, provider
 settings, paths, or download options are rejected.
 
 Registration sets monitoring on. Movies use `minimumAvailability: released`;
-series use normal season folders and monitor regular seasons, excluding specials
-in the lookup result. **Immediate historical searches are disabled**:
+series preserve the verified Sonarr lookup type (`standard`, `daily`, or `anime`).
+Missing or unsupported types stop registration before any provider write or
+request-history reservation. Series use season folders and monitor regular
+seasons, excluding specials in the lookup result. **Immediate historical searches are disabled**:
 `searchForMovie`, `searchForMissingEpisodes`, and
 `searchForCutoffUnmetEpisodes` are false. Existing provider automation may still
 act on monitored titles later. This preview does not manage provider commands,

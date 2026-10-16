@@ -145,6 +145,7 @@ async function fakeProvider(kind, key) {
           tvdbId: seriesId,
           title: 'Generated Orbit Chronicles',
           year: 2026,
+          seriesType: 'daily',
           overview:
             'An original synthetic series about a community in orbit. The whole series is selected for this demo.',
           seasons: [
@@ -235,6 +236,7 @@ async function fakeProvider(kind, key) {
         if (movie) {
           assert.deepEqual(value.addOptions, { searchForMovie: false });
         } else {
+          assert.equal(value.seriesType, 'daily');
           assert.deepEqual(value.addOptions, {
             searchForMissingEpisodes: false,
             searchForCutoffUnmetEpisodes: false,
