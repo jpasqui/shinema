@@ -216,7 +216,8 @@ export default function App(){
     if(route==='player')return;
     if(session.current.isSwitchCommitting()){setMessage('Finishing library update. Try again in a moment.');return;}
     setHeaderFocused(true);setHeaderCursor(Math.max(0,visibleLibraries.findIndex(item=>item.id===library.id)));
-    if(library.id===store.current.selectedLibraryId&&(feed.current.snapshot().known||!librarySupport.supported)){cancelConnection();setBusy(false);setHeaderFocused(!librarySupport.supported);setRoute('library');return;}
+    const currentFeed=feed.current.snapshot();
+    if(library.id===store.current.selectedLibraryId&&(currentFeed.known||!librarySupport.supported)){cancelConnection();setBusy(false);setHeaderFocused(!canEnterLibraryGrid(librarySupport.supported,currentFeed.known,currentFeed.total));setRoute('library');return;}
     void connect(store.current.origin,true,library.id,store.current.localHttpOrigin??null);
   }
   useEffect(()=>{setHeaderCursor(current=>Math.min(current,visibleLibraries.length+(route==='library'?2:1)));},[visibleLibraries.length,route]);
