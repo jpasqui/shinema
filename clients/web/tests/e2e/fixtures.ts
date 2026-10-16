@@ -147,6 +147,7 @@ export const test = base.extend<
       if (!match)
         throw new Error(`Unexpected synthetic API request: ${url.pathname}`);
       const [, id, resource] = match;
+      if (resource === 'subtitles') return json({ tracks: [] });
       if (resource === 'metadata')
         return json({ apiVersion: 1, items: [mediaFor(parseInt(id, 16))] });
       if (resource === 'progress') {

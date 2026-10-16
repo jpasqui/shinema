@@ -371,6 +371,118 @@ export type Playback = {
   mode: 'direct' | 'transcode';
   streamPath: string;
 };
+export type SubtitleTrack = {
+  id: string;
+  label: string;
+  language?: string;
+  default: boolean;
+  source: 'embedded' | 'external';
+  contentPath?: string;
+  unsupportedReason?: string;
+};
+export type Subtitles = { tracks: SubtitleTrack[]; warnings?: string[] };
+const subtitleControls = (text: string) =>
+  Array.from(text).some(
+    (character) =>
+      character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+  );
+
+export function parseSubtitles(value: unknown, mediaId: string): Subtitles {
+  if (
+    !/^[a-f0-9]{64}$/.test(mediaId) ||
+    !object(value) ||
+    !Array.isArray(value.tracks) ||
+    value.tracks.length > 64
+  )
+    throw new Error('Invalid subtitle tracks');
+  if (
+    value.warnings !== undefined &&
+    (!Array.isArray(value.warnings) ||
+      value.warnings.length > 8 ||
+      value.warnings.some(
+        (warning) =>
+          typeof warning !== 'string' ||
+          !warning.trim() ||
+          Array.from(warning).length > 200 ||
+          subtitleControls(warning),
+      ))
+  )
+    throw new Error('Invalid subtitle warnings');
+  const ids = new Set<string>();
+  for (const track of value.tracks) {
+    if (
+      !object(track) ||
+      typeof track.id !== 'string' ||
+      !/^[a-z0-9-]{1,80}$/.test(track.id) ||
+      ids.has(track.id) ||
+      typeof track.label !== 'string' ||
+      !track.label.trim() ||
+      Array.from(track.label).length > 200 ||
+      subtitleControls(track.label) ||
+      typeof track.default !== 'boolean' ||
+      typeof track.source !== 'string' ||
+      !['embedded', 'external'].includes(track.source) ||
+      (track.language !== undefined &&
+        (typeof track.language !== 'string' ||
+          !/^[a-zA-Z]{2,3}(?:-[a-zA-Z0-9]{2,8}){0,3}$/.test(track.language))) ||
+      (track.contentPath !== undefined &&
+        track.contentPath !==
+          `/api/media/${mediaId}/subtitles/${track.id}.vtt`) ||
+      (track.unsupportedReason !== undefined &&
+        (typeof track.unsupportedReason !== 'string' ||
+          !track.unsupportedReason.trim() ||
+          Array.from(track.unsupportedReason).length > 200 ||
+          subtitleControls(track.unsupportedReason))) ||
+      (track.contentPath === undefined) ===
+        (track.unsupportedReason === undefined)
+    )
+      throw new Error('Invalid subtitle track');
+    ids.add(track.id);
+  }
+  return value as Subtitles;
+}
+
+// Explicit defaults win. Otherwise match a supported track to the user's
+// language, including common ISO 639-2 container tags, then leave subtitles Off.
+export function defaultSubtitle(
+  tracks: readonly SubtitleTrack[],
+  languages: readonly string[],
+): string {
+  const supported = tracks.filter((track) => track.contentPath);
+  const preferred = supported.find((track) => track.default);
+  if (preferred) return preferred.id;
+  const aliases: Record<string, string> = {
+    eng: 'en',
+    fra: 'fr',
+    fre: 'fr',
+    spa: 'es',
+    deu: 'de',
+    ger: 'de',
+    ita: 'it',
+    por: 'pt',
+    jpn: 'ja',
+    kor: 'ko',
+    zho: 'zh',
+    chi: 'zh',
+    ara: 'ar',
+    hin: 'hi',
+    rus: 'ru',
+    nld: 'nl',
+    dut: 'nl',
+  };
+  const base = (language: string) => {
+    const tag = language.toLowerCase().split('-')[0];
+    return aliases[tag] ?? tag;
+  };
+  for (const language of languages) {
+    const track = supported.find(
+      (track) => track.language && base(track.language) === base(language),
+    );
+    if (track) return track.id;
+  }
+  return '';
+}
+
 export function parsePlayback(value: unknown, id: string): Playback {
   if (
     !/^[a-f0-9]{64}$/.test(id) ||

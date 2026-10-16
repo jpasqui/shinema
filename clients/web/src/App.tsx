@@ -27,6 +27,7 @@ import type { Cache } from './model.ts';
 import { Artwork } from './Artwork.tsx';
 import { MediaPoster } from './MediaPoster.tsx';
 import { Requests } from './Requests.tsx';
+import { SubtitleControls } from './SubtitleControls.tsx';
 
 const storageKey = 'shinema.web.cache.v1';
 const demo = import.meta.env.VITE_DEMO_MODE === 'true';
@@ -727,7 +728,11 @@ function Player({
       event.preventDefault();
       snapshot();
       back();
-    } else if (event.target instanceof HTMLInputElement) return;
+    } else if (
+      event.target instanceof HTMLInputElement ||
+      event.target instanceof HTMLSelectElement
+    )
+      return;
     else if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
       event.preventDefault();
       seek(
@@ -869,6 +874,7 @@ function Player({
           {muted ? 'Enable audio' : 'Mute'}
         </button>
       </div>
+      <SubtitleControls key={item.id} mediaId={item.id} video={video} />
       <div className="now-playing">
         <div>
           <h1>{title(item)}</h1>

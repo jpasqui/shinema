@@ -29,6 +29,17 @@ mod web;
 pub use catalog::Classification;
 pub use ssh::SshConfig;
 mod state_files;
+mod subtitles;
+
+#[cfg(test)]
+mod performance_budgets;
+
+#[cfg(not(test))]
+type EntryIndex = BTreeMap<String, Entry>;
+#[cfg(test)]
+use performance_budgets::EntryIndex;
+#[cfg(test)]
+mod performance_tests;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,9 +111,11 @@ pub struct Library {
     directory: Option<cap_std::fs::Dir>,
     remote: Option<SshConfig>,
     remote_transfers: Arc<tokio::sync::Semaphore>,
-    entries: BTreeMap<String, Entry>,
+    entries: EntryIndex,
+    series_entries: BTreeMap<String, String>,
     database: Mutex<Connection>,
     playback: playback::Engine,
+    subtitles: subtitles::Engine,
     metadata: Arc<metadata::Engine>,
     web_root: Option<PathBuf>,
 }
@@ -171,6 +184,18 @@ fn media_id(relative: &Path) -> String {
     format!("{:x}", hash.finalize())
 }
 
+fn index_series(entries: &BTreeMap<String, Entry>) -> BTreeMap<String, String> {
+    let mut series = BTreeMap::new();
+    for (id, entry) in entries {
+        if let Some(sid) = &entry.media.classification.series_id {
+            // Preserve the former values().find() representative: the first
+            // media ID in the library's deterministic BTreeMap order.
+            series.entry(sid.clone()).or_insert_with(|| id.clone());
+        }
+    }
+    series
+}
+
 impl Library {
     pub fn open(
         media_root: &Path,
@@ -235,14 +260,18 @@ impl Library {
         }
         catalog::replace_index(&mut db, entries.values().map(|entry| entry.media.clone()))?;
         let directory = cap_std::fs::Dir::open_ambient_dir(&root, cap_std::ambient_authority())?;
+        #[cfg(test)]
+        let entries = EntryIndex::from(entries);
         Ok(Arc::new(Self {
             root: Some(root),
             directory: Some(directory),
             remote: None,
             remote_transfers: Arc::new(tokio::sync::Semaphore::new(4)),
+            series_entries: index_series(&entries),
             entries,
             database: Mutex::new(db),
             playback,
+            subtitles: subtitles::Engine::new(),
             metadata: metadata::Engine::new(&state)?,
             web_root: web::configured()?,
         }))
@@ -366,14 +395,18 @@ impl Library {
             "INSERT INTO scan_summary VALUES (?1,?2,?3)",
             params![scan.files_seen, scan.ignored_files, scan.links_skipped],
         )?;
+        #[cfg(test)]
+        let entries = EntryIndex::from(entries);
         Ok(Arc::new(Self {
             root: None,
             directory: None,
             remote: Some(config),
             remote_transfers: Arc::new(tokio::sync::Semaphore::new(4)),
+            series_entries: index_series(&entries),
             entries,
             database: Mutex::new(db),
             playback,
+            subtitles: subtitles::Engine::new(),
             metadata: metadata::Engine::new(&state)?,
             web_root: web::configured()?,
         }))
@@ -456,6 +489,7 @@ pub fn router_at_with_requests(
     requests: Arc<requests::Engine>,
 ) -> Router {
     library.playback.set_origin(bind);
+    library.subtitles.set_origin(bind);
     Router::new()
         .route(
             "/health",
@@ -471,6 +505,8 @@ pub fn router_at_with_requests(
         .route("/api/media/{id}/poster",get(poster))
         .route("/api/media/{id}/backdrop",get(backdrop))
         .route("/api/media/{id}/playback", get(playback_info))
+        .route("/api/media/{id}/subtitles", get(subtitles::list))
+        .route("/api/media/{id}/subtitles/{track}", get(subtitles::content))
         .route("/api/media/{id}/hls/{segment}", get(hls))
         .route("/api/media/{id}/progress", get(progress).put(save_progress))
         .layer(DefaultBodyLimit::max(4096))
@@ -539,11 +575,7 @@ async fn series(
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
     {
         let sid = row["id"].as_str().unwrap_or_default();
-        if let Some(entry) = library
-            .entries
-            .values()
-            .find(|entry| entry.media.classification.series_id.as_deref() == Some(sid))
-        {
+        if let Some(entry) = series_representative(&library, sid) {
             let mut item = entry.media.clone();
             item.title = row["title"].as_str().unwrap_or_default().to_string();
             pending |= library.metadata.overlay(&mut item, true, false);
@@ -568,6 +600,16 @@ async fn series(
     value["metadataPending"] = pending.into();
     Ok(Json(value))
 }
+
+fn series_representative<'a>(library: &'a Library, id: &str) -> Option<&'a Entry> {
+    #[cfg(test)]
+    crate::performance_budgets::record_representative_lookup();
+    library
+        .series_entries
+        .get(id)
+        .and_then(|id| library.entries.get(id))
+}
+
 async fn seasons(
     State(library): State<Arc<Library>>,
     ApiPath(id): ApiPath<String>,

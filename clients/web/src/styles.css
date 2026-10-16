@@ -75,6 +75,10 @@ footer > span:first-child { color: #c8cdc4; }
 .control-button:hover { background: var(--color-elevated); }
 .player-controls input { flex: 1; min-width: 50px; accent-color: var(--color-accent); }
 .time { font-size: 12px; color: var(--color-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.subtitle-controls { display:flex; flex-wrap:wrap; gap:12px 20px; align-items:center; padding:16px 0; border-bottom:1px solid var(--color-line); }
+.subtitle-controls label { display:flex; align-items:center; gap:12px; font-size:14px; }
+.subtitle-controls select { max-width: min(55vw, 500px); min-height:44px; font:inherit; background:var(--color-elevated); color:var(--color-text); border:1px solid var(--color-line); border-radius:8px; padding:8px; }
+.subtitle-controls p { flex-basis:100%; margin:0; }
 .muted-label { font-size: 12px; color: var(--color-muted); white-space: nowrap; }
 .now-playing { display: flex; justify-content: space-between; align-items: center; gap: 25px; margin-top: 28px; }
 .now-playing h1 { font-family: var(--font-display); font-size: 32px; font-weight: 400; margin: 0 0 6px; }
