@@ -22,7 +22,12 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from '../clients/web/node_modules/playwright/index.mjs';
 import { expect } from '../clients/web/node_modules/@playwright/test/index.mjs';
 import { createServer } from '../clients/web/node_modules/vite/dist/node/index.js';
-import { browserDiagnostics } from './browser-diagnostics.mjs';
+import {
+  closeLibraryResources,
+  diagnosticCategory,
+  libraryDiagnostics,
+  withinLibraryDeadline,
+} from './libraries-diagnostics.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const local = join(root, '.local');
@@ -52,13 +57,20 @@ function gitText(args) {
   return result.stdout.trim();
 }
 const captureRevision = gitText(['rev-parse', 'HEAD']);
-const capturedFiles = gitText([
-  'ls-files',
-  'clients/web/src',
-  'packages/contracts',
-  'packages/design-tokens',
-  'server/src',
-]).split(/\r?\n/);
+const capturedFiles = [
+  ...new Set(
+    gitText([
+      'ls-files',
+      '--cached',
+      '--others',
+      '--exclude-standard',
+      'clients/web/src',
+      'packages/contracts',
+      'packages/design-tokens',
+      'server/src',
+    ]).split(/\r?\n/),
+  ),
+].sort();
 async function sourceSnapshot() {
   return Object.fromEntries(
     await Promise.all(
@@ -89,7 +101,19 @@ const report = {
   checks: [],
   evidence: [],
 };
-let server, vite, beforeVite, browser, context, page, diagnostics;
+let server, vite, beforeVite, browser, context, page;
+let stage = 'setup';
+const asynchronousFailures = [];
+const rejectAsynchronousFailure = (error) => {
+  if (!asynchronousFailures.length)
+    asynchronousFailures.push(diagnosticCategory(error));
+};
+process.on('unhandledRejection', rejectAsynchronousFailure);
+const diagnostics = libraryDiagnostics({
+  directory: join(root, 'ci-artifacts', 'libraries-failure'),
+  revision: captureRevision,
+  secrets: [token],
+});
 let serverLog = '';
 const check = (name) => report.checks.push(name);
 const sleep = (milliseconds) =>
@@ -130,7 +154,10 @@ async function startServer() {
       windowsHide: true,
     },
   );
-  server.stderr.on('data', (bytes) => (serverLog += bytes.toString()));
+  server.stderr.on(
+    'data',
+    (bytes) => (serverLog = (serverLog + bytes.toString()).slice(-16384)),
+  );
   let spawnError;
   server.once('error', (error) => (spawnError = error));
   const deadline = Date.now() + 90000;
@@ -158,7 +185,7 @@ async function stopServer() {
   if (!server || server.exitCode !== null) return;
   const stopped = once(server, 'exit');
   server.kill();
-  await stopped;
+  await withinLibraryDeadline(stopped, 5000);
   server = undefined;
 }
 async function response(path, { admin = false, body, ...options } = {}) {
@@ -244,6 +271,7 @@ function safeChild(parent, child) {
   );
 }
 async function captureBefore() {
+  stage = 'baseline';
   const files = spawnSync(
     'git',
     ['ls-tree', '-r', '--name-only', beforeRevision, 'clients/web', 'packages'],
@@ -290,7 +318,7 @@ async function captureBefore() {
     'Library, Movies and TV shows are fixed labels. This is the actual pinned main UI with generated media.',
   );
   await screenshot('before-fixed-navigation.png');
-  await beforeVite.close();
+  await withinLibraryDeadline(beforeVite.close(), 5000);
   beforeVite = undefined;
   check(
     'Before screenshot uses unmodified tracked main UI at the pinned revision',
@@ -338,6 +366,7 @@ async function closeSettings(settings) {
   await expect(settings).not.toBeVisible();
 }
 async function verifyTopNavigation() {
+  stage = 'browser-navigation';
   const main = page.getByRole('navigation', { name: 'Main navigation' });
   const navigation = page.getByRole('dialog', {
     name: 'Navigation on this browser',
@@ -511,7 +540,258 @@ async function verifyTopNavigation() {
   );
 }
 
+async function verifyUnsupportedContent({ animeId, movieId, progress }) {
+  stage = 'browser-unsupported';
+  const registry = await json('/api/content-registry');
+  assert.deepEqual(registry.contentTypes.map((item) => item.id).sort(), [
+    'movies',
+    'tv',
+  ]);
+  assert.equal(registry.formats.length, 12);
+  const current = await json('/api/admin/libraries', { admin: true });
+  assert.deepEqual(current.registry, registry);
+  const future = await save({
+    ...current,
+    libraries: current.libraries.map((item) =>
+      item.id === 'anime'
+        ? {
+            ...item,
+            contentTypeId: 'future-comics',
+            mediaType: 'future-comics',
+          }
+        : item,
+    ),
+  });
+  await stopServer();
+  await startServer();
+  const restarted = await json('/api/admin/libraries', { admin: true });
+  assert.equal(
+    restarted.libraries.find((item) => item.id === 'anime').contentTypeId,
+    'future-comics',
+  );
+  assert.equal(
+    restarted.libraries.find((item) => item.id === 'anime').visible,
+    true,
+  );
+  assert.equal((await json('/api/catalog?library=anime')).items[0].id, animeId);
+  assert.deepEqual(await json(`/api/media/${animeId}/progress`), progress);
+  assert.equal((await response(`/api/media/${animeId}/stream`)).status, 422);
+  assert.equal((await response(`/api/media/${animeId}/playback`)).status, 422);
+  const requests = [];
+  const observe = (request) => requests.push(new URL(request.url()));
+  page.on('request', observe);
+  const collections = page.getByRole('navigation', { name: 'Collections' });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await page.reload();
+    await page.waitForFunction(
+      (revision) =>
+        JSON.parse(localStorage.getItem('shinema.web.libraries.v1') ?? '{}')
+          .revision === revision,
+      future.revision,
+    );
+    await collections
+      .getByRole('button', { name: 'Animation', exact: true })
+      .click();
+    await expect(
+      page.getByRole('region', { name: 'Unsupported library', exact: true }),
+    ).toBeVisible();
+    await expect(page.locator('#library-search')).toBeDisabled();
+  }
+  assert(
+    !requests.some(
+      (url) =>
+        ['/api/catalog', '/api/series'].includes(url.pathname) &&
+        url.searchParams.get('library') === 'anime',
+    ),
+  );
+  assert(
+    !requests.some((url) =>
+      /\/api\/media\/[^/]+\/(?:stream|playback)(?:\/|$)/.test(url.pathname),
+    ),
+  );
+  page.off('request', observe);
+  check(
+    'Unknown content types persist with membership/progress across restart and reload, remain visible as unsupported, and trigger no client catalog/playback requests; server playback is blocked',
+  );
+  // A future server format advertisement cannot install a client playback
+  // handler. Inject only a generated catalog descriptor into this test page.
+  const restored = await save({ ...future, libraries: current.libraries });
+  let injectionFailed = false;
+  const unknownCatalog = async (route) => {
+    try {
+      const url = new URL(route.request().url());
+      if (
+        url.searchParams.get('library') !== 'movies' &&
+        url.searchParams.get('collection') !== 'movies'
+      )
+        return route.continue();
+      const response = await route.fetch();
+      if (!response.ok()) return route.fulfill({ response });
+      const value = await response.json();
+      value.items = value.items.map((item) =>
+        item.id === movieId
+          ? { ...item, formatId: 'future-video', container: 'future-video' }
+          : item,
+      );
+      await route.fulfill({ response, json: value });
+    } catch {
+      injectionFailed = true;
+      await route.abort().catch(() => {});
+    }
+  };
+  await page.route('**/api/catalog?*', unknownCatalog);
+  requests.length = 0;
+  page.on('request', observe);
+  await page.reload();
+  await page.waitForFunction(
+    (revision) =>
+      JSON.parse(localStorage.getItem('shinema.web.libraries.v1') ?? '{}')
+        .revision === revision,
+    restored.revision,
+  );
+  await collections
+    .getByRole('button', { name: 'Movies', exact: true })
+    .click();
+  const card = page.getByRole('button', {
+    name: 'Open Generated Horizon',
+    exact: true,
+  });
+  await expect(card).toHaveAttribute('aria-disabled', 'true');
+  assert.equal(
+    injectionFailed,
+    false,
+    'Synthetic format response could not be injected',
+  );
+  // Even a synthetic activation must pass the handler guard behind aria-disabled.
+  await card.dispatchEvent('click');
+  await expect(
+    page.getByText('This client has no playback handler for this format.', {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: 'Movies', level: 1, exact: true }),
+  ).toBeVisible();
+  assert(
+    !requests.some((url) =>
+      /\/api\/media\/[^/]+\/(?:stream|playback|progress)(?:\/|$)/.test(
+        url.pathname,
+      ),
+    ),
+  );
+  page.off('request', observe);
+  await page.unroute('**/api/catalog?*', unknownCatalog);
+  assert.deepEqual(await json(`/api/media/${animeId}/progress`), progress);
+  check(
+    'A well-formed unknown format remains in the catalog, renders an unsupported card, and cannot enter details, playback or progress writes',
+  );
+}
+
+async function verifyPlaybackCapabilityRace(movieId) {
+  stage = 'browser-unsupported';
+  await page.reload();
+  await page
+    .getByRole('navigation', { name: 'Collections' })
+    .getByRole('button', { name: 'Movies', exact: true })
+    .click();
+  await page
+    .getByRole('button', { name: 'Open Generated Horizon', exact: true })
+    .click();
+  await expect(
+    page.getByRole('heading', {
+      name: 'Generated Horizon',
+      exact: true,
+      level: 1,
+    }),
+  ).toBeVisible();
+  const descriptor = await json('/api/libraries');
+  const unavailable = {
+    ...descriptor,
+    registry: {
+      ...descriptor.registry,
+      contentTypes: descriptor.registry.contentTypes.map((item) =>
+        item.id === 'movies'
+          ? {
+              ...item,
+              availability: 'unavailable',
+              capabilities: {
+                metadata: false,
+                play: false,
+                view: false,
+                launch: false,
+              },
+              reason: 'Synthetic handler became unavailable.',
+            }
+          : item,
+      ),
+    },
+  };
+  let release;
+  const held = new Promise((done) => (release = done));
+  const progressPath = `/api/media/${movieId}/progress`;
+  const holdProgress = async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    await held;
+    await route
+      .fulfill({ status: 200, contentType: 'application/json', body: 'null' })
+      .catch(() => {});
+  };
+  const replaceLibraries = (route) =>
+    route.fulfill({ status: 200, json: unavailable });
+  const requests = [];
+  const observe = (request) => requests.push(new URL(request.url()));
+  await page.route(`**${progressPath}`, holdProgress);
+  page.on('request', observe);
+  try {
+    const requested = page.waitForRequest(
+      (request) =>
+        new URL(request.url()).pathname === progressPath &&
+        request.method() === 'GET',
+    );
+    await page.getByRole('button', { name: /(?:Play|Resume)$/ }).click();
+    await requested;
+    await page.route('**/api/libraries', replaceLibraries);
+    await page.evaluate(() =>
+      window.dispatchEvent(new Event('shinema:libraries-refresh')),
+    );
+    await expect(
+      page.getByText('Synthetic handler became unavailable.', { exact: true }),
+    ).toBeVisible();
+    const released = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === progressPath,
+    );
+    release();
+    await released;
+    await page.waitForTimeout(150);
+    await expect(
+      page.getByRole('heading', {
+        name: 'Generated Horizon',
+        exact: true,
+        level: 1,
+      }),
+    ).toBeVisible();
+    await expect(page.locator('video')).toHaveCount(0);
+    await expect(
+      page.getByRole('button', { name: /(?:Play|Resume)$/ }),
+    ).toBeDisabled();
+    assert(
+      !requests.some((url) =>
+        /\/api\/media\/[^/]+\/(?:stream|playback)(?:\/|$)/.test(url.pathname),
+      ),
+    );
+  } finally {
+    release();
+    page.off('request', observe);
+    await page.unroute(`**${progressPath}`, holdProgress);
+    await page.unroute('**/api/libraries', replaceLibraries);
+  }
+  check(
+    'A capability change while resume GET is held blocks the delayed transition into a player, video mount and playback requests',
+  );
+}
+
 try {
+  stage = 'migration';
   const paths = [
     'movies/Generated Horizon (2026)/Generated Horizon.mp4',
     'tv/Generated Drama/Season 1/Generated Drama S01E01.mkv',
@@ -541,6 +821,7 @@ try {
     .run(animeId, progress.positionSeconds, progress.durationSeconds);
   legacy.close();
   await startServer();
+  stage = 'api';
   const initial = await json('/api/admin/libraries', { admin: true });
   assert.equal(initial.version, 1);
   assert.equal(initial.revision, 1);
@@ -667,6 +948,7 @@ try {
   });
   assert.deepEqual(await json(`/api/media/${animeId}/progress`), progress);
   await stopServer();
+  stage = 'restart';
   await startServer();
   assert.deepEqual(
     await json('/api/admin/libraries', { admin: true }),
@@ -699,11 +981,11 @@ try {
       ? route.continue()
       : route.abort();
   });
-  diagnostics = browserDiagnostics(browser, evidence);
   diagnostics.observe(context);
   page = await context.newPage();
   page.setDefaultTimeout(10000);
   if (includeBefore) await captureBefore();
+  stage = 'browser-settings';
   await page.goto(vite.resolvedUrls.local[0]);
   await expect(
     page.getByRole('button', { name: 'Open Generated Horizon', exact: true }),
@@ -714,6 +996,26 @@ try {
   );
   let settings = await openSettings();
   await unlock(settings);
+  if (process.env.SHINEMA_LIBRARIES_FORCE_FAILURE === '1') {
+    // Exercise the real failure producer without retaining the deliberately
+    // unsafe error/console text or input values in its published artifact.
+    await page.evaluate(
+      ({ token }) => {
+        const text = document.createElement('p');
+        text.textContent = `Synthetic private markers: /home/generated-fixture/private C:/Users/generated-fixture/private ${token}`;
+        text.style.cssText =
+          'position:fixed;top:8px;left:8px;right:8px;z-index:2147483647;background:#111;color:white;padding:12px';
+        document.body.prepend(text);
+        console.error(
+          `Synthetic diagnostic must omit this raw value: ${token}`,
+        );
+      },
+      { token },
+    );
+    throw new Error(
+      `Forced synthetic failure: /home/generated-fixture/private ${token}`,
+    );
+  }
   await settings
     .getByRole('button', { name: 'Add library', exact: true })
     .click();
@@ -721,7 +1023,7 @@ try {
   await field.getByLabel('Display name', { exact: true }).fill('Anime');
   await field.getByLabel('Stable library ID', { exact: true }).fill('anime');
   await field
-    .getByRole('combobox', { name: /^Media grouping/ })
+    .getByRole('combobox', { name: /^Content type/ })
     .selectOption('tv');
   await field
     .getByLabel('Source folders for Anime', { exact: true })
@@ -788,7 +1090,9 @@ try {
     'Browser library order/hide preferences persist across reload without modifying server defaults',
   );
   await verifyTopNavigation();
+  stage = 'browser-search';
   settings = await openSettings();
+  stage = 'browser-settings';
   await settings
     .getByRole('button', { name: 'Reset browser navigation', exact: true })
     .click();
@@ -843,6 +1147,7 @@ try {
     'Delayed responses from a previous library cannot replace the current library',
   );
   settings = await openSettings();
+  stage = 'browser-concurrency';
   await unlock(settings);
   const animeField = settings.locator('fieldset').filter({
     has: page
@@ -939,8 +1244,16 @@ try {
   check(
     'Operator input is masked and the ephemeral synthetic token is absent from browser storage',
   );
+  await verifyUnsupportedContent({ animeId, movieId, progress });
+  await verifyPlaybackCapabilityRace(movieId);
+  assert.equal(
+    asynchronousFailures.length,
+    0,
+    'An asynchronous browser callback failed',
+  );
   const video = page.video();
-  await context.close();
+  stage = 'finalize';
+  await withinLibraryDeadline(context.close(), 5000);
   context = undefined;
   const videoPath = await video.path();
   const recording = join(evidence, 'configurable-libraries.webm');
@@ -989,28 +1302,72 @@ try {
     'Capture head and rendered/server source hashes remain unchanged throughout the run',
   );
   report.status = 'passed';
-  console.log(
-    `Configurable libraries smoke passed (${report.checks.length} checks). Evidence: ${evidence}`,
-  );
 } catch (error) {
   report.status = 'failed';
-  report.error = error.stack ?? String(error);
-  if (diagnostics) await diagnostics.save(error, serverLog);
-  throw error;
+  report.failure = { stage, category: diagnosticCategory(error) };
+  try {
+    await diagnostics.save({
+      page,
+      error,
+      stage,
+      completedChecks: report.checks.length,
+    });
+    report.failure.diagnostics = 'sanitized';
+  } catch {
+    report.failure.diagnostics = 'unavailable';
+  }
+  console.error(
+    `Configurable libraries smoke failed: stage=${stage} category=${report.failure.category}; sanitized diagnostics=${report.failure.diagnostics}.`,
+  );
+  process.exitCode = 1;
 } finally {
-  if (context) await context.close();
-  if (browser) await browser.close();
-  if (beforeVite) await beforeVite.close();
-  if (vite) await vite.close();
-  await stopServer();
+  const failedClosures = await closeLibraryResources({
+    context,
+    browser,
+    beforeVite,
+    vite,
+    stopServer,
+  });
+  if (failedClosures.length) {
+    report.status = 'failed';
+    report.teardownFailures = failedClosures;
+    process.exitCode = 1;
+    if (!report.failure) {
+      report.failure = { stage: 'finalize', category: 'runner' };
+      try {
+        await diagnostics.save({
+          error: new Error('Owned resource cleanup failed'),
+          stage: 'finalize',
+          completedChecks: report.checks.length,
+        });
+        report.failure.diagnostics = 'sanitized';
+      } catch {
+        report.failure.diagnostics = 'unavailable';
+      }
+    }
+  }
   await writeFile(
     join(evidence, 'assertions.json'),
     JSON.stringify(report, null, 2),
   );
-  safeChild(local, run);
-  assert(run.startsWith(join(local, 'libraries-smoke-')));
-  await rm(run, { recursive: true, force: true });
-  safeChild(baselineScratch, beforeRoot);
-  assert(beforeRoot.startsWith(join(baselineScratch, 'libraries-baseline-')));
-  await rm(beforeRoot, { recursive: true, force: true });
+  if (!failedClosures.length) {
+    safeChild(local, run);
+    assert(run.startsWith(join(local, 'libraries-smoke-')));
+    await rm(run, { recursive: true, force: true });
+    safeChild(baselineScratch, beforeRoot);
+    assert(beforeRoot.startsWith(join(baselineScratch, 'libraries-baseline-')));
+    await rm(beforeRoot, { recursive: true, force: true });
+  } else {
+    // Preserve owned scratch paths when a resource may still reference them.
+    // The explicit exit closes this runner's child transports after evidence is saved.
+    console.error(
+      'Generated runner teardown failed; sanitized evidence and assertions were saved.',
+    );
+    process.exit(1);
+  }
+  process.off('unhandledRejection', rejectAsynchronousFailure);
 }
+if (report.status === 'passed')
+  console.log(
+    `Configurable libraries smoke passed (${report.checks.length} checks). Evidence: ${evidence}`,
+  );
