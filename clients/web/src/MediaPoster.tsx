@@ -45,7 +45,19 @@ export function MediaPoster({
         />
       ) : (
         <div className="poster-unavailable">
-          <span aria-hidden="true">▱</span>
+          <span className="poster-placeholder-icon" aria-hidden="true">
+            <svg
+              viewBox="0 0 48 48"
+              width="40"
+              height="40"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              focusable="false"
+            >
+              <path d="M14 14h27l-7 20H7Z" />
+            </svg>
+          </span>
           <span>{loading ? '\u00a0' : title}</span>
         </div>
       )}

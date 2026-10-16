@@ -2,6 +2,7 @@ import {
   parseCatalog,
   serverOrigin,
   validLibraryId,
+  validContentTypeId,
 } from '../../../packages/contracts/index.ts';
 import type {
   Catalog,
@@ -16,7 +17,8 @@ export type FeedScope = {
   /** Null is an explicitly legacy, unconfigured server scope. */
   libraryId: string | null;
   revision?: number;
-  collection: 'all' | 'movies' | 'tv';
+  /** Open registry identity; 'all' is the existing omitted-filter transport alias. */
+  collection: string;
   search?: string;
   series?: string;
   season?: number;
@@ -39,7 +41,7 @@ export function normalizeFeedScope(value: FeedScope): FeedScope {
     (value.libraryId === null
       ? value.revision !== undefined
       : !Number.isSafeInteger(value.revision) || Number(value.revision) < 0) ||
-    !['all', 'movies', 'tv'].includes(value.collection) ||
+    (value.collection !== 'all' && !validContentTypeId(value.collection)) ||
     (value.search !== undefined &&
       (typeof value.search !== 'string' ||
         Array.from(value.search).length > 200)) ||
@@ -86,8 +88,8 @@ export function parseFeedCatalog(value: unknown, scope: FeedScope): Catalog {
       (item) =>
         (safe.libraryId !== null && item.libraryId !== safe.libraryId) ||
         (safe.collection !== 'all' &&
-          item.collection !== undefined &&
-          item.collection !== safe.collection) ||
+          (item.contentTypeId ?? item.collection) !== undefined &&
+          (item.contentTypeId ?? item.collection) !== safe.collection) ||
         (safe.series !== undefined && item.seriesId !== safe.series) ||
         (safe.season !== undefined && item.season !== safe.season),
     )

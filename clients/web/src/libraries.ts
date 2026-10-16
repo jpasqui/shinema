@@ -1,16 +1,25 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   defaultLibraries,
+  contentTypeForLibrary,
   emptyNavigationPreferences,
   parseLibraries,
   parseNavigationPreferences,
 } from '../../../packages/contracts/index.ts';
 import type {
   Libraries,
+  LibraryDescriptor,
   NavigationPreferences,
 } from '../../../packages/contracts/index.ts';
 const descriptorKey = 'shinema.web.libraries.v1';
 const preferencesKey = 'shinema.web.navigation.v1';
+/** Existing video browse adapter; content type identity is kept in descriptors. */
+export function libraryBrowseCollection(
+  library: LibraryDescriptor,
+): 'movies' | 'tv' | 'all' {
+  const id = contentTypeForLibrary(library);
+  return id === 'movies' || id === 'tv' ? id : 'all';
+}
 function readLibraries(): Libraries {
   try {
     return parseLibraries(

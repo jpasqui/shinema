@@ -93,6 +93,7 @@ impl SshConfig {
     }
     fn command(&self, mut payload: serde_json::Value) -> io::Result<Child> {
         payload["roots"] = serde_json::to_value(&self.roots)?;
+        payload["extensions"] = serde_json::to_value(crate::content_registry::scan_extensions())?;
         let source = include_str!("remote_reader.py");
         let program = "python3";
         let remote = format!(

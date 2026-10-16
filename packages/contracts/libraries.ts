@@ -1,9 +1,18 @@
-/** Library identity is independent of its label, media grouping and navigation. */
-export type MediaType = 'movies' | 'tv' | 'mixed';
+import {
+  builtinContentRegistry,
+  parseContentRegistry,
+  validContentId,
+  validContentTypeId,
+} from './content.ts';
+import type { ContentRegistry } from './content.ts';
+/** @deprecated Use the open contentTypeId registry identity. */
+export type MediaType = string;
 export type LibraryDescriptor = {
   id: string;
   name: string;
   mediaType: MediaType;
+  /** Null means unrestricted registered video inventory; independent of the label. */
+  contentTypeId?: string | null;
   visible: boolean;
   order: number;
 };
@@ -11,6 +20,7 @@ export type Libraries = {
   version: 1;
   revision: number;
   libraries: LibraryDescriptor[];
+  registry?: ContentRegistry;
 };
 export type LibraryConfiguration = LibraryDescriptor & {
   sourceFolders: string[];
@@ -22,7 +32,7 @@ export type LibraryConfigurationDocument = Omit<Libraries, 'libraries'> & {
 export const validLibraryId = (value: unknown): value is string =>
   typeof value === 'string' && /^[a-z][a-z0-9-]{0,47}$/.test(value);
 const record = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
+  typeof value === 'object' && value !== null && !Array.isArray(value);
 export function parseLibraries(value: unknown): Libraries {
   if (
     !record(value) ||
@@ -46,24 +56,46 @@ export function parseLibraries(value: unknown): Libraries {
       Array.from(item.name).length > 80 ||
       /[\p{Cc}\p{Cf}]/u.test(item.name) ||
       names.has(item.name.toLowerCase()) ||
-      !['movies', 'tv', 'mixed'].includes(String(item.mediaType)) ||
+      (item.mediaType !== undefined && !validContentId(item.mediaType)) ||
+      (item.contentTypeId !== undefined &&
+        item.contentTypeId !== null &&
+        !validContentTypeId(item.contentTypeId)) ||
+      (item.mediaType === undefined && item.contentTypeId === undefined) ||
       typeof item.visible !== 'boolean' ||
       !Number.isSafeInteger(item.order) ||
       Number(item.order) < 0 ||
       Number(item.order) > 10000
     )
       throw new Error('Invalid library descriptor');
+    const contentTypeId =
+      item.contentTypeId !== undefined
+        ? item.contentTypeId
+        : item.mediaType === 'mixed'
+          ? null
+          : (item.mediaType as string);
+    const mediaType = contentTypeId ?? 'mixed';
+    if (item.mediaType !== undefined && item.mediaType !== mediaType)
+      throw new Error('Conflicting library content type aliases');
     ids.add(item.id);
     names.add(item.name.toLowerCase());
     return {
       id: item.id,
       name: item.name,
-      mediaType: item.mediaType as MediaType,
+      mediaType,
+      contentTypeId,
       visible: item.visible,
       order: Number(item.order),
     };
   });
-  return { version: 1, revision: Number(value.revision), libraries };
+  return {
+    version: 1,
+    revision: Number(value.revision),
+    libraries,
+    registry:
+      value.registry === undefined
+        ? builtinContentRegistry()
+        : parseContentRegistry(value.registry),
+  };
 }
 function folder(value: unknown): value is string {
   return (
@@ -110,19 +142,29 @@ export function parseLibraryConfiguration(
 export const defaultLibraries = (): Libraries => ({
   version: 1,
   revision: 0,
+  registry: builtinContentRegistry(),
   libraries: [
     {
       id: 'movies',
       name: 'Movies',
       mediaType: 'movies',
+      contentTypeId: 'movies',
       visible: true,
       order: 0,
     },
-    { id: 'tv', name: 'TV shows', mediaType: 'tv', visible: true, order: 1 },
+    {
+      id: 'tv',
+      name: 'TV shows',
+      mediaType: 'tv',
+      contentTypeId: 'tv',
+      visible: true,
+      order: 1,
+    },
     {
       id: 'other',
       name: 'Other videos',
       mediaType: 'mixed',
+      contentTypeId: null,
       visible: false,
       order: 2,
     },

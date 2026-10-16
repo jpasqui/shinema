@@ -35,3 +35,5 @@ A short server batch cannot strand the current viewport: one replaceable demand 
 A delayed tail request may move keyboard focus only while its original card and navigation intent remain current. New arrow input, Search, Settings or another control cancels that pending focus move.
 
 Native startup recovers saved catalogue, progress and pending updates independently of startup navigation. Explicit connections and cache writes await that recovery, so early input or exit cannot replace unread durable state with a fresh cache. A failed read blocks writes until a successful retry; a different server never borrows another server's pending progress.
+
+Content support comes from the canonical registry and installed client adapters. Unknown library/type/format IDs retain their identity and cached records; an unavailable library shows an explanation before any scoped browse request, and an unavailable item cannot start resume or playback work. Display labels remain independent of those IDs. See [the server/client architecture](server-client-architecture.md) for the registry contract and intentionally deferred handlers.

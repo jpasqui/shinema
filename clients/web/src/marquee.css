@@ -1325,9 +1325,14 @@ html[data-motion='reduced'] .media-card .poster {
 }
 .poster-unavailable > span:first-child {
   display: grid;
-  align-items: center;
+  place-items: center;
   block-size: 60px;
-  line-height: 60px;
+  line-height: 0;
+}
+.poster-placeholder-icon svg {
+  display: block;
+  inline-size: 40px;
+  block-size: 40px;
 }
 .feature-skeleton-line {
   display: block;
@@ -1365,7 +1370,13 @@ html[data-motion='reduced'] .media-card .poster {
   inset: auto 0 0;
   margin: 0;
 }
+.page-title,
+.full-library .page-title {
+  align-items: center;
+}
 .page-title h1 {
+  display: grid;
+  align-items: center;
   inline-size: 100%;
   min-inline-size: 0;
   line-height: 1.2;
@@ -1496,12 +1507,16 @@ html[data-motion='reduced'] .media-card .poster {
   overflow: hidden;
 }
 .metadata {
+  display: grid;
+  grid-template-columns: 4em minmax(0, 1fr);
+  grid-auto-rows: 1.7em;
+  align-content: center;
   block-size: 3.4em;
   line-height: 1.7;
   overflow: hidden;
-  align-content: start;
 }
 .metadata > span {
+  min-inline-size: 0;
   max-inline-size: 100%;
   white-space: nowrap;
   overflow: hidden;
@@ -1589,6 +1604,12 @@ html[data-motion='reduced'] .media-card .poster {
 .header:has(.top-navigation) > .appearance-button {
   grid-column: 4;
   grid-row: 1;
+}
+@media (max-width: 900px) {
+  .page-title,
+  .full-library .page-title {
+    align-items: start;
+  }
 }
 @media (max-width: 1000px) {
   .header:has(.top-navigation) {

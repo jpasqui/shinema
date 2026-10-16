@@ -16,6 +16,11 @@ import type {
   Progress,
 } from '../../../packages/contracts/index.ts';
 import type { useLibraries } from './libraries.ts';
+import { libraryBrowseCollection } from './libraries.ts';
+import {
+  libraryContentSupport,
+  mediaContentSupport,
+} from '../../../packages/contracts/index.ts';
 import { LibrarySettings } from './LibrarySettings.tsx';
 import { MediaPoster } from './MediaPoster.tsx';
 import { LibraryFeature } from './skins.tsx';
@@ -199,13 +204,14 @@ export function LibraryBrowser({
     libraryNavigation.legacy ||
     libraryNavigation.document.revision > 0 ||
     libraryNavigation.status === '';
-  const { navigation, library, visible, changed, enabled } = resolveBrowse(
-    requestedNavigation,
-    libraryNavigation.document,
-    libraryNavigation.preferences,
-    libraryNavigation.legacy,
-    ready,
-  );
+  const { navigation, library, visible, changed, enabled, support } =
+    resolveBrowse(
+      requestedNavigation,
+      libraryNavigation.document,
+      libraryNavigation.preferences,
+      libraryNavigation.legacy,
+      ready,
+    );
   const identity = browseIdentity(navigation);
   const session = useMemo(
     () => (enabled ? sessionFor(navigation) : idleSession),
@@ -222,6 +228,7 @@ export function LibraryBrowser({
   const [search, setSearch] = useState(navigation.search);
   const [refresh, setRefresh] = useState(0);
   const [settings, setSettings] = useState(false);
+  const [unsupportedItem, setUnsupportedItem] = useState('');
   const summary = useResource<LibrarySummary>('/api/library', refresh);
   const seasons = useResource<Seasons>(
     enabled && navigation.series
@@ -261,7 +268,9 @@ export function LibraryBrowser({
   const first = enabled ? feed.itemAt(0) : undefined;
   const slots =
     state.loadedEnd ||
-    (state.total === 0 || (ready && !library) ? 0 : INITIAL_SLOTS);
+    (state.total === 0 || (ready && (!library || !support.supported))
+      ? 0
+      : INITIAL_SLOTS);
   const loading = enabled
     ? state.loading || (state.total === null && !state.error)
     : !ready;
@@ -289,9 +298,10 @@ export function LibraryBrowser({
   useEffect(() => {
     setSearch(navigation.search);
   }, [navigation.search]);
+  useEffect(() => setUnsupportedItem(''), [identity]);
   useEffect(() => {
-    if (enabled && changed) setNavigation(navigation);
-  }, [enabled, changed, identity, requestedNavigation, setNavigation]);
+    if (ready && library && changed) setNavigation(navigation);
+  }, [ready, library, changed, identity, requestedNavigation, setNavigation]);
   useEffect(() => {
     const open = () => {
       cancelPendingFocus();
@@ -475,6 +485,7 @@ export function LibraryBrowser({
 
   const replace = (value: Partial<BrowseNavigation>) => {
     cancelPendingFocus();
+    setUnsupportedItem('');
     setNavigation({
       ...navigation,
       ...value,
@@ -487,6 +498,18 @@ export function LibraryBrowser({
     window.scrollTo(0, 0);
   };
   const open = (item: FeedItem, index: number) => {
+    const itemSupport = shows
+      ? support
+      : mediaContentSupport(item as Media, libraryNavigation.document.registry);
+    if (!support.supported || !itemSupport.supported) {
+      setUnsupportedItem(
+        itemSupport.reason ??
+          support.reason ??
+          'This content or format is unavailable.',
+      );
+      return;
+    }
+    setUnsupportedItem('');
     if (shows)
       replace({
         series: item as SeriesPage['items'][number],
@@ -579,11 +602,12 @@ export function LibraryBrowser({
       key: rowCursor,
     });
   const notice =
-    state.error ??
-    (libraryNavigation.status ||
-      (storageUnavailable
-        ? 'Browser storage is unavailable. Browsing remains available for this session.'
-        : ''));
+    unsupportedItem ||
+    state.error ||
+    libraryNavigation.status ||
+    (storageUnavailable
+      ? 'Browser storage is unavailable. Browsing remains available for this session.'
+      : '');
 
   return (
     <div className="library-shell" onFocusCapture={cancelPendingFocus}>
@@ -606,10 +630,12 @@ export function LibraryBrowser({
                   revision: libraryNavigation.legacy
                     ? undefined
                     : libraryNavigation.document.revision,
-                  collection:
-                    descriptor.mediaType === 'mixed'
-                      ? 'all'
-                      : descriptor.mediaType,
+                  collection: libraryContentSupport(
+                    descriptor,
+                    libraryNavigation.document.registry,
+                  ).supported
+                    ? libraryBrowseCollection(descriptor)
+                    : descriptor.mediaType,
                   series: null,
                   season: null,
                   search: '',
@@ -667,6 +693,7 @@ export function LibraryBrowser({
           <form
             onSubmit={(event) => {
               event.preventDefault();
+              if (!enabled) return;
               replace({ search });
             }}
           >
@@ -675,6 +702,7 @@ export function LibraryBrowser({
             </label>
             <input
               id="library-search"
+              disabled={!support.supported}
               onFocus={() => {
                 cancelPendingFocus();
               }}
@@ -683,7 +711,11 @@ export function LibraryBrowser({
               maxLength={200}
               placeholder={shows ? 'Search series' : 'Search titles'}
             />
-            <button className="text-button" type="submit">
+            <button
+              className="text-button"
+              type="submit"
+              disabled={!support.supported}
+            >
               Search
             </button>
           </form>
@@ -707,7 +739,7 @@ export function LibraryBrowser({
             Refresh
           </button>
         </div>
-        {navigation.series && (
+        {enabled && navigation.series && (
           <div className="season-toolbar">
             <button
               className="back-button"
@@ -757,11 +789,17 @@ export function LibraryBrowser({
                   ? 'Browsing interrupted'
                   : !library
                     ? 'No visible libraries'
-                    : 'Connected'}
+                    : !support.supported
+                      ? 'Unavailable'
+                      : 'Connected'}
             </span>
           </div>
           <div className="browse-notice-slot" aria-live="polite">
-            {notice && <p className="notice">{notice}</p>}
+            {notice && (
+              <p className="notice" role="status">
+                {notice}
+              </p>
+            )}
           </div>
           <div
             ref={grid}
@@ -806,6 +844,12 @@ export function LibraryBrowser({
               const item = row as Media;
               const series = row as SeriesPage['items'][number];
               const saved = progress[row.id];
+              const itemSupport = shows
+                ? { supported: true, reason: undefined }
+                : mediaContentSupport(
+                    item,
+                    libraryNavigation.document.registry,
+                  );
               return (
                 <button
                   key={row.id}
@@ -824,26 +868,43 @@ export function LibraryBrowser({
                   }}
                   onKeyDown={(event) => key(event, index)}
                   aria-label={`Open ${row.title}`}
+                  aria-disabled={!itemSupport.supported}
                   onClick={() => open(row, index)}
                 >
                   <MediaPoster source={row.posterPath} title={row.title} />
                   <div className="card-copy">
                     <h3>{row.title}</h3>
                     <span>
-                      {shows
-                        ? `${series.episodes} episodes · ${series.seasons} seasons`
-                        : saved
-                          ? `Resume at ${clock(saved.positionSeconds)}`
-                          : item.collection === 'tv'
-                            ? `${item.season === undefined ? 'Season unknown' : `S${String(item.season).padStart(2, '0')}`} ${item.episode === undefined ? '' : `E${String(item.episode).padStart(2, '0')}`} · ${item.container.toUpperCase()}`
-                            : item.year
-                              ? String(item.year)
-                              : item.container.toUpperCase()}
+                      {!itemSupport.supported
+                        ? 'Unsupported content or format'
+                        : shows
+                          ? `${series.episodes} episodes · ${series.seasons} seasons`
+                          : saved
+                            ? `Resume at ${clock(saved.positionSeconds)}`
+                            : item.collection === 'tv'
+                              ? `${item.season === undefined ? 'Season unknown' : `S${String(item.season).padStart(2, '0')}`} ${item.episode === undefined ? '' : `E${String(item.episode).padStart(2, '0')}`} · ${item.container.toUpperCase()}`
+                              : item.year
+                                ? String(item.year)
+                                : item.container.toUpperCase()}
                     </span>
                   </div>
                 </button>
               );
             })}
+            {ready && library && !support.supported && (
+              <section
+                className="empty-state"
+                aria-label="Unsupported library"
+                style={{ gridColumn: '1 / -1' }}
+              >
+                <h2>This content type is unavailable</h2>
+                <p>{support.reason}</p>
+                <p>
+                  This library and its saved progress are retained. A compatible
+                  server handler and client renderer are required to use it.
+                </p>
+              </section>
+            )}
             {ready && !library && (
               <p className="empty-state" style={{ gridColumn: '1 / -1' }}>
                 No libraries are visible. Open Library settings to change this
@@ -866,7 +927,9 @@ export function LibraryBrowser({
             <span role="status">
               {!enabled
                 ? ready
-                  ? 'Choose a visible library.'
+                  ? library && !support.supported
+                    ? 'This content type is unavailable.'
+                    : 'Choose a visible library.'
                   : 'Loading libraries.'
                 : state.loading
                   ? 'Loading more titles.'

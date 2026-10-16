@@ -3,8 +3,10 @@ import {
   parseSeasons,
   parseSeriesPage,
   parseSummary,
+  libraryContentSupport,
   visibleLibraries,
 } from '../../../packages/contracts/index.ts';
+import { libraryBrowseCollection } from './libraries.ts';
 import type {
   Catalog,
   LibrarySummary,
@@ -17,7 +19,9 @@ import type {
 export type BrowseNavigation = {
   libraryId?: string;
   revision?: number;
-  collection: 'movies' | 'tv' | 'all';
+  // Unsupported content identities remain representable in navigation. The
+  // installed adapter validates its transport scope before making any request.
+  collection: string;
   series: Series | null;
   season: number | null;
   offset: number;
@@ -84,6 +88,8 @@ export function rememberPage(
   return Object.fromEntries(Object.entries(next).slice(-12));
 }
 export function browsePath(nav: BrowseNavigation): string {
+  if (!['movies', 'tv', 'all'].includes(nav.collection))
+    throw new Error('No installed browse adapter for this content type');
   const query = new URLSearchParams({
     offset: String(nav.offset),
     limit: '60',
@@ -127,9 +133,12 @@ export function resolveBrowse(
     visible[0];
   const libraryId = legacy ? undefined : library?.id;
   const revision = legacy ? undefined : document.revision;
+  const support = library
+    ? libraryContentSupport(library, document.registry)
+    : { supported: false, reason: '' };
   const collection = library
-    ? library.mediaType === 'mixed'
-      ? 'all'
+    ? support.supported
+      ? libraryBrowseCollection(library)
       : library.mediaType
     : requested.collection;
   const changed =
@@ -152,5 +161,12 @@ export function resolveBrowse(
         }
       : {}),
   };
-  return { navigation, library, visible, changed, enabled: ready && !!library };
+  return {
+    navigation,
+    library,
+    visible,
+    changed,
+    support,
+    enabled: ready && !!library && support.supported,
+  };
 }

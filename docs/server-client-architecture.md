@@ -10,6 +10,8 @@ The server owns shared library and domain state. Each client owns its rendering 
 
 Server library names, source membership and default ordering are shared configuration. Personal navigation, pins and appearance are separate preferences; hiding a shortcut is not a permission change. The future account model must keep owner administration and user permissions distinct.
 
+Content types and formats must be extensible independently of library display configuration. Movies and TV are initial handlers. Music, audiobooks, games and documents, including Word documents, are future examples; none of those additional handlers is implemented by this change.
+
 A server theme is a default. Users can select **Follow server** or choose a personal skin and settings, with an optional per-device override. Follow server tracks the server's current default; an explicit personal choice remains the user's choice when that default changes. Accessibility preferences, including reduced motion and text size, always take precedence.
 
 An owner-enabled, promoted feature remains discoverable on an authorized user's client even when that client's feature module is absent. The client explains what is available and what prevents use, rather than silently removing the feature. This future capability discovery contract is separate from today's allowlisted navigation destinations and missing-library shortcut behavior.
@@ -32,6 +34,18 @@ There are useful precedents, without adopting their protocols wholesale. Stremio
 Nextcloud exposes server/app capabilities and theming values through its capabilities API so clients can adapt to a server instance. This is a precedent for discoverable capabilities and server appearance defaults, not a chosen Shinema manifest schema. [Nextcloud capabilities and theming API](https://docs.nextcloud.com/server/latest/developer_manual/client_apis/OCS/ocs-api-overview.html#capabilities-api)
 
 Jellyfin's 10.10 release separated server storage of media segments from client skip controls: that release supported them in the web interface while other client support was pending. This historical example shows why server capability and client support need separate states. [Jellyfin 10.10 media segments](https://jellyfin.org/posts/jellyfin-release-10.10.0/)
+
+### Content types, formats and actions
+
+The initial content registry is a versioned, data-only manifest at `packages/contracts/content-registry.json`, exposed through `GET /api/content-registry` and included as an additive `registry` snapshot in library responses/caches. It describes content types and formats separately: type descriptors have stable open IDs, names, availability, optional reasons and `metadata`/`play`/`view`/`launch` capabilities; format descriptors additionally identify extensions and MIME types. [The API guide](api.md#content-registry) records the wire contract.
+
+A library's canonical `contentTypeId` is an open string or `null`; `null` means unrestricted policy over the currently registered video inventory. The legacy `mediaType` field is a derived compatibility alias. Neither a library label nor an unrestricted policy registers new file formats, changes approved roots or supplies a renderer.
+
+Usable actions require the relevant server descriptor to be available, its action capability to be implemented, and a compatible client renderer/action handler. Capability flags describe implemented pipeline actions, not a guarantee that a particular file's codec decodes. Keep this intersection distinct from the broader future permission, health and promotion model below.
+
+Current format identification retains the existing extension-based scan and uses the registered MIME declaration; it does not add content sniffing or infer a new handler from a MIME string. The existing video probe/decoder still decides whether a particular asset can play. The current catalog/stream envelope remains the video adapter's compatibility contract; future view or launch actions need their own reviewed resource/action contract rather than an invented video stream.
+
+Unknown type IDs remain in configuration and retain membership and progress through restart, with explicit unsupported presentation rather than coercion to Movies or TV. Contracts can carry unknown format descriptors, but indexing and playback require a registered adapter. A future adapter must define recognition, safe MIME/extension handling and supported actions within existing source and execution boundaries. No new format handler, plugin runtime, arbitrary code loading, unsafe launch action or filesystem authority is introduced here; every current `launch` capability is false.
 
 ### Feature states and discoverability
 
@@ -72,14 +86,16 @@ Apple's current review guidelines restrict downloaded code that changes function
 ## Current implementation
 
 - The Rust server persists library descriptors and membership in SQLite separately from source-relative media IDs and progress. Protected library management uses a temporary development operator mechanism behind `ManagementAccess::can_manage_libraries`.
-- Web supports local library visibility/order preferences and declarative top-navigation entries with fixed Settings/reset access. Native consumes server library labels, order and visibility and retains local selection; it has the documented first-500-items limitation.
+- The shared content registry advertises only the initial Movies/TV handlers and existing generic video inventory, using the same twelve video extensions. Unknown IDs are retained with explicit unsupported UI; clients block unsupported details/play, and the server rejects unsupported stream/HLS/playback requests before probing or reading source media.
+- Web supports local library visibility/order preferences and declarative top-navigation entries with fixed Settings/reset access. Native consumes server library labels, order and visibility and retains local selection. Both clients browse bounded batches without visible page controls: native uses 48-record requests, five retained batches and a small mounted row window. See [loading and browsing](loading-and-browsing.md) for request, cache, focus and renderer limits.
+- Marquee and Archive are preinstalled authored skins with validated per-client appearance and motion preferences. Their layout components remain trusted application code; appearance data cannot load a renderer or executable extension.
 - The current navigation destination allowlist is browse, library, search and settings. It is not a feature-capability registry, plugin manifest or dynamic module loader.
-- Accounts, owner/login permissions, server theme inheritance, synchronized appearance overrides, the feature states above and native Radarr/Sonarr replacement are not implemented by this change. See [the library guide](libraries.md) for exact current behavior and limits.
+- Accounts, owner/login permissions, server theme inheritance, synchronized appearance overrides, the broader feature-state model above and native Radarr/Sonarr replacement are not implemented by this change. See [the library guide](libraries.md) for exact current behavior and limits.
 
 ## Open decisions
 
 - Account identity, ownership, permission scopes and capability visibility policy.
-- The exact capability/manifest schema, version negotiation and renderer compatibility rules.
+- A broader feature/extension manifest beyond the initial content registry, version negotiation and renderer compatibility rules.
 - Where personal/per-device overrides live, how they synchronize and how offline conflicts resolve.
 - Supported installation/update paths, web fallback policy and the executable extension trust/distribution model.
 - Requests backend contracts, replacement scope and operational lifecycle.

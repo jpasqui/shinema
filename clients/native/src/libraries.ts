@@ -1,12 +1,19 @@
 import {
   parseCatalog,
   parseLibraries,
+  contentTypeForLibrary,
+  libraryContentSupport,
+  mediaContentSupport,
 } from '../../../packages/contracts/index.ts';
 import type {
   Catalog,
   Libraries,
   LibraryDescriptor,
+  ContentRegistry,
+  Media,
 } from '../../../packages/contracts/index.ts';
+import { normalizeFeedScope } from './feed.ts';
+import type { FeedScope } from './feed.ts';
 
 /** Navigation is a device preference; descriptors are an origin-bound server snapshot. */
 export type LibraryNavigation = {
@@ -14,6 +21,80 @@ export type LibraryNavigation = {
   selectedLibraryId: string | null;
 };
 export type LibrarySnapshot = LibraryNavigation & { catalog: Catalog };
+export type NativeContentSupport = { supported: boolean; reason?: string };
+
+// A server registry describes availability. It cannot install a client renderer.
+const nativeRenderers = new Set(['movies', 'tv']);
+export function nativeLibraryContentSupport(
+  library: LibraryDescriptor,
+  registry?: ContentRegistry,
+): NativeContentSupport {
+  const type = contentTypeForLibrary(library);
+  if (type !== null && !nativeRenderers.has(type))
+    return {
+      supported: false,
+      reason: 'This content type is not supported on this device.',
+    };
+  return libraryContentSupport(library, registry);
+}
+export function navigationContentSupport(
+  navigation: LibraryNavigation,
+): NativeContentSupport {
+  if (!navigation.libraries || navigation.selectedLibraryId === null)
+    return { supported: true };
+  const library = navigation.libraries.libraries.find(
+    (item) => item.id === navigation.selectedLibraryId,
+  );
+  return library
+    ? nativeLibraryContentSupport(library, navigation.libraries.registry)
+    : { supported: false, reason: 'This library is unavailable.' };
+}
+export function nativeMediaContentSupport(
+  media: Media,
+  navigation: LibraryNavigation,
+): NativeContentSupport {
+  const library = navigationContentSupport(navigation);
+  return library.supported
+    ? mediaContentSupport(media, navigation.libraries?.registry)
+    : library;
+}
+
+/** Unsupported registry identities never become a generic video query. */
+export function nativeFeedScope(
+  value: LibraryNavigation & { origin: string },
+): FeedScope | null {
+  if (!navigationContentSupport(value).supported) return null;
+  const library = value.libraries?.libraries.find(
+    (item) => item.id === value.selectedLibraryId && item.visible,
+  );
+  if (value.libraries && value.selectedLibraryId !== null && !library)
+    return null;
+  return normalizeFeedScope({
+    origin: value.origin,
+    libraryId: library?.id ?? null,
+    ...(library && value.libraries
+      ? { revision: value.libraries.revision }
+      : {}),
+    collection: library ? (contentTypeForLibrary(library) ?? 'all') : 'all',
+  });
+}
+
+/** Keep a same-scope saved inventory when its handler is temporarily unavailable. */
+export function snapshotCatalogForActivation(
+  current: LibraryNavigation & { origin: string; catalog: Catalog | null },
+  origin: string,
+  snapshot: LibrarySnapshot,
+): Catalog {
+  if (
+    !navigationContentSupport(snapshot).supported &&
+    origin === current.origin &&
+    snapshot.selectedLibraryId !== null &&
+    snapshot.selectedLibraryId === current.selectedLibraryId &&
+    current.catalog
+  )
+    return scopedCatalog(current.catalog, snapshot.selectedLibraryId);
+  return snapshot.catalog;
+}
 
 export class HttpStatusError extends Error {
   status: number;
@@ -92,8 +173,9 @@ export async function loadLibrarySnapshot(
   if (previous && libraries.revision < previous.revision)
     throw new Error('Stale library configuration');
   const selectedLibraryId = selectedLibrary(libraries, preferred);
+  const support = navigationContentSupport({ libraries, selectedLibraryId });
   const catalog =
-    selectedLibraryId === null
+    selectedLibraryId === null || !support.supported
       ? { apiVersion: 1 as const, items: [] }
       : firstCatalog(
           await request(

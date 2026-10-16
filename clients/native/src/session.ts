@@ -1,8 +1,9 @@
 import {parseCatalog, parseProgress} from '../../../packages/contracts/index.ts';
-import type {Catalog, Progress} from '../../../packages/contracts/index.ts';
+import type {Catalog, Media, Progress} from '../../../packages/contracts/index.ts';
 import {fresh} from './domain.ts';
 import type {Stored} from './domain.ts';
 import type {LibraryNavigation} from './libraries.ts';
+import {nativeMediaContentSupport} from './libraries.ts';
 
 export type ConnectionStamp = {origin: string; generation: number};
 export type PlaybackTicket = ConnectionStamp & {playback: number};
@@ -181,6 +182,22 @@ export async function resolveResume(
     return {progress: current.progress[id] ?? initial, local: true};
   if (local) progress = current.progress[id] ?? initial;
   return {progress, local};
+}
+
+/** Unsupported content never reaches progress loading or the native player. */
+export async function resolvePlayableResume(
+  guard:SessionGuard,
+  ticket:PlaybackTicket,
+  media:Media,
+  read:()=>Stored,
+  load:(origin:string,id:string)=>Promise<unknown>,
+):Promise<{supported:false;reason?:string}|{supported:true;progress:Progress|null;local:boolean}|null>{
+  const support=nativeMediaContentSupport(media,read());
+  if(!support.supported)return {supported:false,reason:support.reason};
+  const result=await resolveResume(guard,ticket,media.id,read,load);
+  if(!result)return null;
+  const currentSupport=nativeMediaContentSupport(media,read());
+  return currentSupport.supported?{supported:true,...result}:{supported:false,reason:currentSupport.reason};
 }
 
 export function backDestination(route: string, hasCatalog: boolean): 'detail' | 'library' | 'exit' {

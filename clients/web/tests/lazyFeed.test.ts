@@ -15,11 +15,15 @@ import {
   initialBrowse,
   pageParser,
   recoverPages,
+  rememberPage,
   resolveBrowse,
 } from '../src/browse.ts';
 import {
   defaultLibraries,
   emptyNavigationPreferences,
+  builtinContentRegistry,
+  mediaContentSupport,
+  parseLibraries,
 } from '../../../packages/contracts/index.ts';
 
 const id = (index: number) => index.toString(16).padStart(64, '0');
@@ -600,6 +604,149 @@ test('scoped seed, append, metadata and cache recovery reject missing or foreign
   const legacy = new LazyFeed(async () => page(), 'catalog');
   await legacy.loadNext();
   assert.equal(legacy.getSnapshot().loadedEnd, 60);
+});
+
+test('unsupported library identities remain navigable without coercion to a video browse scope', () => {
+  const registry = builtinContentRegistry();
+  const types = ['music', 'audiobooks', 'games', 'documents', 'future-kind'];
+  registry.contentTypes.push(
+    ...types.map((id) => ({
+      id,
+      name: id,
+      availability: 'available' as const,
+      capabilities: { metadata: true, play: true, view: true, launch: true },
+    })),
+  );
+  const document = parseLibraries({
+    version: 1,
+    revision: 8,
+    registry,
+    libraries: [
+      ...types.map((id, order) => ({
+        id: `library-${id}`,
+        name: `Library ${id}`,
+        contentTypeId: id,
+        visible: true,
+        order,
+      })),
+      {
+        id: 'unrestricted',
+        name: 'Unrestricted',
+        contentTypeId: null,
+        visible: true,
+        order: 10,
+      },
+    ],
+  });
+  for (const id of types) {
+    const result = resolveBrowse(
+      { ...initialBrowse(), libraryId: `library-${id}` },
+      document,
+      emptyNavigationPreferences(),
+      false,
+      true,
+    );
+    assert.equal(result.library?.id, `library-${id}`);
+    assert.equal(result.navigation.libraryId, `library-${id}`);
+    assert.equal(result.navigation.collection, id);
+    assert.equal(result.enabled, false);
+    assert.equal(result.support.supported, false);
+    assert.match(result.support.reason!, /no playback handler/);
+    assert.ok(result.visible.some((entry) => entry.id === `library-${id}`));
+    assert.throws(
+      () => browsePath(result.navigation),
+      /No installed browse adapter/,
+    );
+  }
+  const unrestricted = resolveBrowse(
+    { ...initialBrowse(), libraryId: 'unrestricted' },
+    document,
+    emptyNavigationPreferences(),
+    false,
+    true,
+  );
+  assert.equal(unrestricted.support.supported, true);
+  assert.equal(unrestricted.enabled, true);
+  assert.equal(unrestricted.navigation.collection, 'all');
+  assert.equal(
+    new URL(
+      browsePath(unrestricted.navigation),
+      'http://localhost',
+    ).searchParams.get('collection'),
+    'all',
+  );
+});
+
+test('scoped lazy ingestion retains unsupported content and explicit unknown formats beside playable video', async () => {
+  const inventory = {
+    ...page(0, 3),
+    items: [
+      { ...item(0), libraryId: 'inventory' },
+      { ...item(1), libraryId: 'inventory', formatId: 'future-format' },
+      {
+        ...item(2),
+        libraryId: 'inventory',
+        collection: 'documents',
+        contentTypeId: 'documents',
+        container: 'docx',
+        formatId: 'docx',
+      },
+    ],
+  };
+  const feed = new LazyFeed(
+    async () => inventory,
+    'catalog',
+    undefined,
+    10000,
+    'inventory',
+  );
+  await feed.loadNext();
+  await feed.refreshRange(0, 3);
+  assert.equal(feed.getSnapshot().loadedEnd, 3);
+  assert.equal(feed.getSnapshot().retainedCount, 3);
+  assert.equal(feed.getSnapshot().error, null);
+  assert.equal(
+    mediaContentSupport(feed.itemAt(0) as ReturnType<typeof item>).supported,
+    true,
+  );
+  assert.equal(
+    (feed.itemAt(1) as { formatId: string }).formatId,
+    'future-format',
+  );
+  assert.equal(
+    mediaContentSupport(feed.itemAt(1) as ReturnType<typeof item>).supported,
+    false,
+  );
+  assert.equal(
+    (feed.itemAt(2) as { contentTypeId: string }).contentTypeId,
+    'documents',
+  );
+  assert.equal(
+    mediaContentSupport(feed.itemAt(2) as ReturnType<typeof item>).supported,
+    false,
+  );
+  const path =
+    '/api/catalog?library=inventory&revision=8&collection=all&offset=0&limit=60';
+  const recovered = recoverPages(
+    JSON.stringify(rememberPage({}, path, inventory)),
+  );
+  const seeded = new LazyFeed(
+    async () => inventory,
+    'catalog',
+    undefined,
+    10000,
+    'inventory',
+  );
+  seeded.seed(recovered[path]);
+  assert.equal(seeded.getSnapshot().retainedCount, 3);
+  assert.equal(
+    (seeded.itemAt(1) as { formatId: string }).formatId,
+    'future-format',
+  );
+  assert.equal(
+    (seeded.itemAt(2) as { contentTypeId: string }).contentTypeId,
+    'documents',
+  );
 });
 
 test('incomplete batches cannot exceed twelve retained boundaries even with many viewport pins', async () => {

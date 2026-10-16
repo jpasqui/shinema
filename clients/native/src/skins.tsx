@@ -8,7 +8,11 @@ import {
   Text,
   View,
 } from 'react-native';
-import type { Media, Progress } from '../../../packages/contracts/index.ts';
+import type {
+  ContentSupport,
+  Media,
+  Progress,
+} from '../../../packages/contracts/index.ts';
 import type {
   Theme,
   ThemeColors,
@@ -37,6 +41,7 @@ type LibraryProps = SkinProps & {
   anchor: number;
   viewport: number;
   libraryName: string;
+  contentSupport: (item: Media) => ContentSupport;
   errorAt: (index: number) => string | undefined;
   isLoading: (index: number) => boolean;
   onRetry: (index: number) => void;
@@ -304,6 +309,7 @@ function MarqueeFeature({
   origin,
   item,
   busy,
+  artwork = true,
 }: {
   theme: Theme;
   width: number;
@@ -312,11 +318,12 @@ function MarqueeFeature({
   origin: string;
   item?: Media;
   busy: boolean;
+  artwork?: boolean;
 }) {
   const layout = nativeSkinLayout(theme, width, height);
   const geometry = nativeReservedGeometry(theme, width, height);
   const colors = theme.colors;
-  const uri = imageFor(origin, item, false);
+  const uri = artwork ? imageFor(origin, item, false) : undefined;
   return (
     <View
       style={{
@@ -405,6 +412,7 @@ function ArchiveProgramme({
   origin,
   item,
   busy,
+  artwork = true,
 }: {
   theme: Theme;
   width: number;
@@ -413,11 +421,12 @@ function ArchiveProgramme({
   origin: string;
   item?: Media;
   busy: boolean;
+  artwork?: boolean;
 }) {
   const layout = nativeSkinLayout(theme, width, height);
   const geometry = nativeReservedGeometry(theme, width, height);
   const colors = theme.colors;
-  const uri = imageFor(origin, item, true);
+  const uri = artwork ? imageFor(origin, item, true) : undefined;
   return (
     <View
       style={{ height: geometry.feature, marginBottom: 16, overflow: 'hidden' }}
@@ -541,6 +550,7 @@ function LibraryCard({
   width,
   height,
   progress,
+  unavailableReason,
   onPress,
 }: {
   item: Media;
@@ -552,6 +562,7 @@ function LibraryCard({
   width: number;
   height: number;
   progress?: Progress;
+  unavailableReason?: string;
   onPress: () => void;
 }) {
   const scale = useRef(new Animated.Value(1)).current;
@@ -577,6 +588,7 @@ function LibraryCard({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={item.title}
+      accessibilityHint={unavailableReason}
       accessibilityState={{ selected: focused }}
       onPress={onPress}
       style={{
@@ -648,7 +660,7 @@ function LibraryCard({
       >
         {[
           item.year,
-          item.container.toUpperCase(),
+          unavailableReason ? 'Unavailable' : item.container.toUpperCase(),
           progress
             ? `${Math.floor(progress.positionSeconds)} s watched`
             : undefined,
@@ -676,6 +688,7 @@ export function NativeLibrary(props: LibraryProps) {
     headerFocused,
     busy,
     libraryName,
+    contentSupport,
     onSelect,
     onGridLayout,
     onRetry,
@@ -692,14 +705,16 @@ export function NativeLibrary(props: LibraryProps) {
     layout.cardHeight + layout.gap,
     viewport,
   );
+  const featured = itemAt(cursor);
   const featureProps = {
     theme,
     width,
     height,
     reduced,
     origin,
-    item: itemAt(cursor),
+    item: featured,
     busy: busy || !known,
+    artwork: !featured || contentSupport(featured).supported,
   };
   return (
     <View>
@@ -791,6 +806,7 @@ export function NativeLibrary(props: LibraryProps) {
           Array.from({ length: window.end - window.start }, (_, slot) => {
             const index = window.start + slot;
             const item = itemAt(index);
+            const support = item ? contentSupport(item) : undefined;
             const error = errorAt(index);
             const pending = isLoading(index);
             return (
@@ -805,11 +821,20 @@ export function NativeLibrary(props: LibraryProps) {
                   <LibraryCard
                     item={item}
                     index={index}
-                    uri={imageFor(
-                      origin,
-                      item,
-                      theme.design.cards === 'poster',
-                    )}
+                    uri={
+                      support?.supported
+                        ? imageFor(
+                            origin,
+                            item,
+                            theme.design.cards === 'poster',
+                          )
+                        : undefined
+                    }
+                    unavailableReason={
+                      support?.supported
+                        ? undefined
+                        : (support?.reason ?? 'This format is unavailable.')
+                    }
                     focused={cursor === index && !headerFocused}
                     reduced={reduced}
                     theme={theme}
@@ -886,6 +911,113 @@ export function NativeLibrary(props: LibraryProps) {
             );
           })
         )}
+      </View>
+    </View>
+  );
+}
+
+/** Unsupported selections retain their identity without mounting remote artwork or controls. */
+export function NativeUnavailable({
+  theme,
+  width,
+  height,
+  name,
+  reason,
+  instructions = 'Saved titles and progress stay on this device. Choose another library above.',
+}: {
+  theme: Theme;
+  width: number;
+  height: number;
+  name: string;
+  reason: string;
+  instructions?: string;
+}) {
+  const layout = nativeSkinLayout(theme, width, height);
+  const geometry = nativeReservedGeometry(theme, width, height);
+  const colors = theme.colors;
+  const archive = theme.design.skin === 'archive';
+  return (
+    <View>
+      <View
+        style={{
+          height: geometry.feature,
+          marginBottom: 16,
+          padding: 24,
+          justifyContent: 'center',
+          gap: 10,
+          backgroundColor: colors.surface,
+          borderRadius: archive ? 0 : 10,
+        }}
+      >
+        <Text
+          numberOfLines={1}
+          style={{
+            height: 12,
+            lineHeight: 12,
+            fontSize: 10,
+            letterSpacing: 2,
+            color: colors.muted,
+          }}
+        >
+          KEPT IN YOUR LIBRARY
+        </Text>
+        <Text
+          numberOfLines={2}
+          style={{
+            height: geometry.featureTitle,
+            lineHeight: geometry.featureTitleLine,
+            fontFamily: layout.fontFamily,
+            fontSize: layout.compact ? 26 : 34,
+            color: colors.text,
+          }}
+        >
+          {name}
+        </Text>
+      </View>
+      <Text
+        numberOfLines={1}
+        style={{
+          height: 40,
+          lineHeight: 30,
+          fontFamily: layout.fontFamily,
+          fontSize: 19,
+          color: colors.text,
+        }}
+      >
+        Content unavailable on this device
+      </Text>
+      <View
+        style={{
+          height: layout.cardHeight,
+          padding: 16,
+          gap: 12,
+          backgroundColor: colors.surface,
+          borderRadius: archive ? 0 : 8,
+        }}
+      >
+        <Text
+          accessibilityLiveRegion="polite"
+          numberOfLines={3}
+          style={{
+            height: 57,
+            lineHeight: 19,
+            fontSize: 14,
+            color: colors.text,
+          }}
+        >
+          {reason}
+        </Text>
+        <Text
+          numberOfLines={2}
+          style={{
+            height: 38,
+            lineHeight: 19,
+            fontSize: 13,
+            color: colors.muted,
+          }}
+        >
+          {instructions}
+        </Text>
       </View>
     </View>
   );

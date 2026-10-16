@@ -136,6 +136,68 @@ def audit(kind, path):
             raise SystemExit('Playback diagnostic screenshots do not match the summary')
         if (path / 'browser-test.log').read_text(encoding='utf-8') != '\n'.join(lines) + '\n':
             raise SystemExit('Playback diagnostic log contains unexpected content')
+    elif kind == 'libraries-diagnostics':
+        # Reject Windows junctions/reparse points as well as ordinary symlinks.
+        def linked(file):
+            return file.is_symlink() or bool(getattr(file.lstat(), 'st_file_attributes', 0) & 0x400)
+
+        if not path.exists() or linked(path) or not path.is_dir():
+            raise SystemExit('Library diagnostics require an ordinary directory')
+        files = list(path.iterdir())
+        if not 2 <= len(files) <= 3:
+            raise SystemExit('Library diagnostic file count exceeds its bound')
+        for file in files:
+            if linked(file) or not file.is_file() or file.name not in {'failure.json', 'browser-test.log', 'failure-1.png'}:
+                raise SystemExit('Unexpected file in library diagnostics')
+            limit = 2 * 1024 * 1024 if file.suffix == '.png' else 16384
+            if not 0 < file.stat().st_size <= limit:
+                raise SystemExit('Library diagnostic file exceeds its bound')
+            content = file.read_bytes()
+            check(file.name, content)
+            # Compressed screenshots can coincidentally contain short drive roots.
+            host_marker = (rb'[A-Z]:[\\/]+Users[\\/]|/(?:Users|home|tmp|var|mnt)/|id_ed25519|known_hosts'
+                           if file.suffix == '.png' else rb'[A-Z]:[\\/]|/(?:Users|home|tmp|var|mnt)/|id_ed25519|known_hosts')
+            if re.search(host_marker, content, re.IGNORECASE):
+                raise SystemExit('Private host/source marker in library diagnostics')
+            if file.suffix == '.png' and (not content.startswith(b'\x89PNG\r\n\x1a\n')
+                    or content[16:24] != (1440).to_bytes(4, 'big') + (1000).to_bytes(4, 'big')):
+                raise SystemExit('Library screenshots must use the declared fixed viewport')
+            count += 1
+        try:
+            data = json.loads((path / 'failure.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            raise SystemExit('Library diagnostic summary is missing or invalid')
+        stages = {'setup', 'api', 'migration', 'restart', 'baseline', 'browser-settings',
+                  'browser-navigation', 'browser-search', 'browser-concurrency', 'browser-unsupported', 'finalize'}
+        categories = {'assertion', 'timeout', 'network', 'startup', 'runner'}
+        if (not isinstance(data, dict) or set(data) != {'schema', 'generatedOnly', 'suite', 'status', 'sourceRevision',
+                                                       'stage', 'category', 'completedChecks', 'events', 'screenshot'}
+                or type(data['schema']) is not int or data['schema'] != 1 or data['generatedOnly'] is not True
+                or data['suite'] != 'libraries' or data['status'] != 'failed'
+                or not isinstance(data['sourceRevision'], str) or not re.fullmatch(r'[a-f0-9]{40}', data['sourceRevision'])
+                or not isinstance(data['stage'], str) or data['stage'] not in stages
+                or not isinstance(data['category'], str) or data['category'] not in categories
+                or type(data['completedChecks']) is not int or not 0 <= data['completedChecks'] <= 1000
+                or not isinstance(data['events'], dict) or set(data['events']) != {'consoleErrors', 'pageErrors', 'requestFailures'}
+                or any(type(value) is not int or not 0 <= value <= 10000 for value in data['events'].values())
+                or type(data['screenshot']) is not bool):
+            raise SystemExit('Library diagnostic summary is missing or invalid')
+        screenshot = 'failure-1.png' if data['screenshot'] else 'unavailable'
+        expected = {'failure.json', 'browser-test.log'}
+        if data['screenshot']:
+            expected.add(screenshot)
+        if {file.name for file in files} != expected:
+            raise SystemExit('Library diagnostic screenshots do not match the summary')
+        lines = ['Generated-only library suite: failed', f"sourceRevision={data['sourceRevision']}",
+                 f"stage={data['stage']} category={data['category']} checks={data['completedChecks']}",
+                 f"consoleErrors={data['events']['consoleErrors']} pageErrors={data['events']['pageErrors']} requestFailures={data['events']['requestFailures']}",
+                 f'screenshot={screenshot}']
+        try:
+            log = (path / 'browser-test.log').read_bytes().decode('utf-8')
+        except (OSError, ValueError):
+            raise SystemExit('Library diagnostic log is missing or invalid')
+        if log != '\n'.join(lines) + '\n':
+            raise SystemExit('Library diagnostic log contains unexpected content')
     elif kind == 'public-fixtures':
         expected = {'before-movies.png', 'before-series.png', 'after-movies.png',
                     'after-series.png', 'interactions.webm', 'provenance.json'}
@@ -196,7 +258,7 @@ def audit(kind, path):
             if digest != hashlib.sha256((path / name).read_bytes()).hexdigest():
                 raise SystemExit('Public fixture evidence hash mismatch')
     else:
-        raise SystemExit('Expected web, android, diagnostics, playback-diagnostics or public-fixtures')
+        raise SystemExit('Expected web, android, diagnostics, playback-diagnostics, libraries-diagnostics or public-fixtures')
     print(f'Audited {count} allowlisted files: no forbidden content or unexpected files detected.')
 
 

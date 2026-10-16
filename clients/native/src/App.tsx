@@ -2,20 +2,20 @@ import React,{useEffect,useMemo,useRef,useState} from 'react';
 import {AccessibilityInfo,Animated,AppState,BackHandler,NativeEventEmitter,NativeModules,Pressable,ScrollView,StyleSheet,Text,TextInput,View,useWindowDimensions} from 'react-native';
 import Video from 'react-native-video';
 import type {VideoRef} from 'react-native-video';
-import {resumeAt,serverOrigin} from '../../../packages/contracts/index.ts';
+import {parseCatalog,resumeAt,serverOrigin} from '../../../packages/contracts/index.ts';
 import type {Media,Progress,LibraryDescriptor} from '../../../packages/contracts/index.ts';
 import {fresh,recover,move} from './domain.ts';
 import type {Stored} from './domain.ts';
-import {SessionGuard,StorageQueue,ProgressQueue,connectValidated,persistThenSync,syncProgress,resolveResume,backDestination} from './session.ts';
+import {SessionGuard,StorageQueue,ProgressQueue,connectValidated,persistThenSync,syncProgress,resolvePlayableResume,backDestination} from './session.ts';
 import type {ConnectionStamp} from './session.ts';
 import {archiveTheme,defaultTheme,exportTheme,importTheme,MAX_THEME_BYTES,midnightTheme,parseTheme,THEME_DESIGN_VALUES} from '../../../packages/design-tokens/theme.ts';
 import type {Theme,ThemeDesign} from '../../../packages/design-tokens/theme.ts';
 import {AppearancePersistence,defaultPreferences,focusScrollOffset,prefersReducedMotion} from './preferences.ts';
 import type {AppearancePreferences} from './preferences.ts';
-import {NativeDetail,NativeHeader,NativeLibrary,NativePlayerChrome} from './skins.tsx';
+import {NativeDetail,NativeHeader,NativeLibrary,NativePlayerChrome,NativeUnavailable} from './skins.tsx';
 import {nativeSkinLayout} from './skin-layout.ts';
 import {FEED_BATCH_SIZE,NativeFeed,clampFeedAnchor,feedItemTop,feedScrollAnchor,parseFeedBatch,parseFeedCatalog,restoreFeedAnchor} from './feed.ts';
-import {HttpStatusError,loadLibrarySnapshot,visibleLibraries as visibleLibraryDescriptors} from './libraries.ts';
+import {HttpStatusError,loadLibrarySnapshot,visibleLibraries as visibleLibraryDescriptors,nativeFeedScope,navigationContentSupport,nativeMediaContentSupport,snapshotCatalogForActivation} from './libraries.ts';
 import {NativeActivity,StartupHydration} from './lifecycle.ts';
 import type {FeedScope} from './feed.ts';
 
@@ -33,17 +33,15 @@ async function request(origin:string,path:string,method='GET',value?:Progress,si
   }finally{clearTimeout(timeout);signal?.removeEventListener('abort',abort);}
 }
 
-function scopeFor(value:Pick<Stored,'origin'|'libraries'|'selectedLibraryId'>):FeedScope{
-  const library=value.libraries?.libraries.find(item=>item.id===value.selectedLibraryId&&item.visible);
-  return {origin:value.origin,libraryId:library?.id??null,...(library&&value.libraries?{revision:value.libraries.revision}:{}),collection:library?.mediaType==='mixed'?'all':library?.mediaType??'all'};
-}
+const scopeFor=nativeFeedScope;
 
 export default function App(){
-  const feed=useRef(new NativeFeed(scopeFor(fresh())));
+  const feed=useRef(new NativeFeed(scopeFor(fresh()) as FeedScope));
   const [feedSnapshot,setFeedSnapshot]=useState(()=>feed.current.snapshot());const [renderAnchor,setRenderAnchor]=useState(0);const [headerCursor,setHeaderCursor]=useState(0);
   const {width,height}=useWindowDimensions();const [stored,setStored]=useState<Stored>(fresh());const store=useRef(stored);
   const visibleLibraries=useMemo(()=>visibleLibraryDescriptors(stored.libraries),[stored.libraries]);
   const selectedLibrary=visibleLibraries.find(library=>library.id===stored.selectedLibraryId);
+  const librarySupport=navigationContentSupport(stored);
   const [route,setRoute]=useState<Route>('setup');const [cursor,setCursor]=useState(0);const [originText,setOriginText]=useState(fresh().origin);
   const cursorPosition=useRef(cursor);cursorPosition.current=cursor;
   const [message,setMessage]=useState('Enter your server address.');const [busy,setBusy]=useState(false);const [paused,setPaused]=useState(false);
@@ -70,6 +68,7 @@ export default function App(){
   const styles=useMemo(()=>makeStyles(preferences.theme,compact),[preferences.theme,compact]);
   const sceneOpacity=useRef(new Animated.Value(1)).current;
   feed.current.focus(cursor);const totalItems=feedSnapshot.total;const selected=route==='player'?activeItem.current??undefined:feed.current.itemAt(cursor);
+  const selectedSupport=selected?nativeMediaContentSupport(selected,stored):{supported:true};
   const playbackOrigin=route==='player'?activeDestination.current?.origin:stored.origin;
   const source=useMemo(()=>({uri:(playbackOrigin??stored.origin)+(selected?.streamPath??'')}),[playbackOrigin,stored.origin,selected?.streamPath]);
 
@@ -89,25 +88,26 @@ export default function App(){
 
   function loadFeed(index:number,retry=false){
     if(activity.current.connecting())return;
+    if(!navigationContentSupport(store.current).supported)return;
     if(store.current.libraries&&store.current.selectedLibraryId===null)return;
     const destination=session.current.capture(store.current.origin);const work=feed.current.load(index,(origin,path,signal)=>request(origin,path,'GET',undefined,signal),cursorPosition.current,retry);setFeedSnapshot(feed.current.snapshot());
-    void work.then(applied=>{if(!mounted.current)return;setFeedSnapshot(feed.current.snapshot());if(!applied||!session.current.current(destination,store.current.origin))return;const start=Math.floor(index/FEED_BATCH_SIZE)*FEED_BATCH_SIZE;for(let slot=start;slot<start+FEED_BATCH_SIZE;slot++){const item=feed.current.itemAt(slot);const pending=item?store.current.pending[item.id]:undefined;if(item&&pending)void flush(item.id,pending,destination);}});
+    void work.then(applied=>{if(!mounted.current)return;setFeedSnapshot(feed.current.snapshot());if(!applied||!session.current.current(destination,store.current.origin))return;const start=Math.floor(index/FEED_BATCH_SIZE)*FEED_BATCH_SIZE;for(let slot=start;slot<start+FEED_BATCH_SIZE;slot++){const item=feed.current.itemAt(slot);const pending=item?store.current.pending[item.id]:undefined;if(item&&pending)void flush(item,pending,destination);}});
   }
   useEffect(()=>{
-    if(route!=='library'||busy||(stored.libraries&&stored.selectedLibraryId===null)||(feedSnapshot.known&&totalItems===0))return;
+    if(route!=='library'||busy||!librarySupport.supported||(stored.libraries&&stored.selectedLibraryId===null)||(feedSnapshot.known&&totalItems===0))return;
     if(!feed.current.isCached(renderAnchor)&&!feed.current.isLoading(renderAnchor)&&!feed.current.errorAt(renderAnchor)){loadFeed(renderAnchor);return;}
     if(!feed.current.isCached(cursor)&&!feed.current.isLoading(cursor)&&!feed.current.errorAt(cursor)){loadFeed(cursor);return;}
     const edge=Math.min(totalItems-1,Math.max(cursor,renderAnchor+Math.ceil(viewportHeight/(cardHeight+gap))*columns-1));
     if(edge>=0&&!feed.current.isCached(edge)&&!feed.current.isLoading(edge)&&!feed.current.errorAt(edge)){loadFeed(edge);return;}
     const next=(Math.floor(edge/FEED_BATCH_SIZE)+1)*FEED_BATCH_SIZE;
     if(next-edge<=columns*3&&next<totalItems&&!feed.current.isCached(next)&&!feed.current.isLoading(next)&&!feed.current.errorAt(next))loadFeed(next);
-  },[route,busy,cursor,renderAnchor,feedSnapshot.revision,feedSnapshot.known,columns,totalItems,viewportHeight,cardHeight,gap,stored.libraries,stored.selectedLibraryId]);
+  },[route,busy,cursor,renderAnchor,feedSnapshot.revision,feedSnapshot.known,columns,totalItems,viewportHeight,cardHeight,gap,stored.libraries,stored.selectedLibraryId,librarySupport.supported]);
 
   function chooseLibrary(library:LibraryDescriptor){
     if(route==='player')return;
     if(session.current.isSwitchCommitting()){setMessage('Finishing library update. Try again in a moment.');return;}
-    setHeaderFocused(false);
-    if(library.id===store.current.selectedLibraryId&&feed.current.snapshot().known){cancelConnection();setBusy(false);setRoute('library');return;}
+    setHeaderFocused(false);setHeaderCursor(Math.max(0,visibleLibraries.findIndex(item=>item.id===library.id)));
+    if(library.id===store.current.selectedLibraryId&&(feed.current.snapshot().known||!librarySupport.supported)){cancelConnection();setBusy(false);setHeaderFocused(!librarySupport.supported);setRoute('library');return;}
     void connect(store.current.origin,true,library.id);
   }
   useEffect(()=>{setHeaderCursor(current=>Math.min(current,visibleLibraries.length));},[visibleLibraries.length]);
@@ -131,6 +131,7 @@ export default function App(){
       if(themeInput.current?.isFocused())return;
       const bounds=appearanceBounds.current[appearanceCursor];if(bounds)revealFocus(appearanceTop.current+bounds.y,bounds.height);
     }else if(route==='library'){
+      if(!librarySupport.supported)return;
       if(navigationMode.current==='touch'&&!headerFocused)return;
       if(headerFocused){sceneOffset.current=0;sceneScroll.current?.scrollTo({y:0,animated:false});}
       else revealFocus(libraryTop.current+feedItemTop(cursor,columns,cardHeight+gap),cardHeight);
@@ -138,7 +139,7 @@ export default function App(){
       if(headerFocused){sceneOffset.current=0;sceneScroll.current?.scrollTo({y:0,animated:false});}
       else if(detailPlay.current.height)revealFocus(detailPlay.current.y,detailPlay.current.height);
     }
-  },[appearanceCursor,cursor,headerFocused,route,columns,cardHeight,gap,viewportHeight]);
+  },[appearanceCursor,cursor,headerFocused,route,columns,cardHeight,gap,viewportHeight,librarySupport.supported]);
 
   function changeAppearance(next:AppearancePreferences){
     const revision=++preferenceRevision.current;
@@ -152,7 +153,7 @@ export default function App(){
     appearanceReturn.current=route==='library'?'library':route==='detail'?'detail':'setup';
     cancelConnection();setBusy(false);setHeaderFocused(false);setAppearanceCursor(0);setRoute('appearance');
   }
-  function closeAppearance(){themeInput.current?.blur();setRoute(appearanceReturn.current);setHeaderFocused(false);}
+  function closeAppearance(){themeInput.current?.blur();setRoute(appearanceReturn.current);setHeaderFocused(!navigationContentSupport(store.current).supported);}
   function importAppearance(){
     try{changeAppearance({...currentPreferences.current,theme:importTheme(themeText)});}
     catch(error){setAppearanceMessage(error instanceof Error?`Theme not applied: ${error.message}`:'Theme not applied. Use valid theme JSON.');}
@@ -171,7 +172,8 @@ export default function App(){
   function update(value:Stored){store.current=value;if(mounted.current)setStored(value);}
   function hydrateStartup(restored:Stored){
     const scope=scopeFor(restored);
-    try{feed.current.reset(scope,restored.catalog??undefined);}catch{restored={...restored,catalog:null};feed.current.reset(scope);if(mounted.current)setMessage('Saved library data was invalid. Reconnect to refresh.');}
+    if(scope){try{feed.current.reset(scope,restored.catalog??undefined);}catch{restored={...restored,catalog:null};feed.current.reset(scope);if(mounted.current)setMessage('Saved library data was invalid. Reconnect to refresh.');}}
+    else feed.current.cancelPending();
     update(restored);if(mounted.current)setFeedSnapshot(feed.current.snapshot());
   }
   function startupState():StartupHydration<Stored>{
@@ -180,15 +182,16 @@ export default function App(){
   }
   function acceptCatalog(value:Stored,refresh:boolean){
     const scope=scopeFor(value);const oldScope=scopeFor(store.current);const changed=JSON.stringify(scope)!==JSON.stringify(oldScope);const selectedId=feed.current.itemAt(cursorPosition.current)?.id;
-    const preserved=!changed&&!refresh&&Boolean(value.catalog)&&!(value.libraries&&value.selectedLibraryId===null);
-    if(preserved&&value.catalog)feed.current.refresh(value.catalog);else feed.current.reset(scope,value.catalog??undefined);
+    const preserved=scope!==null&&!changed&&!refresh&&Boolean(value.catalog)&&!(value.libraries&&value.selectedLibraryId===null);
+    if(!scope)feed.current.cancelPending();else if(preserved&&value.catalog)feed.current.refresh(value.catalog);else feed.current.reset(scope,value.catalog??undefined);
     update(value);setFeedSnapshot(feed.current.snapshot());
     const restored=selectedId&&!changed?value.catalog?.items.findIndex(item=>item.id===selectedId):-1;
     focusCursor(preserved?cursorPosition.current:changed?0:typeof restored==='number'&&restored>=0?restored:Math.min(cursorPosition.current,Math.max(0,feed.current.snapshot().total-1)));
     if(changed){setRenderAnchor(0);libraryScroll.current=0;sceneOffset.current=0;withinLibraryRow.current=0;navigationMode.current='remote';sceneScroll.current?.scrollTo({y:0,animated:false});}
   }
-  function openDetails(){
+  function openDetails(item=feed.current.itemAt(cursorPosition.current)){
     if(session.current.isSwitchCommitting()){setMessage('Finishing library update. Try again in a moment.');return;}
+    if(!item)return;const support=nativeMediaContentSupport(item,store.current);if(!support.supported){setMessage(support.reason??'This content is not supported on this device.');return;}
     cancelConnection();setBusy(false);setHeaderFocused(false);setRoute('detail');
   }
   function persist():Promise<void>{
@@ -196,20 +199,22 @@ export default function App(){
     // a newer successfully activated server after a delayed connection write.
     return startupState().run(()=>persistQueue.current.run(()=>Host.writeState(JSON.stringify(store.current))));
   }
-  async function syncOne(id:string,value:Progress,destination:ConnectionStamp){
+  async function syncOne(item:Media,value:Progress,destination:ConnectionStamp){
+    if(!nativeMediaContentSupport(item,store.current).supported)return;
+    const id=item.id;
     try{
       await syncProgress(session.current,destination,id,value,{read:()=>store.current,write:update,persist},async(origin,key,progress)=>{await request(origin,`/api/media/${key}/progress`,'PUT',progress);});
     }catch{if(session.current.current(destination,store.current.origin))setMessage('Progress saved on this device; sync will retry.');}
   }
-  function flush(id:string,value:Progress,destination:ConnectionStamp):Promise<void>{
-    return syncQueue.current.enqueue(()=>syncOne(id,value,destination));
+  function flush(item:Media,value:Progress,destination:ConnectionStamp):Promise<void>{
+    return syncQueue.current.enqueue(()=>syncOne(item,value,destination));
   }
   async function save(item=activeItem.current){
     const destination=activeDestination.current;
     if(!item || activeItem.current?.id!==item.id || !destination || !session.current.current(destination,store.current.origin) || total.current<=0 || waitingSeek.current)return;
     const value={positionSeconds:Math.min(Math.max(0,position.current),total.current),durationSeconds:total.current};
     update({...store.current,progress:{...store.current.progress,[item.id]:value},pending:{...store.current.pending,[item.id]:value}});
-    try{await persistThenSync(session.current,destination,persist,()=>store.current.origin,stamp=>flush(item.id,value,stamp));}
+    try{await persistThenSync(session.current,destination,persist,()=>store.current.origin,stamp=>flush(item,value,stamp));}
     catch{if(session.current.current(destination,store.current.origin))setMessage('Device progress storage failed.');}
   }
   saveCurrent.current=()=>save();
@@ -225,9 +230,11 @@ export default function App(){
       const current=store.current;const sameOrigin=origin===current.origin;
       const snapshot=await loadLibrarySnapshot(origin,selection??(sameOrigin?current.selectedLibraryId:null),sameOrigin?current.libraries:null,(destination,path)=>activity.current.read(signal,()=>request(destination,path,'GET',undefined,signal)),FEED_BATCH_SIZE);
       const loadedScope=scopeFor({origin,libraries:snapshot.libraries,selectedLibraryId:snapshot.selectedLibraryId});
-      const emptySelection=Boolean(snapshot.libraries&&snapshot.selectedLibraryId===null);
-      const catalog=emptySelection?parseFeedCatalog(snapshot.catalog,loadedScope):parseFeedBatch(snapshot.catalog,loadedScope,0);
-      if(!refresh&&!emptySelection&&JSON.stringify(loadedScope)===JSON.stringify(scopeFor(store.current))&&!feed.current.canRefresh(catalog))throw new Error('Library changed. Reconnect to refresh this view.');
+      const snapshotSupport=navigationContentSupport(snapshot);
+      const seedOnly=!snapshotSupport.supported||Boolean(snapshot.libraries&&snapshot.selectedLibraryId===null);
+      const candidateCatalog=snapshotCatalogForActivation(store.current,origin,snapshot);
+      const catalog=!loadedScope?parseCatalog(candidateCatalog):seedOnly?parseFeedCatalog(candidateCatalog,loadedScope):parseFeedBatch(candidateCatalog,loadedScope,0);
+      if(!refresh&&!seedOnly&&loadedScope&&JSON.stringify(loadedScope)===JSON.stringify(scopeFor(store.current))&&!feed.current.canRefresh(catalog))throw new Error('Library changed. Reconnect to refresh this view.');
       const result=await connectValidated(session.current,attempt,origin,async()=>catalog,{
         read:()=>store.current,write:value=>acceptCatalog(value,refresh),persist,queue:persistQueue.current,
         stageDisk:value=>Host.stageState(JSON.stringify(value)),
@@ -235,29 +242,31 @@ export default function App(){
       },snapshot);
       if(!result)return;
       const {stamp}=result;
-      setRoute('library');setHeaderFocused(false);setMessage(feed.current.errorAt(0)??(catalog.items.length?'Library ready.':snapshot.libraries&&snapshot.selectedLibraryId===null?'No libraries are visible. Update visibility in the server library settings.':'This library is empty.'));
-      for(const [id,pending] of Object.entries(store.current.pending))if(catalog.items.some(item=>item.id===id))void flush(id,pending,stamp);
+      setRoute('library');setHeaderFocused(!snapshotSupport.supported);if(!snapshotSupport.supported)setHeaderCursor(Math.max(0,visibleLibraryDescriptors(snapshot.libraries).findIndex(item=>item.id===snapshot.selectedLibraryId)));setMessage(!snapshotSupport.supported?snapshotSupport.reason??'This content is not supported on this device.':feed.current.errorAt(0)??(catalog.items.length?'Library ready.':snapshot.libraries&&snapshot.selectedLibraryId===null?'No libraries are visible. Update visibility in the server library settings.':'This library is empty.'));
+      for(const item of catalog.items){const pending=store.current.pending[item.id];if(pending&&nativeMediaContentSupport(item,store.current).supported)void flush(item,pending,stamp);}
     }catch(error){
       if(!session.current.currentAttempt(attempt))return;
-      if(store.current.catalog){setRoute('library');setMessage(error instanceof Error&&error.message.startsWith('Library changed.')?error.message:origin===store.current.origin?'Browsing cached library. Server is unavailable.':'Could not switch server. Your current library and progress are retained.');}
+      if(store.current.catalog||store.current.libraries){setRoute('library');setHeaderFocused(!navigationContentSupport(store.current).supported);setMessage(error instanceof Error&&error.message.startsWith('Library changed.')?error.message:origin===store.current.origin?'Browsing cached library. Server is unavailable.':'Could not switch server. Your current library and progress are retained.');}
       else setMessage('Could not connect. Check the address and trusted HTTPS setup.');
     }finally{activity.current.finishConnection(signal);if(session.current.currentAttempt(attempt))setBusy(false);}
   }
 
   async function play(){
     if(!selected || busy)return;
+    const support=nativeMediaContentSupport(selected,store.current);if(!support.supported){setMessage(support.reason??'This content is not supported on this device.');return;}
     if(session.current.isSwitchCommitting()){setMessage('Finishing server switch. Try Play again in a moment.');return;}
     activity.current.cancelConnection();const item=selected;const ticket=session.current.beginPlayback(store.current.origin);
     setBusy(true);setMessage('Checking resume position...');
-    const result=await resolveResume(session.current,ticket,item.id,()=>store.current,(origin,id)=>request(origin,`/api/media/${id}/progress`));
+    const result=await resolvePlayableResume(session.current,ticket,item,()=>store.current,(origin,id)=>request(origin,`/api/media/${id}/progress`));
     if(!result)return;
+    if(!result.supported){setBusy(false);setMessage(result.reason??'This content is not supported on this device.');return;}
     activeItem.current=item;activeDestination.current=ticket;resume.current=result.progress;position.current=0;total.current=0;waitingSeek.current=false;lastSave.current=Date.now();
     setClock(0);setDuration(0);setPaused(false);setLoading(true);setRoute('player');setBusy(false);setMessage('');
   }
 
   useEffect(()=>{
     let alive=true;mounted.current=true;const startup=activity.current.capture();
-    void startupState().ready().then(restored=>{if(!alive||!activity.current.current(startup))return;setOriginText(restored.origin);if(store.current.catalog)setRoute('library');void connect(restored.origin,false);}).catch(()=>{if(alive&&activity.current.current(startup))setMessage('Could not read the saved library. Enter your server address to reconnect.');});
+    void startupState().ready().then(restored=>{if(!alive||!activity.current.current(startup))return;setOriginText(restored.origin);if(store.current.catalog||store.current.libraries){setHeaderFocused(!navigationContentSupport(store.current).supported);setRoute('library');}void connect(restored.origin,false);}).catch(()=>{if(alive&&activity.current.current(startup))setMessage('Could not read the saved library. Enter your server address to reconnect.');});
     const keys=new NativeEventEmitter(NativeModules.ShinemaHost).addListener('ShinemaKey',event=>{
       const key=event as Partial<Key>;
       if(typeof key.code==='number' && typeof key.action==='number' && typeof key.repeat==='number')handler.current({code:key.code,action:key.action,repeat:key.repeat});
@@ -268,7 +277,7 @@ export default function App(){
     const nativeBack=BackHandler.addEventListener('hardwareBackPress',()=>{
       handler.current({code:4,action:0,repeat:0});handler.current({code:4,action:1,repeat:0});return true;
     });
-    return()=>{alive=false;mounted.current=false;keys.remove();lifecycle.remove();nativeBack.remove();cancelConnection();feed.current.reset(scopeFor(store.current));};
+    return()=>{alive=false;mounted.current=false;keys.remove();lifecycle.remove();nativeBack.remove();cancelConnection();feed.current.cancelPending();};
   },[]);
 
   handler.current=(key:Key)=>{
@@ -285,10 +294,10 @@ export default function App(){
     }
     if(back){
       if(backHeld.current)return;backHeld.current=true;cancelConnection();setBusy(false);
-      const destination=backDestination(route,Boolean(store.current.catalog));
+      const destination=backDestination(route,Boolean(store.current.catalog||store.current.libraries));
       if(route==='player'){setPaused(true);void save();activeItem.current=null;activeDestination.current=null;setLoading(false);}
       if(destination==='exit')void persist().catch(()=>{}).then(()=>Host.finish());
-      else {setRoute(destination);setHeaderFocused(false);setBusy(false);}
+      else {setRoute(destination);setHeaderFocused(destination==='library'&&!navigationContentSupport(store.current).supported);setBusy(false);}
       return;
     }
     if(route==='setup'){
@@ -300,12 +309,13 @@ export default function App(){
     if(key.code===82 && route!=='player'){cancelConnection();setBusy(false);setHeaderFocused(false);setRoute('setup');setMessage('Edit server address, then connect.');return;}
     if(route==='library'){
       if(headerFocused){
-        if(key.code===20)setHeaderFocused(false);
+        if(key.code===20&&librarySupport.supported)setHeaderFocused(false);
         else if(key.code===21)setHeaderCursor(current=>Math.max(0,current-1));
         else if(key.code===22)setHeaderCursor(current=>Math.min(visibleLibraries.length,current+1));
         else if([23,66].includes(key.code) && key.repeat===0){const library=visibleLibraries[headerCursor];if(library)chooseLibrary(library);else openAppearance();}
         return;
       }
+      if(!librarySupport.supported){setHeaderFocused(true);setMessage(librarySupport.reason??'This content is not supported on this device.');return;}
       navigationMode.current='remote';const direction=({21:-1,22:1,19:-columns,20:columns} as Record<number,number>)[key.code];
       if(key.code===19 && cursor<columns){setHeaderFocused(true);setHeaderCursor(Math.max(0,visibleLibraries.findIndex(library=>library.id===selectedLibrary?.id)));}
       else if(direction!==undefined){const next=move(cursorPosition.current,direction,totalItems);focusCursor(next);setRenderAnchor(next);}
@@ -335,7 +345,7 @@ export default function App(){
     {id:'done',label:'Done',active:false,run:closeAppearance},
   ];
   return <View style={styles.shell}>
-    {route==='player' && selected?<>
+    {route==='player' && selected && selectedSupport.supported?<>
       <Video ref={video} style={StyleSheet.absoluteFill} source={source} paused={paused} resizeMode="contain" playInBackground={false} playWhenInactive={false} progressUpdateInterval={1000}
         onLoad={event=>{
           total.current=event.duration;setDuration(event.duration);setLoading(false);
@@ -352,7 +362,7 @@ export default function App(){
         onError={()=>{setLoading(false);setPaused(true);setMessage('Playback failed. This slice directly plays device-supported files only. Press Back.');}}
       />
       <NativePlayerChrome theme={preferences.theme} title={selected.title} loading={loading} paused={paused} clock={clock} duration={duration} message={message} />
-    </>:<>
+    </>:route==='player'&&selected?<NativeUnavailable theme={preferences.theme} width={width} height={height} name={selected.title} reason={selectedSupport.reason??'This content is not supported on this device.'} instructions="Saved progress stays on this device. Press Back to return to details." />:<>
       <NativeHeader theme={preferences.theme} width={width} focused={headerFocused} headerCursor={route==='detail'?visibleLibraries.length:headerCursor} libraries={visibleLibraries} selectedLibraryId={selectedLibrary?.id} onLibrary={chooseLibrary} onAppearance={openAppearance} />
       {route==='appearance'?<Text accessibilityLiveRegion="polite" numberOfLines={2} style={[styles.notice,{height:40,marginTop:0,marginBottom:12}]}>{appearanceMessage||'System motion respects device accessibility. A still theme always disables animation.'}</Text>:null}
       <ScrollView ref={sceneScroll} style={styles.scroller} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled" onLayout={event=>setViewportHeight(event.nativeEvent.layout.height)} onScrollBeginDrag={()=>{activity.current.interact();navigationMode.current='touch';}} onScroll={event=>{const y=event.nativeEvent.contentOffset.y;sceneOffset.current=y;if(route==='library'){libraryScroll.current=y;withinLibraryRow.current=Math.max(0,y-libraryTop.current)%(cardHeight+gap);setRenderAnchor(feedScrollAnchor(y,libraryTop.current,columns,cardHeight+gap,feedSnapshot.known,totalItems));}}} scrollEventThrottle={16}>
@@ -378,11 +388,11 @@ export default function App(){
         <TextInput ref={input} style={styles.input} value={originText} onChangeText={value=>{activity.current.interact();setOriginText(value);}} autoCapitalize="none" autoCorrect={false} keyboardType="url" onSubmitEditing={()=>{input.current?.blur();void connect(originText);}} returnKeyType="done" />
         {button(busy?'Connecting...':'Connect',()=>{input.current?.blur();if(!busy)void connect(originText);})}
         <Text style={styles.small}>Up: edit address   Select: connect   Back: return   Menu: appearance</Text>
-      </View>:route==='detail' && selected?<NativeDetail theme={preferences.theme} width={width} height={height} reduced={reduced} origin={stored.origin} item={selected} progress={remembered} busy={busy} focused={!headerFocused} onPlay={()=>void play()} onPlayLayout={bounds=>{detailPlay.current=bounds;if(!headerFocused)revealFocus(bounds.y,bounds.height);}} />:<NativeLibrary theme={preferences.theme} width={width} height={height} reduced={reduced} origin={stored.origin} itemAt={index=>feed.current.itemAt(index)} total={totalItems} known={feedSnapshot.known} anchor={renderAnchor} viewport={viewportHeight} cursor={cursor} headerFocused={headerFocused} busy={busy} libraryName={selectedLibrary?.name??'Your collection'} errorAt={index=>feed.current.errorAt(index)} isLoading={index=>feed.current.isLoading(index)} onRetry={index=>loadFeed(index,true)} progress={stored.progress} onSelect={index=>{focusCursor(index);openDetails();}} onGridLayout={bounds=>{libraryTop.current=bounds.y;if(headerFocused)return;if(navigationMode.current==='touch'){const y=restoreFeedAnchor(clampFeedAnchor(renderAnchor,feedSnapshot.known,totalItems),withinLibraryRow.current,bounds.y,columns,cardHeight+gap);sceneOffset.current=y;libraryScroll.current=y;sceneScroll.current?.scrollTo({y,animated:false});}else revealFocus(bounds.y+feedItemTop(cursor,columns,cardHeight+gap),cardHeight);}} />}
+      </View>:route==='library'&&!librarySupport.supported?<NativeUnavailable theme={preferences.theme} width={width} height={height} name={selectedLibrary?.name??'Library'} reason={librarySupport.reason??'This content type is not supported on this device.'} />:route==='detail' && selected?selectedSupport.supported?<NativeDetail theme={preferences.theme} width={width} height={height} reduced={reduced} origin={stored.origin} item={selected} progress={remembered} busy={busy} focused={!headerFocused} onPlay={()=>void play()} onPlayLayout={bounds=>{detailPlay.current=bounds;if(!headerFocused)revealFocus(bounds.y,bounds.height);}} />:<NativeUnavailable theme={preferences.theme} width={width} height={height} name={selected.title} reason={selectedSupport.reason??'This format is not supported on this device.'} />:<NativeLibrary theme={preferences.theme} width={width} height={height} reduced={reduced} origin={stored.origin} itemAt={index=>feed.current.itemAt(index)} total={totalItems} known={feedSnapshot.known} anchor={renderAnchor} viewport={viewportHeight} cursor={cursor} headerFocused={headerFocused} busy={busy} libraryName={selectedLibrary?.name??'Your collection'} contentSupport={item=>nativeMediaContentSupport(item,stored)} errorAt={index=>feed.current.errorAt(index)} isLoading={index=>feed.current.isLoading(index)} onRetry={index=>loadFeed(index,true)} progress={stored.progress} onSelect={index=>{focusCursor(index);openDetails();}} onGridLayout={bounds=>{libraryTop.current=bounds.y;if(headerFocused)return;if(navigationMode.current==='touch'){const y=restoreFeedAnchor(clampFeedAnchor(renderAnchor,feedSnapshot.known,totalItems),withinLibraryRow.current,bounds.y,columns,cardHeight+gap);sceneOffset.current=y;libraryScroll.current=y;sceneScroll.current?.scrollTo({y,animated:false});}else revealFocus(bounds.y+feedItemTop(cursor,columns,cardHeight+gap),cardHeight);}} />}
       {route!=='appearance'&&route!=='library'?<Text accessibilityLiveRegion="polite" style={[styles.notice,{height:40}]} numberOfLines={2}>{message}</Text>:null}
 
       </Animated.View></ScrollView>
-      {route==='library'?<View style={{height:68,paddingTop:8}}><Text numberOfLines={1} style={[styles.footer,{height:18,lineHeight:18,marginTop:0}]}>{totalItems?'Title '+(cursor+1)+' of '+totalItems+'  ':''}Arrows: browse   Select: details / retry   Up from top: libraries   Back: exit   Menu: server</Text><Text accessibilityLiveRegion="polite" numberOfLines={2} style={[styles.notice,{height:40,marginTop:2}]}>{message||' '}</Text></View>:null}
+      {route==='library'?<View style={{height:68,paddingTop:8}}><Text numberOfLines={1} style={[styles.footer,{height:18,lineHeight:18,marginTop:0}]}>{librarySupport.supported?(totalItems?'Title '+(cursor+1)+' of '+totalItems+'  ':'')+'Arrows: browse   Select: details / retry   Up from top: libraries':'Left / Right: libraries   Select: choose'}   Back: exit   Menu: server</Text><Text accessibilityLiveRegion="polite" numberOfLines={2} style={[styles.notice,{height:40,marginTop:2}]}>{!librarySupport.supported?librarySupport.reason:!selectedSupport.supported?selectedSupport.reason:message||' '}</Text></View>:null}
     </>}
   </View>;
 }

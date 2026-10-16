@@ -220,6 +220,205 @@ class ArtifactAuditTests(unittest.TestCase):
             (path / 'failure-1.png').write_bytes(png)
             audit('playback-diagnostics', path)
 
+    def libraries_evidence(self, path, screenshot=True, **overrides):
+        data = {'schema': 1, 'generatedOnly': True, 'suite': 'libraries', 'status': 'failed',
+                'sourceRevision': 'a' * 40, 'stage': 'browser-settings', 'category': 'assertion',
+                'completedChecks': 12, 'events': {'consoleErrors': 0, 'pageErrors': 0, 'requestFailures': 0},
+                'screenshot': screenshot}
+        data.update(overrides)
+        (path / 'failure.json').write_text(json.dumps(data), encoding='utf-8')
+        image = 'failure-1.png' if screenshot else 'unavailable'
+        lines = ['Generated-only library suite: failed', f"sourceRevision={data['sourceRevision']}",
+                 f"stage={data['stage']} category={data['category']} checks={data['completedChecks']}",
+                 f"consoleErrors={data['events']['consoleErrors']} pageErrors={data['events']['pageErrors']} requestFailures={data['events']['requestFailures']}",
+                 f'screenshot={image}']
+        (path / 'browser-test.log').write_bytes(('\n'.join(lines) + '\n').encode())
+        if screenshot:
+            png = b'\x89PNG\r\n\x1a\n' + b'\x00' * 8 + (1440).to_bytes(4, 'big') + (1000).to_bytes(4, 'big')
+            (path / 'failure-1.png').write_bytes(png)
+        return data
+
+    def test_libraries_diagnostics_accept_only_declared_stages_categories_and_bounds(self):
+        stages = ['setup', 'api', 'migration', 'restart', 'baseline', 'browser-settings',
+                  'browser-navigation', 'browser-search', 'browser-concurrency', 'browser-unsupported', 'finalize']
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            for stage in stages:
+                self.libraries_evidence(path, stage=stage)
+                audit('libraries-diagnostics', path)
+            for category in ['assertion', 'timeout', 'network', 'startup', 'runner']:
+                self.libraries_evidence(path, category=category)
+                audit('libraries-diagnostics', path)
+            for bound in [0, 1000]:
+                self.libraries_evidence(path, completedChecks=bound,
+                                        events={'consoleErrors': bound * 10, 'pageErrors': bound * 10, 'requestFailures': bound * 10})
+                audit('libraries-diagnostics', path)
+            self.libraries_evidence(path)
+            summary = path / 'failure.json'
+            summary.write_bytes(summary.read_bytes().ljust(16384, b' '))
+            image = path / 'failure-1.png'
+            image.write_bytes(image.read_bytes().ljust(2 * 1024 * 1024, b'\x00'))
+            audit('libraries-diagnostics', path)
+
+    def test_libraries_diagnostics_reject_malformed_or_extended_summaries(self):
+        mutations = [
+            {'schema': True}, {'schema': 2}, {'generatedOnly': False}, {'generatedOnly': 1},
+            {'suite': 'playback'}, {'status': 'passed'}, {'sourceRevision': 'A' * 40},
+            {'sourceRevision': 'a' * 39}, {'sourceRevision': None}, {'sourceRevision': ['a' * 40]},
+            {'stage': 'unknown'}, {'stage': []}, {'category': 'unknown'}, {'category': {}},
+            {'completedChecks': -1}, {'completedChecks': 1001}, {'completedChecks': True}, {'completedChecks': 1.0},
+            {'events': []}, {'events': {}},
+            {'events': {'consoleErrors': 0, 'pageErrors': 0, 'requestFailures': 0, 'raw': 1}},
+            {'screenshot': 1}, {'screenshot': 'failure-1.png'}, {'rawError': 'unstructured'},
+        ]
+        for field in ['consoleErrors', 'pageErrors', 'requestFailures']:
+            for value in [-1, 10001, True, 1.0, '1']:
+                events = {'consoleErrors': 0, 'pageErrors': 0, 'requestFailures': 0}
+                events[field] = value
+                mutations.append({'events': events})
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            for mutation in mutations:
+                with self.subTest(fields=list(mutation)):
+                    data = self.libraries_evidence(path)
+                    data.update(mutation)
+                    (path / 'failure.json').write_text(json.dumps(data), encoding='utf-8')
+                    with self.assertRaisesRegex(SystemExit, 'summary is missing or invalid'):
+                        audit('libraries-diagnostics', path)
+            for raw in [b'[]', b'null', b'{', b'\xff']:
+                self.libraries_evidence(path)
+                (path / 'failure.json').write_bytes(raw)
+                with self.assertRaisesRegex(SystemExit, 'summary is missing or invalid'):
+                    audit('libraries-diagnostics', path)
+            data = self.libraries_evidence(path)
+            for field in data:
+                missing = dict(data)
+                del missing[field]
+                (path / 'failure.json').write_text(json.dumps(missing), encoding='utf-8')
+                with self.assertRaisesRegex(SystemExit, 'summary is missing or invalid'):
+                    audit('libraries-diagnostics', path)
+
+    def test_libraries_diagnostics_reject_unbounded_or_unexpected_files(self):
+        for name, content in [
+            ('browser-test.log', b'x' * 16385), ('failure.json', b'x' * 16385),
+            ('failure-1.png', b'x' * (2 * 1024 * 1024 + 1)),
+            ('browser-test.log', b''), ('failure.json', b''), ('failure-1.png', b''),
+            ('failure-2.png', b'generated'), ('error-context.md', b'raw context'),
+            ('trace.zip', b'raw trace'), ('fixture.mp4', b'generated fixture'),
+        ]:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary)
+                self.libraries_evidence(path)
+                (path / name).write_bytes(content)
+                with self.assertRaises(SystemExit):
+                    audit('libraries-diagnostics', path)
+        for size in [(1280, 900), (1440, 999), (1439, 1000)]:
+            with self.subTest(size=size), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary)
+                self.libraries_evidence(path)
+                (path / 'failure-1.png').write_bytes(b'\x89PNG\r\n\x1a\n' + b'\x00' * 8
+                                                    + size[0].to_bytes(4, 'big') + size[1].to_bytes(4, 'big'))
+                with self.assertRaises(SystemExit):
+                    audit('libraries-diagnostics', path)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            self.libraries_evidence(path)
+            image = path / 'failure-1.png'
+            image.write_bytes(b'invalid!' + image.read_bytes()[8:])
+            with self.assertRaises(SystemExit):
+                audit('libraries-diagnostics', path)
+
+    def test_libraries_diagnostics_require_the_declared_image_and_exact_log(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            self.libraries_evidence(path, screenshot=False)
+            audit('libraries-diagnostics', path)
+            (path / 'failure.json').unlink()
+            with self.assertRaisesRegex(SystemExit, 'file count'):
+                audit('libraries-diagnostics', path)
+            self.libraries_evidence(path)
+            (path / 'failure-1.png').unlink()
+            with self.assertRaises(SystemExit):
+                audit('libraries-diagnostics', path)
+            self.libraries_evidence(path)
+            self.libraries_evidence(path, screenshot=False)
+            with self.assertRaises(SystemExit):
+                audit('libraries-diagnostics', path)
+            for name in ['failure.json', 'browser-test.log']:
+                self.libraries_evidence(path)
+                (path / name).unlink()
+                with self.assertRaises(SystemExit):
+                    audit('libraries-diagnostics', path)
+            for suffix in [b'Unexpected raw error stack', b'\n', b'\xff']:
+                self.libraries_evidence(path)
+                with (path / 'browser-test.log').open('ab') as output:
+                    output.write(suffix)
+                with self.assertRaises(SystemExit):
+                    audit('libraries-diagnostics', path)
+            self.libraries_evidence(path)
+            log = path / 'browser-test.log'
+            log.write_bytes(log.read_bytes().replace(b'\n', b'\r\n'))
+            with self.assertRaises(SystemExit):
+                audit('libraries-diagnostics', path)
+
+    def test_libraries_diagnostics_reject_private_markers_without_echoing_them(self):
+        markers = [b'C:/Users/fixture/private', b'/Users/fixture/private', b'/home/fixture', b'/tmp/fixture',
+                   b'/var/fixture', b'/mnt/fixture', b'id_ed25519', b'known_hosts', b'ghp_' + b'x' * 36,
+                   b'https://fixture:password@example.invalid/', b'/volume1/fixture', b'192.168.2.3']
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            for name in ['browser-test.log', 'failure.json', 'failure-1.png']:
+                for marker in markers:
+                    self.libraries_evidence(path)
+                    with (path / name).open('ab') as output:
+                        output.write(marker)
+                    with self.assertRaises(SystemExit) as caught:
+                        audit('libraries-diagnostics', path)
+                    self.assertNotIn(marker.decode(), str(caught.exception))
+            for name in ['browser-test.log', 'failure.json']:
+                self.libraries_evidence(path)
+                with (path / name).open('ab') as output:
+                    output.write(b'Z:/fixture')
+                with self.assertRaisesRegex(SystemExit, 'Private host/source marker'):
+                    audit('libraries-diagnostics', path)
+
+    def test_libraries_screenshot_compression_is_not_mistaken_for_a_drive_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            self.libraries_evidence(path)
+            noise = random.Random(0).randbytes(1440 * 1000)
+            rows = b''.join(b'\x00' + noise[row * 1440:(row + 1) * 1440] for row in range(1000))
+            def chunk(kind, data):
+                return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
+            png = (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', 1440, 1000, 8, 0, 0, 0, 0))
+                   + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b''))
+            self.assertRegex(png, rb'[A-Z]:[\\/]')
+            (path / 'failure-1.png').write_bytes(png)
+            audit('libraries-diagnostics', path)
+
+    def test_libraries_diagnostics_require_ordinary_root_and_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)
+            self.libraries_evidence(path)
+            audit('libraries-diagnostics', path)
+            with patch('audit_ci_artifacts.Path.is_symlink', return_value=True):
+                with self.assertRaisesRegex(SystemExit, 'ordinary directory'):
+                    audit('libraries-diagnostics', path)
+            with patch('audit_ci_artifacts.Path.lstat', return_value=SimpleNamespace(st_mode=0, st_file_attributes=0x400)):
+                with self.assertRaisesRegex(SystemExit, 'ordinary directory'):
+                    audit('libraries-diagnostics', path)
+            image = path / 'failure-1.png'
+            with patch('audit_ci_artifacts.Path.is_symlink', lambda file: file == image):
+                with self.assertRaisesRegex(SystemExit, 'Unexpected file'):
+                    audit('libraries-diagnostics', path)
+            image.unlink()
+            image.mkdir()
+            with self.assertRaisesRegex(SystemExit, 'Unexpected file'):
+                audit('libraries-diagnostics', path)
+            with self.assertRaisesRegex(SystemExit, 'ordinary directory'):
+                audit('libraries-diagnostics', path / 'failure.json')
+            with self.assertRaisesRegex(SystemExit, 'ordinary directory'):
+                audit('libraries-diagnostics', path / 'missing')
 
     def generated_evidence(self, path):
         png = b'\x89PNG\r\n\x1a\n' + b'\x00' * 8 + (1280).to_bytes(4, 'big') + (900).to_bytes(4, 'big')

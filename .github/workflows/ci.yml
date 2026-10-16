@@ -21,6 +21,7 @@ jobs:
           cache-dependency-path: package-lock.json
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run lint && npm run format:check
+      - run: node --test scripts/libraries-diagnostics.test.mjs
       - run: python3 scripts/test_ci_artifacts.py
   web-preview:
     runs-on: ubuntu-24.04
@@ -40,7 +41,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-web-rust-1.94.0-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('**/*.rs', '**/Cargo.toml') }}
+          key: ${{ runner.os }}-web-rust-1.94.0-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('**/*.rs', '**/Cargo.toml', 'packages/contracts/content-registry.json') }}
           restore-keys: ${{ runner.os }}-web-rust-1.94.0-${{ hashFiles('Cargo.lock') }}-
       - run: cargo +1.94.0 build --workspace --locked
       - run: npm ci --ignore-scripts --no-audit --no-fund
@@ -69,10 +70,23 @@ jobs:
         id: playback-regressions
         run: npm --prefix clients/web run test:playback
       - name: Configurable library and navigation regressions
+        id: libraries-regressions
         run: node scripts/libraries-smoke.mjs
         env:
           SHINEMA_LIBRARIES_SKIP_BEFORE: '1'
           SHINEMA_EVIDENCE_PAUSE_MS: '0'
+      - name: Audit library failure diagnostics
+        id: audit-library-diagnostics
+        if: failure() && steps.libraries-regressions.outcome == 'failure'
+        run: python3 scripts/audit_ci_artifacts.py libraries-diagnostics ci-artifacts/libraries-failure
+      - name: Save library failure diagnostics
+        if: failure() && steps.audit-library-diagnostics.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shinema-libraries-failure-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ci-artifacts/libraries-failure/
+          if-no-files-found: error
+          retention-days: 7
       - name: Audit playback failure diagnostics
         id: audit-playback-diagnostics
         if: failure() && steps.playback-regressions.outcome == 'failure'
@@ -149,11 +163,13 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-server-rust-1.94.0-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('**/*.rs', '**/Cargo.toml') }}
+          key: ${{ runner.os }}-server-rust-1.94.0-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('**/*.rs', '**/Cargo.toml', 'packages/contracts/content-registry.json') }}
           restore-keys: ${{ runner.os }}-server-rust-1.94.0-${{ hashFiles('Cargo.lock') }}-
       - run: cargo +1.94.0 fmt --all --check
       - run: cargo +1.94.0 clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo +1.94.0 test --workspace --locked
+      - name: Synthetic remote reader policy regressions
+        run: python3 -m unittest discover -s server/tests -p 'test_remote_reader.py'
       - run: cargo +1.94.0 build --workspace --locked
       - run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: clients/native

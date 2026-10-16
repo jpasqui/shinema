@@ -7,13 +7,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
-pub(crate) const CONTAINERS: &[&str] = &[
-    "mp4", "m4v", "mkv", "webm", "avi", "ts", "m2ts", "mov", "mpg", "mpeg", "wmv", "vob",
-];
-
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Classification {
+    pub content_type_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub library_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -106,6 +107,7 @@ pub(crate) fn classify(relative: &Path) -> Classification {
         series_title: Some(text(series)),
         season,
         episode: pair.map(|p| p.1),
+        ..Default::default()
     }
 }
 

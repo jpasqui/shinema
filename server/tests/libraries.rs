@@ -545,6 +545,235 @@ async fn approved_root_selector_uses_longest_match_and_empty_catalogs_keep_descr
     assert_eq!(page["fullLibrary"], true);
 }
 
+#[tokio::test]
+async fn unknown_content_type_survives_legacy_saves_restart_and_preserves_progress_without_execution()
+ {
+    let (temp, router) = fixture();
+    let root = temp.path().join("media");
+    let state = temp.path().join("state");
+    let path = root.join("TV/Drama/Season 1/Drama S01E01.mkv");
+    let id = format!(
+        "{:x}",
+        Sha256::digest(b"TV/Drama/Season 1/Drama S01E01.mkv")
+    );
+    let progress = json!({"positionSeconds":17.0,"durationSeconds":90.0});
+    assert_eq!(
+        request(
+            &router,
+            "PUT",
+            &format!("/api/media/{id}/progress"),
+            None,
+            Some(progress.clone())
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let mut config = configuration(&router).await;
+    config["libraries"][1]["contentTypeId"] = "music".into();
+    config["libraries"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("mediaType");
+    let (status, saved) = request(
+        &router,
+        "PUT",
+        "/api/admin/libraries",
+        Some(TOKEN),
+        Some(config),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let registry = get(&router, "/api/content-registry").await;
+    assert_eq!(registry, saved["registry"]);
+    assert_eq!(registry, get(&router, "/api/libraries").await["registry"]);
+    let unknown = registry["contentTypes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|kind| kind["id"] == "music")
+        .unwrap();
+    assert_eq!(unknown["availability"], "unavailable");
+    assert_eq!(
+        unknown["capabilities"],
+        json!({"metadata":false,"play":false,"view":false,"launch":false})
+    );
+    assert!(
+        unknown["reason"]
+            .as_str()
+            .is_some_and(|reason| !reason.is_empty())
+    );
+    let items = get(&router, "/api/catalog?library=tv").await;
+    assert_eq!(
+        items["total"], 2,
+        "Unsupported selection retains longest-match membership"
+    );
+    for item in items["items"].as_array().unwrap() {
+        assert_eq!(item["contentTypeId"], "music");
+        assert!(item.get("collection").is_none());
+        assert!(item.get("seriesId").is_none());
+        assert_eq!(item["formatId"], "mkv");
+        assert_eq!(item["mimeType"], "video/x-matroska");
+    }
+    assert_eq!(get(&router, "/api/series?library=tv").await["total"], 0);
+    assert_eq!(
+        get(&router, &format!("/api/media/{id}/progress")).await,
+        progress
+    );
+    // A removed source would normally produce404/409.422 demonstrates that
+    // unsupported operations stop before filesystem checks or ffprobe work.
+    std::fs::remove_file(&path).unwrap();
+    for suffix in ["stream", "playback", "hls/index.m3u8", "hls/0.ts"] {
+        assert_eq!(
+            request(
+                &router,
+                "GET",
+                &format!("/api/media/{id}/{suffix}"),
+                None,
+                None
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{suffix}"
+        );
+    }
+    let metadata = get(&router, &format!("/api/media/{id}/metadata")).await;
+    assert_eq!(metadata["metadataPending"], false);
+    assert!(metadata["items"][0].get("metadataSource").is_none());
+    let mut legacy = configuration(&router).await;
+    for library in legacy["libraries"].as_array_mut().unwrap() {
+        library.as_object_mut().unwrap().remove("contentTypeId");
+    }
+    legacy["libraries"][1]["mediaType"] = "mixed".into();
+    legacy["libraries"][1]["name"] = "Audio archive".into();
+    let (status, legacy_saved) = request(
+        &router,
+        "PUT",
+        "/api/admin/libraries",
+        Some(TOKEN),
+        Some(legacy),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let retained = legacy_saved["libraries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|library| library["id"] == "tv")
+        .unwrap();
+    assert_eq!(retained["contentTypeId"], "music");
+    assert_eq!(retained["mediaType"], "music");
+    assert_eq!(retained["name"], "Audio archive");
+    std::fs::write(&path, b"synthetic read-only media").unwrap();
+    for extension in ["mp3", "docx", "exe", "json", "srt"] {
+        std::fs::write(
+            root.join(format!("Ignored.{extension}")),
+            b"unsupported synthetic fixture",
+        )
+        .unwrap();
+    }
+    drop(router);
+    let reopened = app(&root, &state);
+    assert_eq!(
+        get(&reopened, "/api/catalog").await["total"],
+        4,
+        "Registry seam never expands indexed file formats"
+    );
+    assert_eq!(
+        get(&reopened, &format!("/api/media/{id}/progress")).await,
+        progress
+    );
+    assert_eq!(get(&reopened, "/api/content-registry").await, registry);
+    let mut restore = configuration(&reopened).await;
+    restore["libraries"][1]["contentTypeId"] = "tv".into();
+    restore["libraries"][1]["mediaType"] = "tv".into();
+    assert_eq!(
+        request(
+            &reopened,
+            "PUT",
+            "/api/admin/libraries",
+            Some(TOKEN),
+            Some(restore)
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        get(&reopened, &format!("/api/media/{id}/progress")).await,
+        progress
+    );
+    assert_eq!(
+        request(
+            &reopened,
+            "GET",
+            &format!("/api/media/{id}/stream"),
+            None,
+            None
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn invalid_or_conflicting_content_type_fields_are_rejected_without_config_loss() {
+    let (_temp, router) = fixture();
+    let original = configuration(&router).await;
+    for (canonical, alias) in [
+        (json!("music"), json!("tv")),
+        (Value::Null, json!("movies")),
+        (json!("../unsafe"), json!("../unsafe")),
+        (json!("MixedCase"), json!("MixedCase")),
+        (json!(""), json!("")),
+    ] {
+        let mut config = original.clone();
+        config["libraries"][0]["contentTypeId"] = canonical;
+        config["libraries"][0]["mediaType"] = alias;
+        assert_eq!(
+            request(
+                &router,
+                "PUT",
+                "/api/admin/libraries",
+                Some(TOKEN),
+                Some(config)
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(configuration(&router).await, original);
+    }
+    for include_canonical in [true, false] {
+        for invalid in [Value::Null, json!(["tv"]), json!({"id":"tv"})] {
+            let mut config = original.clone();
+            if !include_canonical {
+                config["libraries"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("contentTypeId");
+            }
+            config["libraries"][0]["mediaType"] = invalid;
+            assert_eq!(
+                request(
+                    &router,
+                    "PUT",
+                    "/api/admin/libraries",
+                    Some(TOKEN),
+                    Some(config)
+                )
+                .await
+                .0,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Legacy aliases must be actual strings when present"
+            );
+            assert_eq!(configuration(&router).await, original);
+        }
+    }
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn linked_source_folders_are_not_offered_or_accepted() {
