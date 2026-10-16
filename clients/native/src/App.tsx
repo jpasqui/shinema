@@ -8,10 +8,11 @@ import {fresh,recover,move,pageFor} from './domain.ts';
 import type {Stored} from './domain.ts';
 import {SessionGuard,StorageQueue,ProgressQueue,connectValidated,persistThenSync,syncProgress,resolveResume,backDestination} from './session.ts';
 import type {ConnectionStamp} from './session.ts';
+import {Requests} from './Requests.tsx';
 import {SubtitleController,SubtitleClock,SUBTITLE_SEEK_RECOVERY_MS,emptySubtitles,subtitleAt} from './subtitles.ts';
 
-const Host=NativeModules.ShinemaHost as {readState:()=>Promise<string>;stageState:(value:string)=>Promise<void>;writeState:(value:string)=>Promise<void>;finish:()=>void};
-type Route='setup'|'library'|'detail'|'player';
+const Host=NativeModules.ShinemaHost as {readState:()=>Promise<string>;stageState:(value:string)=>Promise<void>;writeState:(value:string)=>Promise<void>;finish:()=>void;setRequestNavigation:(enabled:boolean)=>void};
+type Route='setup'|'library'|'detail'|'player'|'requests';
 type Key={code:number;action:number;repeat:number};
 const disabledTextTrack={type:SelectedTrackType.DISABLED};
 const deviceLanguages=()=>{try{return [Intl.DateTimeFormat().resolvedOptions().locale];}catch{return [];}};
@@ -41,6 +42,8 @@ export default function App(){
   const session=useRef(new SessionGuard());const handler=useRef<(key:Key)=>void>(()=>{});
   const saveCurrent=useRef<()=>Promise<void>>(async()=>{});const persistQueue=useRef(new StorageQueue());
   const syncQueue=useRef(new ProgressQueue());
+  const requestsBack=useRef<()=>void>(()=>{});
+  const [requestsFocused,setRequestsFocused]=useState(false);
   const items=stored.catalog?.items??[];const selected=items[cursor];
   const source=useMemo(()=>({uri:stored.origin+(selected?.streamPath??'')}),[stored.origin,selected?.streamPath]);
   useEffect(()=>{setCaption(subtitleAt(subtitles.cues,subtitleTime.current.current()));},[subtitles.cues]);
@@ -70,6 +73,11 @@ export default function App(){
   ];
   const subtitleStatus=subtitles.status==='loading'?'Loading subtitle tracks…':subtitles.status==='error'?'Subtitles unavailable. Open Subtitles to retry.':subtitles.content==='loading'?'Loading subtitle text…':subtitles.content==='error'?'Subtitle text failed. Open Subtitles to retry or choose Off.':subtitles.selected?`Subtitles: ${subtitles.tracks.find(track=>track.id===subtitles.selected)?.label??'selected'}`:subtitles.tracks.length?'Subtitles: Off':'No subtitle tracks';
 
+  useEffect(()=>{
+    Host.setRequestNavigation(route==='requests');
+    return()=>Host.setRequestNavigation(false);
+  },[route]);
+
   function update(value:Stored){store.current=value;setStored(value);}
   function acceptCatalog(value:Stored){
     const switched=value.origin!==store.current.origin;
@@ -77,7 +85,11 @@ export default function App(){
     setCursor(current=>switched?0:Math.min(current,Math.max(0,(value.catalog?.items.length??0)-1)));
   }
   function openDetails(){
+    setRequestsFocused(false);
     session.current.cancelConnection();setBusy(false);setRoute('detail');
+  }
+  function openRequests(){
+    setRequestsFocused(true);session.current.cancelConnection();session.current.invalidatePlayback();setBusy(false);setRoute('requests');
   }
   function persist():Promise<void>{
     // Sample when this queue slot executes, so an old snapshot cannot overwrite
@@ -158,6 +170,7 @@ export default function App(){
     if(back){
       if(route==='player' && subtitleMenu){if(!backHeld.current){backHeld.current=true;setSubtitleMenu(false);}return;}
       if(backHeld.current)return;backHeld.current=true;session.current.invalidatePlayback();
+      if(route==='requests'){requestsBack.current();return;}
       if(route==='setup'){session.current.cancelConnection();setBusy(false);}
       const destination=backDestination(route,Boolean(store.current.catalog));
       if(route==='player'){subtitleController.current.cancel();stopCaption();setPaused(true);void save();activeItem.current=null;activeDestination.current=null;setLoading(false);}
@@ -165,6 +178,9 @@ export default function App(){
       else {setRoute(destination);setBusy(false);}
       return;
     }
+    // Request controls use native focus/Pressable handling. Never let their
+    // Select/Menu keys fall through to the library, server or player actions.
+    if(route==='requests')return;
     if(route==='setup'){
       if(key.code===19)input.current?.focus();
       else if((key.code===23 || key.code===66) && !busy)void connect(originText);
@@ -172,6 +188,12 @@ export default function App(){
     }
     if(key.code===82 && route!=='player'){session.current.cancelConnection();setBusy(false);setRoute('setup');setMessage('Edit server address, then connect.');return;}
     if(route==='library'){
+      if(requestsFocused){
+        if(key.code===20)setRequestsFocused(false);
+        else if((key.code===23 || key.code===66) && key.repeat===0)openRequests();
+        return;
+      }
+      if(key.code===19 && cursor%8<4){setRequestsFocused(true);return;}
       const direction=({21:-1,22:1,19:-4,20:4} as Record<number,number>)[key.code];
       if(direction!==undefined)setCursor(current=>move(current,direction,items.length));
       else if((key.code===23 || key.code===66) && key.repeat===0 && selected)openDetails();
@@ -221,7 +243,7 @@ export default function App(){
       </View>:null}
     </>:<>
       <Text style={styles.brand}>Shinema</Text>
-      {route==='setup'?<View key="setup" style={styles.detail}>
+      {route==='requests'?<Requests key={stored.origin} origin={stored.origin} backHandler={requestsBack} onBack={()=>setRoute('library')} />:route==='setup'?<View key="setup" style={styles.detail}>
         <Text style={styles.title}>Connect your library</Text><Text style={styles.text}>HTTPS server address</Text>
         <TextInput ref={input} style={styles.input} value={originText} onChangeText={setOriginText} autoCapitalize="none" autoCorrect={false} keyboardType="url" onSubmitEditing={()=>{input.current?.blur();void connect(originText);}} returnKeyType="done" />
         {button(busy?'Connecting...':'Connect',()=>{input.current?.blur();if(!busy)void connect(originText);})}
@@ -230,16 +252,19 @@ export default function App(){
         <Text style={styles.title}>{selected.title}</Text><Text style={styles.text}>{selected.container.toUpperCase()}  /  {Math.round(selected.sizeBytes/1048576)} MiB</Text>
         <Text style={styles.text}>{remembered && remembered.positionSeconds<remembered.durationSeconds-3?`Resume from ${Math.floor(remembered.positionSeconds)} seconds`:'Ready to play'}</Text>
         {button(busy?'Checking resume...':'Play',()=>void play())}<Text style={styles.text}>Select: play   Back: library</Text>
-      </View>:<View key="library" style={styles.grid}>
+      </View>:<View key="library">
+        <View style={styles.toolbar}><Pressable accessibilityRole="button" style={[styles.button,styles.toolbarButton,requestsFocused&&styles.focus]} onPress={openRequests}><Text style={styles.buttonText}>Requests</Text></Pressable></View>
+        <View style={styles.grid}>
         {Array.from({length:8},(_,slot)=>{
           const index=pageFor(cursor)*8+slot;const item=items[index];
-          return <Pressable key={slot} style={[styles.card,{width:(width-94)/4},cursor===index&&styles.focus]} onPress={()=>{if(item){setCursor(index);openDetails();}}}>
+          return <Pressable key={slot} style={[styles.card,{width:(width-94)/4},cursor===index&&!requestsFocused&&styles.focus]} onPress={()=>{if(item){setCursor(index);openDetails();}}}>
             {item?<><View style={[styles.cover,{backgroundColor:`hsl(${parseInt(item.id.slice(0,4),16)%360},35%,25%)`}]}><Text style={styles.initials}>{item.title.slice(0,2).toUpperCase()}</Text></View><Text style={styles.cardTitle} numberOfLines={1}>{item.title}</Text><Text style={styles.small}>{item.container.toUpperCase()}{stored.progress[item.id]?`  ${Math.floor(stored.progress[item.id].positionSeconds)} s`:''}</Text></>:null}
           </Pressable>;
         })}
+        </View>
       </View>}
-      <Text style={styles.notice}>{message}</Text>
-      {route==='library'?<Text style={styles.footer}>{items.length?`${cursor+1} / ${items.length}  `:''}Arrows: browse   Select: details   Back: exit   Menu: server</Text>:null}
+      {route!=='requests'?<Text style={styles.notice}>{message}</Text>:null}
+      {route==='library'?<Text style={styles.footer}>{items.length?`${cursor+1} / ${items.length}  `:''}Arrows: browse   Up from first row: requests   Select: open   Back: exit   Menu: server</Text>:null}
     </>}
   </View>;
 }
@@ -247,6 +272,8 @@ export default function App(){
 const styles=StyleSheet.create({
   shell:{flex:1,backgroundColor:'#101621',padding:28},brand:{color:'#7ce8cb',fontSize:28,fontWeight:'700',marginBottom:14},
   grid:{flexDirection:'row',flexWrap:'wrap',gap:10},card:{height:177,padding:6,borderWidth:3,borderColor:'transparent',backgroundColor:'#1c2739',borderRadius:8},focus:{borderColor:'#7ce8cb'},
+  toolbar:{flexDirection:'row',justifyContent:'flex-end',marginBottom:12},
+  toolbarButton:{borderWidth:3,borderColor:'transparent'},
   cover:{height:115,alignItems:'center',justifyContent:'center',borderRadius:4},initials:{fontSize:38,color:'#e6f6f2',fontWeight:'600'},cardTitle:{fontSize:17,color:'#fff',marginTop:6},small:{fontSize:12,color:'#b9c9df'},
   detail:{gap:18,paddingTop:20,maxWidth:780},title:{fontSize:30,fontWeight:'600',color:'#fff'},text:{fontSize:18,color:'#c9d5e5'},notice:{color:'#9fe6d8',fontSize:15,marginTop:12},footer:{color:'#afbdd0',fontSize:14,marginTop:10},
   button:{backgroundColor:'#7ce8cb',padding:14,borderRadius:6,alignSelf:'flex-start'},buttonText:{fontSize:20,fontWeight:'600',color:'#101621'},input:{backgroundColor:'#24334b',color:'#fff',fontSize:20,padding:14,borderRadius:6},

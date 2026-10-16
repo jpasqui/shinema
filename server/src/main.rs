@@ -25,12 +25,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         shinema_server::Library::open(&media, &state)?
     };
+    let requests = shinema_server::requests::Engine::from_env(&state)?;
     let listener = tokio::net::TcpListener::bind(bind).await?;
+    let bind = listener.local_addr()?;
     eprintln!("Shinema listening on loopback; API version 1");
-    axum::serve(listener, shinema_server::router_at(library, bind))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await?;
+    axum::serve(
+        listener,
+        shinema_server::router_at_with_requests(library, bind, requests),
+    )
+    .with_graceful_shutdown(async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
+    .await?;
     Ok(())
 }
