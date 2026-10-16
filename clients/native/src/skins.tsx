@@ -72,6 +72,7 @@ export function NativeHeader({
   selectedLibraryId,
   onLibrary,
   onAppearance,
+  onRequests,
 }: {
   theme: Theme;
   width: number;
@@ -81,6 +82,7 @@ export function NativeHeader({
   selectedLibraryId?: string;
   onLibrary: (library: LibraryDescriptor) => void;
   onAppearance: () => void;
+  onRequests?: () => void;
 }) {
   const archive = theme.design.skin === 'archive';
   const colors = theme.colors;
@@ -90,7 +92,7 @@ export function NativeHeader({
   useEffect(() => {
     if (focused)
       tabs.current?.scrollTo({
-        x: Math.max(0, Math.min(headerCursor, libraries.length - 1) * 136 - 16),
+        x: Math.max(0, Math.min(headerCursor, libraries.length) * 136 - 16),
         animated: false,
       });
   }, [focused, headerCursor, libraries.length]);
@@ -219,6 +221,40 @@ export function NativeHeader({
             </Text>
           </Pressable>
         ))}
+        {onRequests ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{
+              selected: focused && headerCursor === libraries.length + 1,
+            }}
+            onPress={onRequests}
+            style={{
+              width: 128,
+              height: 44,
+              paddingHorizontal: 12,
+              justifyContent: 'center',
+              borderWidth: 2,
+              borderColor:
+                focused && headerCursor === libraries.length + 1
+                  ? colors.focus
+                  : 'transparent',
+              backgroundColor: colors.surface,
+              borderRadius: archive ? 0 : 6,
+            }}
+          >
+            <Text
+              numberOfLines={1}
+              style={{
+                color: colors.text,
+                lineHeight: 18,
+                height: 18,
+                fontFamily: layout.fontFamily,
+              }}
+            >
+              Requests
+            </Text>
+          </Pressable>
+        ) : null}
       </ScrollView>
     </View>
   );
@@ -1256,6 +1292,8 @@ export function NativePlayerChrome({
   clock,
   duration,
   message,
+  subtitleStatus,
+  onSubtitles,
 }: {
   theme: Theme;
   title: string;
@@ -1264,6 +1302,8 @@ export function NativePlayerChrome({
   clock: number;
   duration: number;
   message: string;
+  subtitleStatus?: string;
+  onSubtitles?: () => void;
 }) {
   const colors = theme.colors;
   const archive = theme.design.skin === 'archive';
@@ -1347,8 +1387,23 @@ export function NativePlayerChrome({
           lineHeight: 18,
         }}
       >
-        Select: pause / play Left / Right: seek Back: details
+        Select: pause / play Left / Right: seek Menu: subtitles Back: details
       </Text>
+      {onSubtitles ? (
+        <Pressable accessibilityRole="button" onPress={onSubtitles}>
+          <Text
+            numberOfLines={2}
+            style={{
+              minHeight: 40,
+              color: colors.text,
+              fontSize: 14,
+              lineHeight: 20,
+            }}
+          >
+            {subtitleStatus}
+          </Text>
+        </Pressable>
+      ) : null}
       <Text
         numberOfLines={2}
         style={{ height: 40, color: colors.text, fontSize: 14, lineHeight: 20 }}

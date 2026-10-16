@@ -623,7 +623,15 @@ async fn unknown_content_type_survives_legacy_saves_restart_and_preserves_progre
     // A removed source would normally produce404/409.422 demonstrates that
     // unsupported operations stop before filesystem checks or ffprobe work.
     std::fs::remove_file(&path).unwrap();
-    for suffix in ["stream", "playback", "hls/index.m3u8", "hls/0.ts"] {
+    for suffix in [
+        "stream",
+        "playback",
+        "hls/index.m3u8",
+        "hls/0.ts",
+        "subtitles",
+        "subtitles/embedded-0.vtt",
+        "subtitles/external-test.vtt",
+    ] {
         assert_eq!(
             request(
                 &router,

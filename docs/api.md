@@ -77,3 +77,6 @@ Registry capabilities describe implemented metadata/play/view/launch actions, no
 Optional presentation fields are `posterPath`, `backdropPath`, `summary`, `year` and `genres`. Artwork paths remain opaque same-origin media routes; no source filesystem path is returned. Series pages may reference the associated media poster. Direct provider fetching, provenance, expiry and configuration are described in [full-library setup](full-library.md#independent-metadata-and-artwork).
 
 Provider metadata is optional and asynchronous. `GET /api/media/{id}/metadata` returns a one-item catalog; `metadataPending` permits bounded refresh while file browsing remains available. `GET /api/metadata/status` reports enabled providers and queued work without credentials. Catalogs include `fullLibrary`; matched entries carry `fileTitle`, optional `fileYear`, `metadataSource`, `metadataUrl`, and `metadataExpiresAt` (Unix seconds). Expired client fields fall back to file details. Image endpoints never initiate provider or NAS reads.
+## Built-in requests
+
+The opt-in Radarr/Sonarr request API, authentication boundary, and setup prerequisites are documented in [requests.md](requests.md). Its TypeScript contract is `packages/contracts/requests.ts`. Requests are disabled in an unconfigured server; existing library and playback endpoints keep their current behavior.

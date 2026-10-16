@@ -118,6 +118,7 @@ export async function installStartupProbe(
         navigationSlotCustom: '[data-navigation-slot="custom-link"]',
         navigationSlotSearch: '[data-navigation-slot="search-link"]',
         navigationSettings: '.navigation-settings-button',
+        navRequests: '[data-requests-slot]',
         main: '.app main',
         sidebar: '.library-sidebar',
         collectionRow: '.library-sidebar nav',

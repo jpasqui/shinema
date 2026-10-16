@@ -36,12 +36,16 @@ export function TopNavigation({
   browsing,
   activeLibraryId,
   onNavigate,
+  requestsActive = false,
+  onRequests,
 }: {
   libraries: readonly LibraryDescriptor[];
   librariesReady?: boolean;
   browsing: boolean;
   activeLibraryId?: string;
   onNavigate: (destination: TopNavigationDestination) => void;
+  requestsActive?: boolean;
+  onRequests?: () => void;
 }) {
   const [preferences, setPreferences] = useState(readNavigation);
   const [draft, setDraft] = useState(preferences);
@@ -169,6 +173,16 @@ export function TopNavigation({
                 aria-hidden="true"
               />
             ),
+          )}
+          {onRequests && (
+            <button
+              data-requests-slot
+              className={`nav-link${requestsActive ? ' active' : ''}`}
+              aria-current={requestsActive ? 'page' : undefined}
+              onClick={onRequests}
+            >
+              Requests
+            </button>
           )}
         </div>
         <button

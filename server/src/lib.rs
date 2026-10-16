@@ -25,11 +25,23 @@ mod libraries;
 mod metadata;
 mod playback;
 mod request_boundary;
+pub mod requests;
 mod ssh;
 mod web;
 pub use catalog::Classification;
 pub use ssh::SshConfig;
 mod state_files;
+mod subtitles;
+
+#[cfg(test)]
+mod performance_budgets;
+
+#[cfg(not(test))]
+type EntryIndex = BTreeMap<String, Entry>;
+#[cfg(test)]
+use performance_budgets::EntryIndex;
+#[cfg(test)]
+mod performance_tests;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -101,10 +113,11 @@ pub struct Library {
     directory: Option<cap_std::fs::Dir>,
     remote: Option<SshConfig>,
     remote_transfers: Arc<tokio::sync::Semaphore>,
-    entries: BTreeMap<String, Entry>,
+    entries: EntryIndex,
     source_folders: BTreeSet<String>,
     database: Mutex<Connection>,
     playback: playback::Engine,
+    subtitles: subtitles::Engine,
     metadata: Arc<metadata::Engine>,
     web_root: Option<PathBuf>,
 }
@@ -242,6 +255,8 @@ impl Library {
             libraries::assign(&entries, &configuration).into_iter(),
         )?;
         let directory = cap_std::fs::Dir::open_ambient_dir(&root, cap_std::ambient_authority())?;
+        #[cfg(test)]
+        let entries = EntryIndex::from(entries);
         Ok(Arc::new(Self {
             root: Some(root),
             directory: Some(directory),
@@ -251,6 +266,7 @@ impl Library {
             source_folders,
             database: Mutex::new(db),
             playback,
+            subtitles: subtitles::Engine::new(),
             metadata: metadata::Engine::new(&state)?,
             web_root: web::configured()?,
         }))
@@ -390,6 +406,8 @@ impl Library {
             "INSERT INTO scan_summary VALUES (?1,?2,?3)",
             params![scan.files_seen, scan.ignored_files, scan.links_skipped],
         )?;
+        #[cfg(test)]
+        let entries = EntryIndex::from(entries);
         Ok(Arc::new(Self {
             root: None,
             directory: None,
@@ -399,6 +417,7 @@ impl Library {
             source_folders,
             database: Mutex::new(db),
             playback,
+            subtitles: subtitles::Engine::new(),
             metadata: metadata::Engine::new(&state)?,
             web_root: web::configured()?,
         }))
@@ -498,7 +517,12 @@ pub fn router(library: Arc<Library>) -> Router {
     router_at(library, "127.0.0.1:8787".parse().expect("Loopback literal"))
 }
 pub fn router_at(library: Arc<Library>, bind: std::net::SocketAddr) -> Router {
-    configured_router(library, bind, std::env::var("SHINEMA_ADMIN_TOKEN").ok())
+    configured_router(
+        library,
+        bind,
+        std::env::var("SHINEMA_ADMIN_TOKEN").ok(),
+        requests::Engine::disabled(),
+    )
 }
 
 /// Explicit operator configuration for embedders and isolated synthetic tests.
@@ -508,6 +532,20 @@ pub fn router_with_admin_token(library: Arc<Library>, token: Option<String>) -> 
         library,
         "127.0.0.1:8787".parse().expect("Loopback literal"),
         token,
+        requests::Engine::disabled(),
+    )
+}
+
+pub fn router_at_with_requests(
+    library: Arc<Library>,
+    bind: std::net::SocketAddr,
+    requests: Arc<requests::Engine>,
+) -> Router {
+    configured_router(
+        library,
+        bind,
+        std::env::var("SHINEMA_ADMIN_TOKEN").ok(),
+        requests,
     )
 }
 
@@ -515,8 +553,10 @@ fn configured_router(
     library: Arc<Library>,
     bind: std::net::SocketAddr,
     token: Option<String>,
+    requests: Arc<requests::Engine>,
 ) -> Router {
     library.playback.set_origin(bind);
+    library.subtitles.set_origin(bind);
     Router::new()
         .route(
             "/health",
@@ -535,13 +575,16 @@ fn configured_router(
         .route("/api/media/{id}/poster",get(poster))
         .route("/api/media/{id}/backdrop",get(backdrop))
         .route("/api/media/{id}/playback", get(playback_info))
+        .route("/api/media/{id}/subtitles", get(subtitles::list))
+        .route("/api/media/{id}/subtitles/{track}", get(subtitles::content))
         .route("/api/media/{id}/hls/{segment}", get(hls))
         .route("/api/media/{id}/progress", get(progress).put(save_progress))
         .layer(DefaultBodyLimit::max(4096))
         .fallback(static_web)
-        .layer(axum::middleware::from_fn(request_boundary::guard))
         .layer(Extension(libraries::ManagementAccess::new(token)))
         .with_state(library)
+        .merge(requests::router(requests, bind))
+        .layer(axum::middleware::from_fn(request_boundary::guard))
 }
 
 async fn libraries_public(
@@ -695,23 +738,23 @@ async fn series(
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     check_revision(&db, &query)?;
-    let mut value = catalog::series(&db, query).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (mut value, representatives) = catalog::series_with_representatives(&db, query)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut pending = false;
     for row in value["items"]
         .as_array_mut()
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
     {
         let sid = row["id"].as_str().unwrap_or_default();
-        let json = db
-            .query_row(
-                "SELECT media_json FROM media_catalog WHERE series_id=?1 LIMIT 1",
-                [sid],
-                |row| row.get::<_, String>(0),
-            )
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        // The page query selects representatives from the same canonical
+        // snapshot as membership and classification, including live edits.
+        #[cfg(test)]
+        crate::performance_budgets::record_representative_lookup();
         {
-            let mut item: Media =
-                serde_json::from_str(&json).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let mut item = representatives
+                .get(sid)
+                .cloned()
+                .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
             item.title = row["title"].as_str().unwrap_or_default().to_string();
             pending |= library.metadata.overlay(&mut item, true, false);
             row["title"] = item.title.into();
@@ -735,6 +778,7 @@ async fn series(
     value["metadataPending"] = pending.into();
     Ok(Json(value))
 }
+
 async fn seasons(
     State(library): State<Arc<Library>>,
     ApiPath(id): ApiPath<String>,

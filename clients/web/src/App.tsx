@@ -33,6 +33,8 @@ import { LibraryFeature, SkinHeader, DetailPresentation } from './skins.tsx';
 import { TopNavigation } from './TopNavigation.tsx';
 import { libraryBrowseCollection, useLibraries } from './libraries.ts';
 import type { TopNavigationDestination } from '../../../packages/contracts/navigation.ts';
+import { Requests } from './Requests.tsx';
+import { SubtitleControls } from './SubtitleControls.tsx';
 
 const storageKey = 'shinema.web.cache.v1';
 const demo = import.meta.env.VITE_DEMO_MODE === 'true';
@@ -122,9 +124,9 @@ export default function App() {
   const cache = useRef<Cache>(empty());
   const [version, render] = useState(0);
   const [browseNavigation, setBrowseNavigation] = useState(initialBrowse);
-  const [route, setRoute] = useState<'library' | 'detail' | 'player'>(
-    'library',
-  );
+  const [route, setRoute] = useState<
+    'library' | 'detail' | 'player' | 'requests'
+  >('library');
   const [selected, setSelected] = useState<Media | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -359,7 +361,11 @@ export default function App() {
   }, [route]);
   useEffect(() => {
     const key = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape' && route === 'detail') {
+      if (
+        !event.defaultPrevented &&
+        event.key === 'Escape' &&
+        (route === 'detail' || route === 'requests')
+      ) {
         event.preventDefault();
         showLibrary();
       }
@@ -456,6 +462,20 @@ export default function App() {
           browsing={route === 'library'}
           activeLibraryId={browseNavigation.libraryId}
           onNavigate={navigate}
+          requestsActive={route === 'requests'}
+          onRequests={
+            demo
+              ? undefined
+              : () => {
+                  setNavigationIntent(null);
+                  guard.current.next();
+                  setOpening(false);
+                  if (route === 'library')
+                    libraryScroll.current = window.scrollY;
+                  setRoute('requests');
+                  window.scrollTo(0, 0);
+                }
+          }
         />
         <span className="context-label">
           {demo ? 'Demo library' : 'Connected library'}
@@ -475,7 +495,9 @@ export default function App() {
           </p>
         )}
       </div>
-      {route === 'player' && selected && selectedSupport.supported ? (
+      {route === 'requests' ? (
+        <Requests onBack={showLibrary} />
+      ) : route === 'player' && selected && selectedSupport.supported ? (
         <Player
           item={selected}
           progress={resume}
@@ -867,7 +889,11 @@ function Player({
       event.preventDefault();
       snapshot();
       back();
-    } else if (event.target instanceof HTMLInputElement) return;
+    } else if (
+      event.target instanceof HTMLInputElement ||
+      event.target instanceof HTMLSelectElement
+    )
+      return;
     else if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
       event.preventDefault();
       seek(
@@ -1009,6 +1035,7 @@ function Player({
           {muted ? 'Enable audio' : 'Mute'}
         </button>
       </div>
+      <SubtitleControls key={item.id} mediaId={item.id} video={video} />
       <div className="now-playing">
         <div>
           <h1>{title(item)}</h1>
