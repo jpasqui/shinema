@@ -496,6 +496,7 @@ async function verifyTopNavigation() {
   assert.deepEqual(await main.getByRole('button').allTextContents(), [
     'Anime shortcut',
     'Discover',
+    'Requests',
     'Settings',
   ]);
   await page
@@ -519,12 +520,18 @@ async function verifyTopNavigation() {
     .getByRole('button', { name: 'Save navigation', exact: true })
     .click();
   await navigation.getByRole('button', { name: 'Close', exact: true }).click();
-  assert.equal(await main.getByRole('button').count(), 1);
+  assert.deepEqual(await main.getByRole('button').allTextContents(), [
+    'Requests',
+    'Settings',
+  ]);
   await page.reload();
   await expect(
     main.getByRole('button', { name: 'Navigation settings', exact: true }),
   ).toBeVisible();
-  assert.equal(await main.getByRole('button').count(), 1);
+  assert.deepEqual(await main.getByRole('button').allTextContents(), [
+    'Requests',
+    'Settings',
+  ]);
   await main
     .getByRole('button', { name: 'Navigation settings', exact: true })
     .click();
