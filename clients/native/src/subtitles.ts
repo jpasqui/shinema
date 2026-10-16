@@ -174,12 +174,32 @@ export type SubtitleTransport = {
   ) => Promise<string>;
 };
 
+// These optional capabilities belong to the Node/browser fetch fallback;
+// React Native's declarations correctly omit them from its buffered polyfill.
+type ByteReader = {
+  read: () => Promise<{ done: true } | { done: false; value: Uint8Array }>;
+  cancel: () => Promise<void>;
+  releaseLock: () => void;
+};
+type StreamingResponse = Response & { body?: { getReader: () => ByteReader } };
+type Utf8Decoder = {
+  decode: (input?: Uint8Array, options?: { stream?: boolean }) => string;
+};
+type DecoderConstructor = new (
+  encoding: string,
+  options: { fatal: boolean },
+) => Utf8Decoder;
+
 async function responseFor(
   origin: string,
   path: string,
   signal: AbortSignal,
 ): Promise<Response> {
-  const response = await fetch(origin + path, { signal, redirect: 'error' });
+  const options: RequestInit & { redirect: 'error' } = {
+    signal,
+    redirect: 'error',
+  };
+  const response = await fetch(origin + path, options);
   if (!response.ok || (response.url && new URL(response.url).origin !== origin))
     throw new Error('Subtitle request failed');
   if (Number(response.headers.get('content-length')) > MAX_BYTES)
@@ -194,9 +214,13 @@ async function responseText(response: Response): Promise<string> {
     (!/^\d+$/.test(length) || !Number.isSafeInteger(Number(length)))
   )
     throw new Error('Invalid subtitle response size');
-  if (response.body?.getReader && typeof TextDecoder !== 'undefined') {
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder('utf-8', { fatal: true });
+  const body = (response as StreamingResponse).body;
+  const Decoder = (
+    globalThis as typeof globalThis & { TextDecoder?: DecoderConstructor }
+  ).TextDecoder;
+  if (body?.getReader && Decoder) {
+    const reader = body.getReader();
+    const decoder = new Decoder('utf-8', { fatal: true });
     let bytes = 0;
     let text = '';
     try {

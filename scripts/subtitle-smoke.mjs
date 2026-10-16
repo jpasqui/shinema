@@ -225,7 +225,16 @@ try {
       );
     const content = await (await fetch(api + en.contentPath)).text();
     assert(content.startsWith('WEBVTT\n'));
-    assert(content.includes('00:00:10.000 --> 00:00:15.000'));
+    // AAC encoder priming changes the container origin slightly across FFmpeg
+    // versions. Require the original media-time cue, with no seek/segment offset;
+    // the codec test separately checks exact millisecond timestamps without AAC.
+    const middleCue =
+      /00:00:(\d{2}\.\d{3}) --> 00:00:(\d{2}\.\d{3})\nEnglish: after seek and resume/.exec(
+        content,
+      );
+    assert(middleCue);
+    assert(Math.abs(Number(middleCue[1]) - 10) < 0.1);
+    assert(Math.abs(Number(middleCue[2]) - 15) < 0.1);
     await page.goto('http://127.0.0.1:29883');
     await page
       .getByRole('button', { name: `Open ${name}`, exact: true })
