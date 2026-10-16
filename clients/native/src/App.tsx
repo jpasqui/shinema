@@ -18,7 +18,7 @@ import {FEED_BATCH_SIZE,NativeFeed,clampFeedAnchor,feedItemTop,feedScrollAnchor,
 import {HttpStatusError,loadLibrarySnapshot,visibleLibraries as visibleLibraryDescriptors,nativeFeedScope,navigationContentSupport,nativeMediaContentSupport,snapshotCatalogForActivation} from './libraries.ts';
 import {NativeActivity,StartupHydration} from './lifecycle.ts';
 import type {FeedScope} from './feed.ts';
-import {encryptedTransport,NativeTransportPolicy,selectionTransport,readyTransport,restoreSelection} from './transport.ts';
+import {encryptedTransport,NativeTransportPolicy,nativeTransportScope,selectionTransport,readyTransport,restoreSelection} from './transport.ts';
 import {moveSetupFocus,setupScrollOffset} from './setup-focus.ts';
 import type {SetupControl,SetupBounds} from './setup-focus.ts';
 import {initialPlayback,loadedPlayback} from './playback.ts';
@@ -73,7 +73,7 @@ export default function App(){
   const activity=useRef(new NativeActivity());const mounted=useRef(true);
   const startupStorage=useRef<StartupHydration<Stored>|null>(null);
   const [,notifyTransport]=useState(0);const policy=useRef<NativeTransportPolicy|null>(null);
-  if(!policy.current)policy.current=new NativeTransportPolicy(origin=>Host.setLocalHttpOrigin(origin),()=>{if(mounted.current)notifyTransport(value=>value+1);});
+  if(!policy.current)policy.current=new NativeTransportPolicy(origin=>Host.setLocalHttpOrigin(origin),()=>{if(mounted.current)notifyTransport(value=>value+1);},nativeTransportScope);
   const saveCurrent=useRef<()=>Promise<void>>(async()=>{});const persistQueue=useRef(new StorageQueue());
   const syncQueue=useRef(new ProgressQueue());
   const requestsBack=useRef<()=>void>(()=>{});
@@ -401,7 +401,7 @@ export default function App(){
   }
 
   useEffect(()=>{
-    let alive=true;mounted.current=true;const startup=activity.current.capture();
+    let alive=true;mounted.current=true;policy.current!.claim();const startup=activity.current.capture();
     void startupState().ready().then(restored=>{if(!alive||!activity.current.current(startup))return;setOriginText(restored.origin);draftConsent.current=restored.localHttpOrigin??null;setDraftHttpOrigin(draftConsent.current);if(restored.origin.startsWith('http:')&&!restored.localHttpOrigin){void policy.current!.revoke().catch(()=>{});setMessage('Saved local server needs explicit HTTP consent before connecting.');return;}if(store.current.catalog||store.current.libraries){setHeaderFocused(!navigationContentSupport(store.current).supported);setRoute('library');}void connect(restored.origin,false,undefined,restored.localHttpOrigin??null);}).catch(()=>{if(alive&&activity.current.current(startup))setMessage('Could not read the saved library. Enter your server address to reconnect.');});
     const keys=new NativeEventEmitter(NativeModules.ShinemaHost).addListener('ShinemaKey',event=>{
       const key=event as Partial<Key>;
@@ -413,7 +413,7 @@ export default function App(){
     const nativeBack=BackHandler.addEventListener('hardwareBackPress',()=>{
       handler.current({code:4,action:0,repeat:0});handler.current({code:4,action:1,repeat:0});return true;
     });
-    return()=>{alive=false;mounted.current=false;keys.remove();lifecycle.remove();nativeBack.remove();clearSubtitleRecovery();subtitleTime.current.stop();subtitleController.current.cancel();cancelConnection();feed.current.cancelPending();void policy.current!.revoke().catch(()=>{});};
+    return()=>{alive=false;mounted.current=false;keys.remove();lifecycle.remove();nativeBack.remove();clearSubtitleRecovery();subtitleTime.current.stop();subtitleController.current.cancel();cancelConnection();feed.current.cancelPending();void policy.current!.dispose().catch(()=>{});};
   },[]);
 
   handler.current=(key:Key)=>{
