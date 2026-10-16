@@ -543,10 +543,12 @@ test('the shared native card frame survives partial-cache fill, metadata changes
                 nativeGridFrame(theme, width, height, 3),
                 before,
               );
-              assert.equal(geometry.cardTitle, 20);
+              assert.equal(geometry.cardTitle, layout.cardTitleLine * 2);
               assert.equal(geometry.cardMetadata, 16);
-              assert.equal(geometry.detailSummary, 100);
-              assert.equal(geometry.play, 54);
+              const tvMarquee =
+                base.design.skin === 'marquee' && !layout.compact;
+              assert.equal(geometry.detailSummary, tvMarquee ? 54 : 100);
+              assert.equal(geometry.play, tvMarquee ? 48 : 54);
               const mounted = feedWindow(
                 10000,
                 73,
@@ -627,4 +629,114 @@ test('virtual rows keep item coordinates through append/loading/failure/window e
     }
   assert.equal(feedItemTop(73, 4, 200), 3600);
   assert.equal(feedItemTop(73, 2, 200), 7200);
+});
+
+test('wide native row windows reduce overscan before dropping any supported visible card', () => {
+  for (const base of [defaultTheme, archiveTheme])
+    for (const density of THEME_DESIGN_VALUES.density)
+      for (const cards of THEME_DESIGN_VALUES.cards)
+        for (const [width, height] of [
+          [390, 844],
+          [960, 540],
+          [1280, 720],
+          [1920, 1080],
+        ]) {
+          const theme = { ...base, design: { ...base.design, density, cards } };
+          const layout = nativeSkinLayout(theme, width, height);
+          const stride = layout.cardHeight + layout.gap;
+          const total = 10003;
+          for (const anchor of [0, 47, 48, 73, 4999, 9999, total - 1]) {
+            const window = feedWindow(
+              total,
+              anchor,
+              layout.columns,
+              stride,
+              height,
+            );
+            assert.ok(window.end - window.start <= 48);
+            assert.ok(window.start <= anchor && window.end > anchor);
+            for (const withinRow of [0, 17, stride - 1]) {
+              const firstRow = Math.floor(anchor / layout.columns);
+              const visibleEnd = Math.min(
+                total,
+                (firstRow + Math.ceil((height + withinRow) / stride)) *
+                  layout.columns,
+              );
+              assert.ok(window.start <= firstRow * layout.columns);
+              assert.ok(window.end >= visibleEnd);
+            }
+            assert.ok(
+              Math.abs(
+                window.top +
+                  (Math.floor(anchor / layout.columns) -
+                    Math.floor(window.start / layout.columns)) *
+                    stride -
+                  nativeGridFrame(theme, width, height, anchor).top,
+              ) < 1e-8,
+            );
+            assert.ok(
+              Math.abs(
+                window.top +
+                  Math.ceil((window.end - window.start) / layout.columns) *
+                    stride +
+                  window.bottom -
+                  Math.ceil(total / layout.columns) * stride,
+              ) < 1e-8,
+            );
+          }
+        }
+});
+
+test('six through nine native columns share the fixed mounted-card budget without shortening the viewport', () => {
+  for (const columns of [6, 7, 8, 9]) {
+    const rowHeight = 300;
+    const anchor = columns * 100;
+    const window = feedWindow(10000, anchor, columns, rowHeight, 900);
+    assert.equal(window.end - window.start, Math.floor(48 / columns) * columns);
+    // A touch scroll can begin at the final pixel of the anchored row.
+    assert.ok(window.start <= anchor);
+    assert.ok(window.end >= anchor + columns * 4);
+    assert.equal(window.height, Math.ceil(10000 / columns) * rowHeight);
+  }
+});
+
+test('native row window clamps empty, tail and extreme-aspect anchors without moving global coordinates', () => {
+  for (const columns of [1, 2, 6, 7, 8, 9, 48, 64])
+    for (const total of [
+      0,
+      1,
+      columns - 1,
+      columns,
+      columns + 1,
+      48,
+      49,
+      10003,
+    ])
+      for (const requested of [-1, 0, 47, 48, 4999, total - 1, total + 100]) {
+        const window = feedWindow(total, requested, columns, 0.5, 100000);
+        assert.ok(Object.values(window).every(Number.isFinite));
+        assert.ok(
+          window.start >= 0 &&
+            window.end >= window.start &&
+            window.end <= total,
+        );
+        assert.ok(window.end - window.start <= 48);
+        if (total > 0) {
+          const anchor = Math.min(total - 1, Math.max(0, requested));
+          assert.ok(window.start <= anchor && window.end > anchor);
+          assert.equal(
+            window.top +
+              (Math.floor(anchor / columns) -
+                Math.floor(window.start / columns)) *
+                0.5,
+            feedItemTop(anchor, columns, 0.5),
+          );
+        }
+        assert.equal(
+          window.top +
+            Math.ceil((window.end - window.start) / columns) * 0.5 +
+            window.bottom,
+          Math.ceil(total / columns) * 0.5,
+        );
+      }
 });

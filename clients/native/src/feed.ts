@@ -13,6 +13,7 @@ import type {
 
 export const FEED_BATCH_SIZE = 48;
 export const FEED_CACHE_BATCHES = 5;
+const MAX_MOUNTED_CARDS = 48;
 export type FeedScope = {
   origin: string;
   localHttpOrigin?: string | null;
@@ -387,21 +388,46 @@ export function feedWindow(
   const count = Math.max(0, Math.floor(total));
   const cols = Math.max(1, Math.floor(columns));
   const rows = Math.ceil(count / cols);
-  const visible = Math.max(
-    1,
-    Math.min(8, Math.ceil(Math.max(0, viewport) / rowHeight)),
+  const selected = Math.min(
+    Math.max(0, count - 1),
+    Math.max(0, Math.floor(anchor)),
+  );
+  // Include the partly visible final row when a touch scroll starts inside a
+  // row. Wider grids spend their fixed card budget on visible rows first.
+  const visible = Math.max(1, Math.ceil(Math.max(0, viewport) / rowHeight) + 1);
+  // Extreme aspect ratios may need more visible cards than the budget permits;
+  // those keep a bounded anchor window rather than shortening global spacers.
+  const mountedRows = Math.min(
+    rows,
+    Math.max(1, Math.floor(MAX_MOUNTED_CARDS / cols)),
+    visible + 4,
+  );
+  const before = Math.min(
+    2,
+    Math.floor(Math.max(0, mountedRows - visible) / 2),
   );
   const startRow = Math.max(
     0,
     Math.min(
-      Math.max(0, rows - visible - 4),
-      Math.floor(Math.max(0, anchor) / cols) - 2,
+      Math.max(0, rows - mountedRows),
+      Math.floor(selected / cols) - before,
     ),
   );
-  const endRow = Math.min(rows, startRow + visible + 4);
+  const endRow = startRow + mountedRows;
+  let start = startRow * cols;
+  let end = Math.min(count, endRow * cols);
+  // An extreme column count may exceed the budget in a single row. Keep an
+  // anchored slice of that row without changing its global coordinates.
+  if (end - start > MAX_MOUNTED_CARDS) {
+    start = Math.max(
+      start,
+      Math.min(selected - MAX_MOUNTED_CARDS / 2, end - MAX_MOUNTED_CARDS),
+    );
+    end = Math.min(end, start + MAX_MOUNTED_CARDS);
+  }
   return {
-    start: startRow * cols,
-    end: Math.min(count, endRow * cols),
+    start,
+    end,
     top: startRow * rowHeight,
     bottom: Math.max(0, (rows - endRow) * rowHeight),
     height: rows * rowHeight,

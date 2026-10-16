@@ -146,7 +146,7 @@ test('system reduced motion remains respected and explicit reduced always wins',
 test('authored design metrics change cards, type and density while preserving TV column/page navigation', () => {
   for (const theme of [defaultTheme, archiveTheme]) {
     const tv = nativeSkinLayout(theme, 1280, 720);
-    assert.equal(tv.columns, 4);
+    assert.equal(tv.columns, theme.design.skin === 'marquee' ? 7 : 4);
     assert.equal(pageFor(11), 1);
     assert.equal(nativeSkinLayout(theme, 390, 844).columns, 2);
   }

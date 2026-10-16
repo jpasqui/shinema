@@ -37,10 +37,20 @@ Web preferences use `shinema.appearance.v1`; native preferences use a separate a
 
 No subtitle/request fields or feature logic are changed. The open subtitle/request work touches both App files and the native host module; appearance imports/header hooks and separate native preference methods are the expected merge intersections. Shared catalog/playback/progress APIs remain unchanged.
 
+## Native TV Marquee
+
+The TV adapter uses a single compact header, a full feature at entry, and six, seven or eight portrait columns according to viewport width. Compact density can add one column. Poster artwork keeps its 2:3 ratio; two title lines and metadata have separate reserved space. Cinema display titles use the platform serif face, while navigation and captions use a local UI face. Imported palettes and the existing typography, density, cards and motion choices remain authoritative.
+
+A new library opens at its header and feature. Down deliberately enters the grid, revealing the library heading and a complete focused card without a clipped feature strip. Up from the first row restores the feature. Returning from details retains the selected global slot and scroll position. Delayed connection work cannot reset the browsing region after newer input. The card window reduces overscan as column count increases and retains the existing 48-card mounting limit.
+
+TV details place title, metadata and Play together beside artwork. Loading, missing artwork, failed images and empty libraries retain their authored frames. Focus changes artwork transform and its outline without changing card layout; reduced motion remains immediate. Unsupported content still uses the canonical support gates, and every artwork URI still passes the existing transport validator.
+
+Native geometry tests cover the Shield-sized 960×540 logical viewport, wider TV and phone layouts, caption fit, poster proportions, detail action bounds and bounded feed windows. Device screenshots and interaction results must identify the exact installed build and fixture separately; host geometry and APK assembly are not physical-rendering evidence.
+
 ## Motion and verification limits
 
 Web focus scales only the artwork inside a fixed card hit rectangle; route/artwork arrivals use bounded transform/opacity transitions. Native uses cancellable native-driver transform/opacity animations and immediate focus borders. Scrolling to reveal remote focus is immediate. There are no perpetual artwork pans, animation packages or imported animation code. Loading geometry and bounded rendering are covered in [loading-and-browsing.md](loading-and-browsing.md); host checks do not establish TV frame-time performance.
 
 System reduced motion is always respected. An explicit reduced-motion preference or a theme's `still` setting also disables animations, transitions and smooth scrolling. Native starts conservatively with reduced motion until accessibility status is known and guards late status reads.
 
-Run `npm test` for shared/native tests; web unit/type/build checks remain under `clients/web`. The existing isolated Playwright suite includes appearance, unsafe import, reset/persistence, photo/fallback, focus/reduced-motion and playback continuity tests with generated fixtures. CI builds the unsigned Android client. Browser screenshots/walkthroughs show the actual web client at TV and phone viewport sizes, not React Native rendering or device validation. TV hardware, physical phone/remote/IME, native visual behavior, HDR and a broad accessibility audit remain unverified.
+Run `npm test` for shared/native tests; web unit/type/build checks remain under `clients/web`. The existing isolated Playwright suite includes appearance, unsafe import, reset/persistence, photo/fallback, focus/reduced-motion and playback continuity tests with generated fixtures. CI builds the unsigned Android client. Browser screenshots/walkthroughs show the actual web client at TV and phone viewport sizes. Physical device results are reported separately from those browser and build checks; they do not establish HDR, frame-time performance, IME behavior or a broad accessibility audit.

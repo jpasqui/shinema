@@ -21,9 +21,12 @@ import type {
 import type { LibraryDescriptor } from '../../../packages/contracts/index.ts';
 import { feedSlotCount, feedWindow } from './feed.ts';
 import { artworkUri } from './preferences.ts';
-import { headerStripIndex } from './header-navigation.ts';
 import {
+  nativeArtworkTypography,
+  nativeDetailScene,
+  nativeFeatureScene,
   nativeGridFrame,
+  nativeHeaderScrollOffset,
   nativeReservedGeometry,
   nativeSkinLayout,
 } from './skin-layout.ts';
@@ -96,17 +99,178 @@ export function NativeHeader({
   const colors = theme.colors;
   const layout = nativeSkinLayout(theme, width, 720);
   const geometry = nativeReservedGeometry(theme, width, 720);
+  const inline = !archive && !layout.compact;
   const tabs = useRef<React.ComponentRef<typeof ScrollView>>(null);
+  const tabPositions = useRef<Record<number, number>>({});
   useEffect(() => {
     if (focused)
       tabs.current?.scrollTo({
-        x: Math.max(
-          0,
-          headerStripIndex(libraries.length, headerCursor) * 136 - 16,
+        x: nativeHeaderScrollOffset(
+          libraries.length,
+          headerCursor,
+          inline,
+          tabPositions.current,
         ),
         animated: false,
       });
-  }, [focused, headerCursor, libraries.length]);
+  }, [focused, headerCursor, libraries.length, inline, width]);
+  if (inline) {
+    const tab = (
+      key: string,
+      label: string,
+      cursor: number,
+      onPress: () => void,
+      selected = false,
+      action?: 'appearance' | 'requests' | 'server',
+    ) => (
+      <Pressable
+        key={key}
+        accessibilityRole="button"
+        accessibilityLabel={
+          action === 'appearance' ? 'Appearance and motion settings' : label
+        }
+        accessibilityState={{ selected }}
+        onPress={onPress}
+        onFocus={() => action && onActionFocus?.(action)}
+        onLayout={(event) => {
+          const x = event.nativeEvent.layout.x;
+          tabPositions.current[cursor] = x;
+          if (focused && headerCursor === cursor)
+            tabs.current?.scrollTo({ x: Math.max(0, x - 12), animated: false });
+        }}
+        style={{
+          width: 108,
+          height: geometry.navigation,
+          paddingHorizontal: 10,
+          justifyContent: 'center',
+          alignItems: 'center',
+          borderWidth: 2,
+          borderColor:
+            focused && headerCursor === cursor ? colors.focus : 'transparent',
+          borderRadius: 5,
+          backgroundColor:
+            focused && headerCursor === cursor ? colors.surface : 'transparent',
+        }}
+      >
+        <Text
+          numberOfLines={1}
+          style={{
+            height: 20,
+            lineHeight: 20,
+            fontSize: 14,
+            fontFamily: layout.bodyFontFamily,
+            color:
+              selected || (focused && headerCursor === cursor)
+                ? colors.text
+                : colors.muted,
+          }}
+        >
+          {label}
+        </Text>
+        <View
+          style={{
+            position: 'absolute',
+            bottom: 1,
+            height: 2,
+            width: 26,
+            backgroundColor: selected ? colors.accent : 'transparent',
+          }}
+        />
+      </Pressable>
+    );
+    return (
+      <View
+        style={{
+          height: geometry.header,
+          marginBottom: geometry.headerMargin,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 24,
+        }}
+      >
+        <View
+          style={{
+            width: 142,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 5,
+          }}
+        >
+          <Text
+            numberOfLines={1}
+            style={{
+              height: 38,
+              lineHeight: 38,
+              fontSize: 28,
+              letterSpacing: -1,
+              fontFamily: layout.displayFontFamily,
+              color: colors.text,
+            }}
+          >
+            shinema
+          </Text>
+          <View
+            style={{
+              width: 5,
+              height: 5,
+              borderRadius: 3,
+              marginTop: 16,
+              backgroundColor: colors.accent,
+            }}
+          />
+        </View>
+        <ScrollView
+          ref={tabs}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={{
+            flex: 1,
+            height: geometry.navigation,
+            maxHeight: geometry.navigation,
+          }}
+          contentContainerStyle={{ gap: 8 }}
+        >
+          {libraries.map((library, index) =>
+            tab(
+              `library:${library.id}`,
+              library.name,
+              index,
+              () => onLibrary(library),
+              library.id === selectedLibraryId,
+            ),
+          )}
+          {tab(
+            'appearance',
+            'Appearance',
+            libraries.length,
+            onAppearance,
+            false,
+            'appearance',
+          )}
+          {onRequests
+            ? tab(
+                'requests',
+                'Requests',
+                libraries.length + 1,
+                onRequests,
+                false,
+                'requests',
+              )
+            : null}
+          {onServer
+            ? tab(
+                'server',
+                'Server',
+                libraries.length + 2,
+                onServer,
+                false,
+                'server',
+              )
+            : null}
+        </ScrollView>
+      </View>
+    );
+  }
   return (
     <View style={{ marginBottom: 16 }}>
       <View
@@ -129,7 +293,7 @@ export function NativeHeader({
                 height: 36,
                 lineHeight: 36,
                 color: colors.text,
-                fontFamily: layout.fontFamily,
+                fontFamily: layout.displayFontFamily,
                 fontSize: archive ? (width < 700 ? 26 : 30) : 28,
                 letterSpacing: archive ? 0 : 1,
               }}
@@ -313,12 +477,19 @@ function Artwork({
   title,
   colors,
   reduced,
+  displayFontFamily = 'serif',
+  coverWidth = 160,
+  coverHeight = 240,
 }: {
   uri?: string;
   title: string;
   colors: ThemeColors;
   reduced: boolean;
+  displayFontFamily?: string;
+  coverWidth?: number;
+  coverHeight?: number;
 }) {
+  const cover = nativeArtworkTypography(coverWidth, coverHeight);
   const opacity = useRef(new Animated.Value(0)).current;
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -350,17 +521,92 @@ function Artwork({
         { backgroundColor: colors.elevated, overflow: 'hidden' },
       ]}
     >
-      <View style={base.placeholder}>
-        <Text style={{ fontSize: 36, fontWeight: '500', color: colors.muted }}>
-          {title.slice(0, 2).toUpperCase()}
-        </Text>
-        <Text style={{ color: colors.muted, fontSize: 11 }}>
-          {failed
-            ? 'Artwork unavailable'
-            : uri
-              ? 'Loading artwork'
-              : 'No artwork'}
-        </Text>
+      <View
+        style={{
+          position: 'absolute',
+          top: '12%',
+          left: '16%',
+          width: '92%',
+          height: '80%',
+          borderWidth: 1,
+          borderColor: colors.muted,
+          opacity: 0.12,
+          transform: [{ rotate: '-13deg' }],
+        }}
+      />
+      <View
+        style={{
+          position: 'absolute',
+          top: '20%',
+          left: '27%',
+          width: '92%',
+          height: '80%',
+          borderWidth: 1,
+          borderColor: colors.muted,
+          opacity: 0.1,
+          transform: [{ rotate: '-13deg' }],
+        }}
+      />
+      <View
+        style={{
+          flex: 1,
+          padding: cover.padding,
+          gap: cover.gap,
+          backgroundColor: colors.elevated,
+        }}
+      >
+        {cover.kicker ? (
+          <Text
+            numberOfLines={1}
+            style={{
+              height: cover.kicker,
+              lineHeight: cover.kicker,
+              color: colors.muted,
+              fontSize: 8,
+              letterSpacing: 1.5,
+            }}
+          >
+            SHINEMA
+          </Text>
+        ) : null}
+        <View style={{ flex: 1, minHeight: 0, justifyContent: 'center' }}>
+          <Text
+            numberOfLines={cover.titleLines}
+            style={{
+              fontFamily: displayFontFamily,
+              fontSize: cover.titleSize,
+              lineHeight: cover.titleLine,
+              color: colors.text,
+            }}
+          >
+            {title}
+          </Text>
+          <View
+            style={{
+              marginTop: 8,
+              height: 2,
+              width: 22,
+              backgroundColor: colors.accent,
+            }}
+          />
+        </View>
+        {cover.footer ? (
+          <Text
+            numberOfLines={1}
+            style={{
+              height: cover.footer,
+              lineHeight: cover.footer,
+              color: colors.muted,
+              fontSize: 9,
+            }}
+          >
+            {failed
+              ? 'Artwork unavailable'
+              : uri
+                ? 'Loading artwork'
+                : 'Library edition'}
+          </Text>
+        ) : null}
       </View>
       {uri && !failed ? (
         <Animated.View style={[StyleSheet.absoluteFill, { opacity }]}>
@@ -414,24 +660,34 @@ function MarqueeFeature({
   const layout = nativeSkinLayout(theme, width, height);
   const geometry = nativeReservedGeometry(theme, width, height);
   const colors = theme.colors;
-  const uri = artwork ? imageFor(origin, item, false, transport) : undefined;
+  const backdrop = artwork
+    ? artworkUri(origin, item, 'backdrop', transport)
+    : undefined;
+  const poster = artwork
+    ? artworkUri(origin, item, 'poster', transport)
+    : undefined;
+  const uri = backdrop ?? poster;
+  const posterOnly = !backdrop && Boolean(poster);
+  const scene = nativeFeatureScene(theme, width, height, posterOnly);
   return (
     <View
       style={{
         height: geometry.feature,
-        borderRadius: 10,
+        borderRadius: 8,
         overflow: 'hidden',
         marginBottom: 16,
-        backgroundColor: colors.surface,
+        backgroundColor: colors.background,
       }}
     >
       <View
         style={{
           position: 'absolute',
-          right: 0,
-          top: 0,
-          bottom: 0,
-          width: '58%',
+          right: scene.artRight,
+          top: scene.artTop,
+          width: scene.artWidth,
+          height: scene.artHeight,
+          overflow: 'hidden',
+          borderRadius: posterOnly ? 3 : 8,
         }}
       >
         <Artwork
@@ -440,14 +696,18 @@ function MarqueeFeature({
           title={item?.title ?? 'Your collection'}
           colors={colors}
           reduced={reduced}
+          displayFontFamily={layout.displayFontFamily}
+          coverWidth={scene.artWidth}
+          coverHeight={scene.artHeight}
         />
       </View>
       <View
         style={{
-          width: '68%',
+          width: scene.copyWidth,
           height: '100%',
-          padding: layout.dense ? 14 : 20,
-          gap: 8,
+          paddingVertical: geometry.featurePadding,
+          paddingRight: geometry.featurePadding,
+          gap: geometry.featureGap,
           justifyContent: 'center',
           backgroundColor: colors.background,
         }}
@@ -456,23 +716,49 @@ function MarqueeFeature({
           numberOfLines={1}
           style={[
             base.kicker,
-            { height: 12, lineHeight: 12, color: colors.muted },
+            {
+              height: geometry.featureKicker,
+              lineHeight: geometry.featureKicker,
+              color: colors.muted,
+            },
           ]}
         >
-          {item ? 'TONIGHT, IN YOUR LIBRARY' : 'WELCOME HOME'}
+          {item ? 'IN YOUR COLLECTION' : busy ? 'YOUR LIBRARY' : 'WELCOME HOME'}
         </Text>
         <Text
           style={{
             color: colors.text,
-            fontFamily: layout.fontFamily,
-            fontSize: layout.compact ? 26 : 32,
+            fontFamily: layout.displayFontFamily,
+            fontSize: geometry.featureTitleLine - 2,
             height: geometry.featureTitle,
             lineHeight: geometry.featureTitleLine,
           }}
           numberOfLines={2}
         >
           {item?.title ??
-            (busy ? 'A little anticipation.' : 'Your next great watch.')}
+            (busy ? 'Opening your library.' : 'Your next great watch.')}
+        </Text>
+        <Text
+          numberOfLines={1}
+          style={{
+            height: geometry.featureMetadata,
+            lineHeight: geometry.featureMetadata,
+            color: colors.muted,
+            fontSize: 11,
+            fontFamily: layout.bodyFontFamily,
+          }}
+        >
+          {item
+            ? [
+                item.year,
+                ...(item.genres ?? []).slice(0, 2),
+                item.container.toUpperCase(),
+              ]
+                .filter(Boolean)
+                .join(' / ')
+            : busy
+              ? 'Loading titles and artwork'
+              : 'Films and series, in one place'}
         </Text>
         <Text
           style={{
@@ -480,15 +766,16 @@ function MarqueeFeature({
             color: colors.muted,
             fontSize: 13,
             lineHeight: 19,
+            fontFamily: layout.bodyFontFamily,
           }}
           numberOfLines={2}
         >
           {item?.summary ??
             (item
-              ? 'Select a title to explore and play.'
+              ? 'Choose a title below to see details, pick up where you left off, or start watching.'
               : busy
-                ? 'Connecting to your trusted library...'
-                : 'Connect a server or refresh your library to begin.')}
+                ? 'Your collection will appear here. You can keep navigating while it loads.'
+                : 'Choose a library above, or use Menu to check your server.')}
         </Text>
       </View>
     </View>
@@ -569,6 +856,9 @@ function ArchiveProgramme({
             title={item?.title ?? 'Your collection'}
             colors={colors}
             reduced={reduced}
+            displayFontFamily={layout.displayFontFamily}
+            coverWidth={layout.compact ? 86 : 100}
+            coverHeight={layout.compact ? 129 : 150}
           />
         </View>
         <View style={{ flex: 1, justifyContent: 'center', gap: 8 }}>
@@ -583,7 +873,7 @@ function ArchiveProgramme({
           </Text>
           <Text
             style={{
-              fontFamily: layout.fontFamily,
+              fontFamily: layout.displayFontFamily,
               color: colors.text,
               fontSize: layout.compact ? 25 : 34,
               height: geometry.featureTitle,
@@ -640,8 +930,7 @@ function LibraryCard({
   focused,
   reduced,
   theme,
-  width,
-  height,
+  layout,
   progress,
   unavailableReason,
   onPress,
@@ -652,8 +941,7 @@ function LibraryCard({
   focused: boolean;
   reduced: boolean;
   theme: Theme;
-  width: number;
-  height: number;
+  layout: ReturnType<typeof nativeSkinLayout>;
   progress?: Progress;
   unavailableReason?: string;
   onPress: () => void;
@@ -661,22 +949,20 @@ function LibraryCard({
   const scale = useRef(new Animated.Value(1)).current;
   const colors = theme.colors;
   const archive = theme.design.skin === 'archive';
-  const poster = theme.design.cards === 'poster';
-  const geometry = nativeReservedGeometry(theme, width, height);
   useEffect(() => {
     scale.stopAnimation();
-    if (reduced) {
+    if (reduced || theme.design.motion === 'still') {
       scale.setValue(1);
       return;
     }
     const animation = Animated.timing(scale, {
-      toValue: focused ? 1.035 : 1,
-      duration: 140,
+      toValue: focused ? 1.015 : 1,
+      duration: 120,
       useNativeDriver: true,
     });
     animation.start();
     return () => animation.stop();
-  }, [focused, reduced, scale]);
+  }, [focused, reduced, scale, theme.design.motion]);
   return (
     <Pressable
       accessibilityRole="button"
@@ -685,30 +971,32 @@ function LibraryCard({
       accessibilityState={{ selected: focused }}
       onPress={onPress}
       style={{
-        width,
-        height,
-        padding: 5,
-        borderWidth: 3,
+        width: layout.cardWidth,
+        height: layout.cardHeight,
+        padding: layout.cardPadding,
+        borderWidth: layout.cardBorder,
         borderColor: focused ? colors.focus : 'transparent',
-        borderRadius: archive ? 0 : 9,
-        backgroundColor: archive ? colors.background : colors.surface,
+        borderRadius: archive ? 0 : 5,
+        backgroundColor:
+          focused && !archive ? colors.surface : colors.background,
       }}
     >
       <View
         style={{
-          flex: 1,
+          width: layout.cardImageWidth,
+          height: layout.cardImageHeight,
+          alignItems: 'center',
+          justifyContent: 'center',
           overflow: 'hidden',
-          marginBottom: 6,
+          marginBottom: layout.cardCaptionGap,
           backgroundColor: archive ? colors.surface : colors.elevated,
           borderRadius: archive ? 0 : 4,
         }}
       >
         <View
           style={{
-            height: '100%',
-            width: poster
-              ? Math.min(width - 16, ((height - 66) * 2) / 3)
-              : '100%',
+            height: layout.cardArtHeight,
+            width: layout.cardArtWidth,
             alignSelf: 'center',
             overflow: 'hidden',
           }}
@@ -722,21 +1010,23 @@ function LibraryCard({
               title={item.title}
               colors={colors}
               reduced={reduced}
+              displayFontFamily={layout.displayFontFamily}
+              coverWidth={layout.cardArtWidth}
+              coverHeight={layout.cardArtHeight}
             />
           </Animated.View>
         </View>
       </View>
       <Text
-        numberOfLines={1}
+        numberOfLines={2}
         style={{
-          fontFamily:
-            theme.design.typography === 'editorial' ? 'serif' : undefined,
-          fontSize: 17,
-          height: geometry.cardTitle,
-          lineHeight: geometry.cardTitle,
-          fontWeight: archive ? '400' : '600',
+          fontFamily: layout.bodyFontFamily,
+          fontSize: layout.cardTitleSize,
+          height: layout.cardTitleHeight,
+          lineHeight: layout.cardTitleLine,
+          fontWeight: archive ? '400' : '500',
           color: colors.text,
-          marginBottom: 3,
+          marginBottom: layout.cardMetadataGap,
         }}
       >
         {archive ? `${String(index + 1).padStart(2, '0')} / ` : ''}
@@ -745,9 +1035,10 @@ function LibraryCard({
       <Text
         numberOfLines={1}
         style={{
-          height: geometry.cardMetadata,
-          lineHeight: geometry.cardMetadata,
-          fontSize: 12,
+          height: layout.cardMetadataHeight,
+          lineHeight: layout.cardMetadataHeight,
+          fontSize: 11,
+          fontFamily: layout.bodyFontFamily,
           color: colors.muted,
         }}
       >
@@ -834,8 +1125,8 @@ export function NativeLibrary(props: LibraryProps) {
           style={{
             height: 30,
             lineHeight: 30,
-            fontFamily: layout.fontFamily,
-            fontSize: archive ? 24 : 19,
+            fontFamily: layout.displayFontFamily,
+            fontSize: archive ? 24 : 22,
             color: colors.text,
             flex: 1,
           }}
@@ -866,7 +1157,7 @@ export function NativeLibrary(props: LibraryProps) {
           <View
             style={{
               height: layout.cardHeight,
-              padding: 24,
+              padding: 16,
               gap: 10,
               backgroundColor: colors.surface,
               borderRadius: archive ? 0 : 8,
@@ -875,19 +1166,19 @@ export function NativeLibrary(props: LibraryProps) {
             <Text
               numberOfLines={2}
               style={{
-                height: 60,
-                lineHeight: 30,
-                fontFamily: layout.fontFamily,
-                fontSize: 22,
+                height: 44,
+                lineHeight: 22,
+                fontFamily: layout.displayFontFamily,
+                fontSize: 20,
                 color: colors.text,
               }}
             >
               The screen is yours.
             </Text>
             <Text
-              numberOfLines={3}
+              numberOfLines={2}
               style={{
-                height: 57,
+                height: 38,
                 lineHeight: 19,
                 color: colors.muted,
                 fontSize: 13,
@@ -934,8 +1225,7 @@ export function NativeLibrary(props: LibraryProps) {
                     focused={cursor === index && !headerFocused}
                     reduced={reduced}
                     theme={theme}
-                    width={layout.cardWidth}
-                    height={layout.cardHeight}
+                    layout={layout}
                     progress={props.progress[item.id]}
                     onPress={() => onSelect(index)}
                   />
@@ -958,45 +1248,64 @@ export function NativeLibrary(props: LibraryProps) {
                     style={{
                       width: layout.cardWidth,
                       height: layout.cardHeight,
-                      padding: 5,
-                      borderWidth: 3,
+                      padding: layout.cardPadding,
+                      borderWidth: layout.cardBorder,
                       borderColor:
                         cursor === index && !headerFocused
                           ? colors.focus
                           : 'transparent',
-                      backgroundColor: colors.surface,
-                      borderRadius: archive ? 0 : 9,
+                      backgroundColor:
+                        cursor === index && !headerFocused
+                          ? colors.surface
+                          : colors.background,
+                      borderRadius: archive ? 0 : 5,
                     }}
                   >
                     <View
                       style={{
-                        flex: 1,
+                        width: layout.cardImageWidth,
+                        height: layout.cardImageHeight,
                         backgroundColor: colors.elevated,
-                        marginBottom: 6,
+                        borderRadius: archive ? 0 : 4,
+                        marginBottom: layout.cardCaptionGap,
+                        alignItems: 'center',
+                        justifyContent: 'center',
                       }}
-                    />
+                    >
+                      <View
+                        style={{
+                          width: 24,
+                          height: 1,
+                          backgroundColor: colors.muted,
+                          opacity: 0.4,
+                        }}
+                      />
+                    </View>
                     <Text
-                      numberOfLines={1}
+                      numberOfLines={2}
                       style={{
-                        height: 20,
-                        lineHeight: 20,
+                        height: layout.cardTitleHeight,
+                        lineHeight: layout.cardTitleLine,
                         color: colors.text,
-                        fontSize: 17,
+                        fontSize: layout.cardTitleSize,
+                        fontFamily: layout.bodyFontFamily,
+                        marginBottom: layout.cardMetadataGap,
                       }}
                     >
                       {error
                         ? 'Title unavailable'
                         : pending
                           ? 'Loading...'
-                          : 'Ready to load'}
+                          : 'Title ready to load'}
                     </Text>
                     <Text
                       numberOfLines={1}
                       style={{
-                        height: 16,
-                        lineHeight: 16,
+                        height: layout.cardMetadataHeight,
+                        lineHeight: layout.cardMetadataHeight,
                         color: colors.muted,
-                        fontSize: 12,
+                        fontSize: 11,
+                        fontFamily: layout.bodyFontFamily,
                       }}
                     >
                       {error ? 'Select to retry' : ' '}
@@ -1062,7 +1371,7 @@ export function NativeUnavailable({
           style={{
             height: geometry.featureTitle,
             lineHeight: geometry.featureTitleLine,
-            fontFamily: layout.fontFamily,
+            fontFamily: layout.displayFontFamily,
             fontSize: layout.compact ? 26 : 34,
             color: colors.text,
           }}
@@ -1138,6 +1447,7 @@ export function NativeDetail({
   const colors = theme.colors;
   const archive = theme.design.skin === 'archive';
   const uri = imageFor(origin, item, archive, transport);
+  const tvMarquee = !archive && !layout.compact;
   const bodyTop = useRef(0);
   const copyTop = useRef(0);
   const playBounds = useRef<Bounds>({ y: 0, height: 0 });
@@ -1145,21 +1455,24 @@ export function NativeDetail({
     if (playBounds.current.height)
       onPlayLayout({
         y:
-          (archive ? bodyTop.current + copyTop.current : 0) +
+          (archive || tvMarquee ? bodyTop.current + copyTop.current : 0) +
           playBounds.current.y,
         height: playBounds.current.height,
       });
   };
-  const typography = { fontFamily: layout.fontFamily, color: colors.text };
+  const typography = {
+    fontFamily: layout.displayFontFamily,
+    color: colors.text,
+  };
   const details = (
     <>
       <Text
-        numberOfLines={2}
+        numberOfLines={tvMarquee ? 1 : 2}
         style={[
           base.kicker,
           {
             height: geometry.detailKicker,
-            lineHeight: 13,
+            lineHeight: tvMarquee ? 14 : 13,
             color: colors.muted,
           },
         ]}
@@ -1177,19 +1490,23 @@ export function NativeDetail({
           {
             height: geometry.detailTitle,
             lineHeight: geometry.detailTitleLine,
-            fontSize: layout.compact ? 28 : 36,
+            fontSize: tvMarquee
+              ? geometry.detailTitleLine - 2
+              : layout.compact
+                ? 28
+                : 36,
           },
         ]}
       >
         {item.title}
       </Text>
       <Text
-        numberOfLines={2}
+        numberOfLines={tvMarquee ? 1 : 2}
         style={{
           height: geometry.detailMetadata,
           color: colors.muted,
-          fontSize: 14,
-          lineHeight: 21,
+          fontSize: tvMarquee ? 12 : 14,
+          lineHeight: geometry.detailMetadataLine,
         }}
       >
         {[
@@ -1202,12 +1519,13 @@ export function NativeDetail({
           .join(' / ')}
       </Text>
       <Text
-        numberOfLines={4}
+        numberOfLines={geometry.detailSummaryLines}
         style={{
           height: geometry.detailSummary,
           color: colors.text,
-          fontSize: 17,
-          lineHeight: 25,
+          fontFamily: layout.bodyFontFamily,
+          fontSize: tvMarquee ? 14 : 17,
+          lineHeight: geometry.detailSummaryLine,
         }}
       >
         {item.summary ?? ' '}
@@ -1217,8 +1535,8 @@ export function NativeDetail({
         style={{
           height: geometry.resume,
           color: colors.muted,
-          fontSize: 14,
-          lineHeight: 21,
+          fontSize: tvMarquee ? 12 : 14,
+          lineHeight: geometry.resume,
         }}
       >
         {progress && progress.positionSeconds < progress.durationSeconds - 3
@@ -1265,13 +1583,69 @@ export function NativeDetail({
           height: geometry.instructions,
           color: colors.muted,
           fontSize: 12,
-          lineHeight: 18,
+          lineHeight: tvMarquee ? 14 : 18,
         }}
       >
         Select: play Back: library Up: appearance Menu: server
       </Text>
     </>
   );
+  if (tvMarquee) {
+    const posterOnly =
+      !artworkUri(origin, item, 'backdrop', transport) &&
+      Boolean(artworkUri(origin, item, 'poster', transport));
+    const scene = nativeDetailScene(theme, width, height, posterOnly);
+    return (
+      <View
+        onLayout={(event) => {
+          bodyTop.current = event.nativeEvent.layout.y;
+          notify();
+        }}
+        style={{
+          paddingTop: geometry.detailPaddingTop,
+          height: scene.height,
+          position: 'relative',
+        }}
+      >
+        <View
+          style={{
+            position: 'absolute',
+            top: scene.artTop,
+            right: 0,
+            width: scene.artWidth,
+            height: scene.artHeight,
+            overflow: 'hidden',
+            borderRadius: 6,
+          }}
+        >
+          <Artwork
+            key={uri ?? item.id}
+            uri={uri}
+            title={item.title}
+            colors={colors}
+            reduced={reduced}
+            displayFontFamily={layout.displayFontFamily}
+            coverWidth={scene.artWidth}
+            coverHeight={scene.artHeight}
+          />
+        </View>
+        <View
+          onLayout={(event) => {
+            copyTop.current = event.nativeEvent.layout.y;
+            notify();
+          }}
+          style={{
+            width: scene.copyWidth,
+            paddingRight: 24,
+            gap: geometry.detailGap,
+            backgroundColor: colors.background,
+          }}
+        >
+          {details}
+        </View>
+      </View>
+    );
+  }
   return archive ? (
     <View style={{ gap: 16, paddingTop: 12 }}>
       <View style={[base.indexLine, { borderColor: colors.muted }]}>
@@ -1308,6 +1682,9 @@ export function NativeDetail({
             title={item.title}
             colors={colors}
             reduced={reduced}
+            displayFontFamily={layout.displayFontFamily}
+            coverWidth={layout.compact ? 150 : 230}
+            coverHeight={layout.compact ? 225 : 345}
           />
         </View>
         <View
@@ -1338,6 +1715,9 @@ export function NativeDetail({
           title={item.title}
           colors={colors}
           reduced={reduced}
+          displayFontFamily={layout.displayFontFamily}
+          coverWidth={width - layout.inset * 2}
+          coverHeight={layout.compact ? 190 : 220}
         />
       </View>
       {details}

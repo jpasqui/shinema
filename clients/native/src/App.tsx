@@ -14,7 +14,8 @@ import {AppearancePersistence,defaultPreferences,focusScrollOffset,prefersReduce
 import type {AppearancePreferences} from './preferences.ts';
 import {NativeDetail,NativeHeader,NativeLibrary,NativePlayerChrome,NativeUnavailable} from './skins.tsx';
 import {nativeSkinLayout} from './skin-layout.ts';
-import {FEED_BATCH_SIZE,NativeFeed,clampFeedAnchor,feedItemTop,feedScrollAnchor,parseFeedBatch,parseFeedCatalog,restoreFeedAnchor} from './feed.ts';
+import {canEnterLibraryGrid,createLibraryScrollCallbacks,createLibraryScrollMemory,libraryEntryTarget,libraryFocusOffset} from './library-focus.ts';
+import {FEED_BATCH_SIZE,NativeFeed,clampFeedAnchor,parseFeedBatch,parseFeedCatalog} from './feed.ts';
 import {HttpStatusError,loadLibrarySnapshot,visibleLibraries as visibleLibraryDescriptors,nativeFeedScope,navigationContentSupport,nativeMediaContentSupport,snapshotCatalogForActivation} from './libraries.ts';
 import {NativeActivity,StartupHydration} from './lifecycle.ts';
 import type {FeedScope} from './feed.ts';
@@ -82,8 +83,8 @@ export default function App(){
   const appearance=useRef(new AppearancePersistence());const appearanceReturn=useRef<'setup'|'library'|'detail'>('setup');
   const preferenceRevision=useRef(0);const [appearanceMessage,setAppearanceMessage]=useState('');
   const [themeText,setThemeText]=useState('');const themeInput=useRef<React.ComponentRef<typeof TextInput>>(null);
-  const [appearanceCursor,setAppearanceCursor]=useState(0);const [headerFocused,setHeaderFocused]=useState(false);
-  const sceneScroll=useRef<React.ComponentRef<typeof ScrollView>>(null);const sceneOffset=useRef(0);const libraryScroll=useRef(0);const navigationMode=useRef<'remote'|'touch'>('remote');const withinLibraryRow=useRef(0);const [viewportHeight,setViewportHeight]=useState(0);
+  const [appearanceCursor,setAppearanceCursor]=useState(0);const [headerFocused,setHeaderFocused]=useState(true);
+  const sceneScroll=useRef<React.ComponentRef<typeof ScrollView>>(null);const sceneOffset=useRef(0);const libraryScroll=useRef(0);const navigationMode=useRef<'remote'|'touch'>('remote');const libraryScrollMemory=useRef(createLibraryScrollMemory());const [viewportHeight,setViewportHeight]=useState(0);
   const appearanceTop=useRef(0);const appearanceEditorTop=useRef(0);const appearanceBounds=useRef<{y:number;height:number}[]>([]);const libraryTop=useRef(0);const detailPlay=useRef({y:0,height:0});
   const setupTop=useRef(0);const setupBounds=useRef<SetupBounds>({});
   const [systemReduced,setSystemReduced]=useState(true);const reduced=prefersReducedMotion(preferences.motion,systemReduced,preferences.theme.design.motion);
@@ -214,17 +215,24 @@ export default function App(){
   function chooseLibrary(library:LibraryDescriptor){
     if(route==='player')return;
     if(session.current.isSwitchCommitting()){setMessage('Finishing library update. Try again in a moment.');return;}
-    setHeaderFocused(false);setHeaderCursor(Math.max(0,visibleLibraries.findIndex(item=>item.id===library.id)));
-    if(library.id===store.current.selectedLibraryId&&(feed.current.snapshot().known||!librarySupport.supported)){cancelConnection();setBusy(false);setHeaderFocused(!librarySupport.supported);setRoute('library');return;}
+    setHeaderFocused(true);setHeaderCursor(Math.max(0,visibleLibraries.findIndex(item=>item.id===library.id)));
+    const currentFeed=feed.current.snapshot();
+    if(library.id===store.current.selectedLibraryId&&(currentFeed.known||!librarySupport.supported)){cancelConnection();setBusy(false);setHeaderFocused(!canEnterLibraryGrid(librarySupport.supported,currentFeed.known,currentFeed.total));setRoute('library');return;}
     void connect(store.current.origin,true,library.id,store.current.localHttpOrigin??null);
   }
   useEffect(()=>{setHeaderCursor(current=>Math.min(current,visibleLibraries.length+(route==='library'?2:1)));},[visibleLibraries.length,route]);
   useEffect(()=>{setRenderAnchor(current=>clampFeedAnchor(current,feedSnapshot.known,totalItems));},[feedSnapshot.known,totalItems]);
+  useEffect(()=>{if(route==='library'&&feedSnapshot.known&&totalItems===0)setHeaderFocused(true);},[route,feedSnapshot.known,totalItems]);
 
   function revealFocus(top:number,focusHeight:number){
     const y=focusScrollOffset(sceneOffset.current,top,focusHeight,viewportHeight);
     sceneOffset.current=y;sceneScroll.current?.scrollTo({y,animated:false});
   }
+  function revealLibraryFocus(){
+    const y=libraryFocusOffset({current:sceneOffset.current,gridTop:libraryTop.current,cursor:cursorPosition.current,columns,cardHeight,gap,viewport:viewportHeight,headerFocused,navigationMode:navigationMode.current});
+    sceneOffset.current=y;libraryScroll.current=y;sceneScroll.current?.scrollTo({y,animated:false});
+  }
+  const libraryScrollCallbacks=createLibraryScrollCallbacks({read:()=>{const snapshot=feed.current.snapshot();return {library:route==='library',known:snapshot.known,total:snapshot.total,columns,rowHeight:cardHeight+gap};},memory:libraryScrollMemory,sceneOffset,libraryScroll,gridTop:libraryTop,navigationMode,onAnchor:setRenderAnchor,scrollTo:y=>sceneScroll.current?.scrollTo({y,animated:false}),revealRemote:revealLibraryFocus,touchStarted:()=>activity.current.interact()});
   function revealSetupFocus(){
     const y=setupScrollOffset(sceneOffset.current,setupFocus,setupTop.current,setupBounds.current,viewportHeight);
     sceneOffset.current=y;sceneScroll.current?.scrollTo({y,animated:false});
@@ -245,9 +253,8 @@ export default function App(){
       const bounds=appearanceBounds.current[appearanceCursor];if(bounds)revealFocus(appearanceTop.current+bounds.y,bounds.height);
     }else if(route==='library'){
       if(!librarySupport.supported)return;
-      if(navigationMode.current==='touch'&&!headerFocused)return;
-      if(headerFocused){sceneOffset.current=0;sceneScroll.current?.scrollTo({y:0,animated:false});}
-      else revealFocus(libraryTop.current+feedItemTop(cursor,columns,cardHeight+gap),cardHeight);
+      if(navigationMode.current==='touch')return;
+      revealLibraryFocus();
     }else if(route==='detail'){
       if(headerFocused){sceneOffset.current=0;sceneScroll.current?.scrollTo({y:0,animated:false});}
       else if(detailPlay.current.height)revealFocus(detailPlay.current.y,detailPlay.current.height);
@@ -300,7 +307,7 @@ export default function App(){
     update(value);setFeedSnapshot(feed.current.snapshot());
     const restored=selectedId&&!changed?value.catalog?.items.findIndex(item=>item.id===selectedId):-1;
     focusCursor(preserved?cursorPosition.current:changed?0:typeof restored==='number'&&restored>=0?restored:Math.min(cursorPosition.current,Math.max(0,feed.current.snapshot().total-1)));
-    if(changed){setRenderAnchor(0);libraryScroll.current=0;sceneOffset.current=0;withinLibraryRow.current=0;navigationMode.current='remote';sceneScroll.current?.scrollTo({y:0,animated:false});}
+    if(changed){setRenderAnchor(0);libraryScroll.current=0;sceneOffset.current=0;libraryScrollMemory.current=createLibraryScrollMemory();navigationMode.current='remote';sceneScroll.current?.scrollTo({y:0,animated:false});}
   }
   function openDetails(item=feed.current.itemAt(cursorPosition.current)){
     if(session.current.isSwitchCommitting()){setMessage('Finishing library update. Try again in a moment.');return;}
@@ -346,7 +353,7 @@ export default function App(){
     activity.current.interact();
     if(session.current.isSwitchCommitting()){setMessage('Finishing the current server change. Try again in a moment.');return;}
     let origin:string;let transport:ServerTransport;try{transport=selectionTransport({origin:raw,localHttpOrigin:consent});origin=serverOrigin(raw,transport);}catch{cancelConnection();setBusy(false);setMessage('Use HTTPS, or explicitly allow this exact local HTTP server. Paths and credentials are not allowed.');return;}
-    feed.current.cancelPending();setFeedSnapshot(feed.current.snapshot());const signal=activity.current.beginConnection();const attempt=session.current.beginConnection();setBusy(true);setMessage('Loading library...');
+    feed.current.cancelPending();setFeedSnapshot(feed.current.snapshot());const signal=activity.current.beginConnection();const attempt=session.current.beginConnection();const presentation=activity.current.capture();const fromLibrary=route==='library';setBusy(true);setMessage('Loading library...');
     setOriginText(origin);draftConsent.current=transport.localHttpOrigin;setDraftHttpOrigin(transport.localHttpOrigin);
     try{
       await startupState().ready();
@@ -367,11 +374,11 @@ export default function App(){
       },snapshot,transport);
       if(!result)return;
       const {stamp}=result;
-      setRoute('library');setHeaderFocused(!snapshotSupport.supported);if(!snapshotSupport.supported)setHeaderCursor(Math.max(0,visibleLibraryDescriptors(snapshot.libraries).findIndex(item=>item.id===snapshot.selectedLibraryId)));setMessage(!snapshotSupport.supported?snapshotSupport.reason??'This content is not supported on this device.':feed.current.errorAt(0)??(catalog.items.length?'Library ready.':snapshot.libraries&&snapshot.selectedLibraryId===null?'No libraries are visible. Update visibility in the server library settings.':'This library is empty.'));
+      setRoute('library');if(!snapshotSupport.supported||libraryEntryTarget(fromLibrary,sameOrigin&&current.selectedLibraryId===snapshot.selectedLibraryId,activity.current.current(presentation))==='header'){setHeaderFocused(true);setHeaderCursor(Math.max(0,visibleLibraryDescriptors(snapshot.libraries).findIndex(item=>item.id===snapshot.selectedLibraryId)));}setMessage(!snapshotSupport.supported?snapshotSupport.reason??'This content is not supported on this device.':feed.current.errorAt(0)??(catalog.items.length?'Library ready.':snapshot.libraries&&snapshot.selectedLibraryId===null?'No libraries are visible. Update visibility in the server library settings.':'This library is empty.'));
       for(const item of catalog.items){const pending=store.current.pending[item.id];if(pending&&nativeMediaContentSupport(item,store.current).supported)void flush(item,pending,stamp);}
     }catch(error){
       if(!session.current.currentAttempt(attempt))return;
-      if(store.current.catalog||store.current.libraries){setRoute('library');setHeaderFocused(!navigationContentSupport(store.current).supported);setMessage(error instanceof Error&&error.message.startsWith('Library changed.')?error.message:origin===store.current.origin?'Browsing cached library. Server is unavailable.':'Could not switch server. Your current library and progress are retained.');}
+      if(store.current.catalog||store.current.libraries){setRoute('library');setHeaderFocused(current=>!navigationContentSupport(store.current).supported||activity.current.current(presentation)&&!fromLibrary?true:current);setMessage(error instanceof Error&&error.message.startsWith('Library changed.')?error.message:origin===store.current.origin?'Browsing cached library. Server is unavailable.':'Could not switch server. Your current library and progress are retained.');}
       else setMessage('Could not connect. Check the address and trusted HTTPS setup.');
     }finally{
       activity.current.finishConnection(signal);
@@ -402,7 +409,7 @@ export default function App(){
 
   useEffect(()=>{
     let alive=true;mounted.current=true;policy.current!.claim();const startup=activity.current.capture();
-    void startupState().ready().then(restored=>{if(!alive||!activity.current.current(startup))return;setOriginText(restored.origin);draftConsent.current=restored.localHttpOrigin??null;setDraftHttpOrigin(draftConsent.current);if(restored.origin.startsWith('http:')&&!restored.localHttpOrigin){void policy.current!.revoke().catch(()=>{});setMessage('Saved local server needs explicit HTTP consent before connecting.');return;}if(store.current.catalog||store.current.libraries){setHeaderFocused(!navigationContentSupport(store.current).supported);setRoute('library');}void connect(restored.origin,false,undefined,restored.localHttpOrigin??null);}).catch(()=>{if(alive&&activity.current.current(startup))setMessage('Could not read the saved library. Enter your server address to reconnect.');});
+    void startupState().ready().then(restored=>{if(!alive||!activity.current.current(startup))return;setOriginText(restored.origin);draftConsent.current=restored.localHttpOrigin??null;setDraftHttpOrigin(draftConsent.current);if(restored.origin.startsWith('http:')&&!restored.localHttpOrigin){void policy.current!.revoke().catch(()=>{});setMessage('Saved local server needs explicit HTTP consent before connecting.');return;}if(store.current.catalog||store.current.libraries){setHeaderFocused(true);setRoute('library');}void connect(restored.origin,false,undefined,restored.localHttpOrigin??null);}).catch(()=>{if(alive&&activity.current.current(startup))setMessage('Could not read the saved library. Enter your server address to reconnect.');});
     const keys=new NativeEventEmitter(NativeModules.ShinemaHost).addListener('ShinemaKey',event=>{
       const key=event as Partial<Key>;
       if(typeof key.code==='number' && typeof key.action==='number' && typeof key.repeat==='number')handler.current({code:key.code,action:key.action,repeat:key.repeat});
@@ -450,7 +457,8 @@ export default function App(){
     if(key.code===82 && route!=='player'){openServer();return;}
     if(route==='library'){
       if(headerFocused){
-        if(key.code===20&&librarySupport.supported)setHeaderFocused(false);
+        revealLibraryFocus();
+        if(key.code===20&&canEnterLibraryGrid(librarySupport.supported,feedSnapshot.known,totalItems))setHeaderFocused(false);
         else if([21,22].includes(key.code))setHeaderCursor(current=>moveHeaderCursor(visibleLibraries.length,current,key.code===21?-1:1,true));
         else if([23,66].includes(key.code) && key.repeat===0){const target=headerTarget(visibleLibraries.length,headerCursor,true);if(target?.type==='library'){const library=visibleLibraries[target.index];if(library)chooseLibrary(library);}else if(target?.type==='appearance')openAppearance();else if(target?.type==='requests')void openRequests();else if(target?.type==='server')openServer();}
         return;
@@ -522,7 +530,7 @@ export default function App(){
       <NativeHeader theme={preferences.theme} width={width} focused={route==='setup'?(setupFocus==='appearance'||setupFocus==='requests'):headerFocused} headerCursor={route==='detail'?visibleLibraries.length:headerCursor} libraries={visibleLibraries} selectedLibraryId={selectedLibrary?.id} onLibrary={chooseLibrary} onAppearance={openAppearance} onRequests={()=>{void openRequests();}} onServer={route==='library'?openServer:undefined} onActionFocus={action=>{if(route==='setup'&&action!=='server')focusSetup(action);else if(route==='library'){setHeaderFocused(true);setHeaderCursor(visibleLibraries.length+(action==='appearance'?0:action==='requests'?1:2));}}} />
       {route==='requests'&&transportReady?<Requests key={stored.origin} origin={stored.origin} transport={selectedTransport??undefined} backHandler={requestsBack} onBack={()=>{setHeaderFocused(true);setHeaderCursor(visibleLibraries.length+1);setRoute('library');}} />:<>
       {route==='appearance'?<Text accessibilityLiveRegion="polite" numberOfLines={2} style={[styles.notice,{height:40,marginTop:0,marginBottom:12}]}>{appearanceMessage||'System motion respects device accessibility. A still theme always disables animation.'}</Text>:null}
-      <ScrollView ref={sceneScroll} style={styles.scroller} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled" onLayout={event=>setViewportHeight(event.nativeEvent.layout.height)} onScrollBeginDrag={()=>{activity.current.interact();navigationMode.current='touch';}} onScroll={event=>{const y=event.nativeEvent.contentOffset.y;sceneOffset.current=y;if(route==='library'){libraryScroll.current=y;withinLibraryRow.current=Math.max(0,y-libraryTop.current)%(cardHeight+gap);setRenderAnchor(feedScrollAnchor(y,libraryTop.current,columns,cardHeight+gap,feedSnapshot.known,totalItems));}}} scrollEventThrottle={16}>
+      <ScrollView ref={sceneScroll} style={styles.scroller} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled" onLayout={event=>setViewportHeight(event.nativeEvent.layout.height)} onScrollBeginDrag={libraryScrollCallbacks.onScrollBeginDrag} onScroll={libraryScrollCallbacks.onScroll} scrollEventThrottle={16}>
       <Animated.View style={{opacity:sceneOpacity}}>
       {route==='appearance'?<View key="appearance" style={styles.appearance}>
         <Text style={styles.eyebrow}>MAKE IT YOURS</Text><Text style={styles.title}>Appearance</Text>
@@ -547,11 +555,11 @@ export default function App(){
         <Text style={styles.small}>{draftHttpOrigin?'Unencrypted HTTP to '+draftHttpOrigin+' exposes media, requests and access tokens to anyone able to intercept this network. Use only a trusted local network. No other server is allowed.':'HTTPS is the default. Shinema never silently downgrades or bypasses certificate validation.'}</Text>
         <Pressable focusable accessibilityRole="button" onFocus={()=>focusSetup('connect')} onLayout={event=>{setupBounds.current.connect=event.nativeEvent.layout;if(setupFocus==='connect')revealSetupFocus();}} style={[styles.button,setupFocus==='connect'&&styles.headerFocus]} onPress={()=>{input.current?.blur();if(!busy)void connect(originText);}}><Text style={styles.buttonText}>{busy?'Connecting...':'Connect'}</Text></Pressable>
         <Text style={styles.small}>Up / Down: choose address, HTTP consent or Connect   Select: activate   Menu: appearance</Text>
-      </View>:(route==='library'||route==='detail'||route==='requests')&&!transportReady?<NativeUnavailable theme={preferences.theme} width={width} height={height} name="Server connection" reason="The selected server transport is not approved or is being verified. Return to server settings to connect." />:route==='library'&&!librarySupport.supported?<NativeUnavailable theme={preferences.theme} width={width} height={height} name={selectedLibrary?.name??'Library'} reason={librarySupport.reason??'This content type is not supported on this device.'} />:route==='detail' && selected?selectedSupport.supported?<NativeDetail theme={preferences.theme} width={width} height={height} reduced={reduced} origin={stored.origin} transport={selectedTransport??undefined} item={selected} progress={remembered} busy={busy} focused={!headerFocused} onPlay={()=>void play()} onPlayLayout={bounds=>{detailPlay.current=bounds;if(!headerFocused)revealFocus(bounds.y,bounds.height);}} />:<NativeUnavailable theme={preferences.theme} width={width} height={height} name={selected.title} reason={selectedSupport.reason??'This format is not supported on this device.'} />:<NativeLibrary theme={preferences.theme} width={width} height={height} reduced={reduced} origin={stored.origin} transport={selectedTransport??undefined} itemAt={index=>feed.current.itemAt(index)} total={totalItems} known={feedSnapshot.known} anchor={renderAnchor} viewport={viewportHeight} cursor={cursor} headerFocused={headerFocused} busy={busy} libraryName={selectedLibrary?.name??'Your collection'} contentSupport={item=>nativeMediaContentSupport(item,stored)} errorAt={index=>feed.current.errorAt(index)} isLoading={index=>feed.current.isLoading(index)} onRetry={index=>loadFeed(index,true)} progress={stored.progress} onSelect={index=>{focusCursor(index);openDetails();}} onGridLayout={bounds=>{libraryTop.current=bounds.y;if(headerFocused)return;if(navigationMode.current==='touch'){const y=restoreFeedAnchor(clampFeedAnchor(renderAnchor,feedSnapshot.known,totalItems),withinLibraryRow.current,bounds.y,columns,cardHeight+gap);sceneOffset.current=y;libraryScroll.current=y;sceneScroll.current?.scrollTo({y,animated:false});}else revealFocus(bounds.y+feedItemTop(cursor,columns,cardHeight+gap),cardHeight);}} />}
+      </View>:(route==='library'||route==='detail'||route==='requests')&&!transportReady?<NativeUnavailable theme={preferences.theme} width={width} height={height} name="Server connection" reason="The selected server transport is not approved or is being verified. Return to server settings to connect." />:route==='library'&&!librarySupport.supported?<NativeUnavailable theme={preferences.theme} width={width} height={height} name={selectedLibrary?.name??'Library'} reason={librarySupport.reason??'This content type is not supported on this device.'} />:route==='detail' && selected?selectedSupport.supported?<NativeDetail theme={preferences.theme} width={width} height={height} reduced={reduced} origin={stored.origin} transport={selectedTransport??undefined} item={selected} progress={remembered} busy={busy} focused={!headerFocused} onPlay={()=>void play()} onPlayLayout={bounds=>{detailPlay.current=bounds;if(!headerFocused)revealFocus(bounds.y,bounds.height);}} />:<NativeUnavailable theme={preferences.theme} width={width} height={height} name={selected.title} reason={selectedSupport.reason??'This format is not supported on this device.'} />:<NativeLibrary theme={preferences.theme} width={width} height={height} reduced={reduced} origin={stored.origin} transport={selectedTransport??undefined} itemAt={index=>feed.current.itemAt(index)} total={totalItems} known={feedSnapshot.known} anchor={renderAnchor} viewport={viewportHeight} cursor={cursor} headerFocused={headerFocused} busy={busy} libraryName={selectedLibrary?.name??'Your collection'} contentSupport={item=>nativeMediaContentSupport(item,stored)} errorAt={index=>feed.current.errorAt(index)} isLoading={index=>feed.current.isLoading(index)} onRetry={index=>loadFeed(index,true)} progress={stored.progress} onSelect={index=>{focusCursor(index);openDetails();}} onGridLayout={libraryScrollCallbacks.onGridLayout} />}
       {route!=='appearance'&&route!=='library'?<Text accessibilityLiveRegion="polite" style={[styles.notice,{height:40}]} numberOfLines={2}>{message}</Text>:null}
 
       </Animated.View></ScrollView>
-      {route==='library'?<View style={{height:68,paddingTop:8}}><Text numberOfLines={1} style={[styles.footer,{height:18,lineHeight:18,marginTop:0}]}>{librarySupport.supported?(totalItems?'Title '+(cursor+1)+' of '+totalItems+'  ':'')+'Arrows: browse   Select: details / retry   Up from top: libraries':'Left / Right: libraries   Select: choose'}   Back: exit   Menu: server</Text><Text accessibilityLiveRegion="polite" numberOfLines={2} style={[styles.notice,{height:40,marginTop:2}]}>{!librarySupport.supported?librarySupport.reason:!selectedSupport.supported?selectedSupport.reason:message||' '}</Text></View>:null}
+      {route==='library'?<View style={{height:compact?52:36,paddingTop:4}}><Text numberOfLines={1} style={[styles.footer,{height:14,lineHeight:14,fontSize:compact?11:10,marginTop:0}]}>{librarySupport.supported?headerFocused?'Left / Right: libraries and settings'+(canEnterLibraryGrid(librarySupport.supported,feedSnapshot.known,totalItems)?'   Down: titles':''):(totalItems?'Title '+(cursor+1)+' of '+totalItems+'  ':'')+'Arrows: browse   Select: details / retry   Up from top: libraries':'Left / Right: libraries   Select: choose'}   Back: exit   Menu: server</Text><Text accessibilityLiveRegion="polite" numberOfLines={compact?2:1} style={[styles.notice,{height:compact?30:14,lineHeight:14,fontSize:compact?12:11,marginTop:2}]}>{!librarySupport.supported?librarySupport.reason:!selectedSupport.supported?selectedSupport.reason:message||' '}</Text></View>:null}
       </>}
     </>}
   </View>;
