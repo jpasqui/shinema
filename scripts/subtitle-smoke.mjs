@@ -253,13 +253,17 @@ try {
     await seek(3);
     await expect.poll(cue, { timeout: 60000 }).toContain('English: first cue');
     await seek(12);
-    await expect.poll(cue).toContain('English: after seek and resume');
+    await expect
+      .poll(cue, { timeout: 60000 })
+      .toContain('English: after seek and resume');
     await seek(20);
-    await expect.poll(cue).toContain('English: final cue');
+    await expect.poll(cue, { timeout: 60000 }).toContain('English: final cue');
     await seek(12);
     const loads = await page.evaluate(() => window.__videoLoads);
     await subtitles.selectOption(es.id);
-    await expect.poll(cue).toContain('Español: después del salto');
+    await expect
+      .poll(cue, { timeout: 60000 })
+      .toContain('Español: después del salto');
     assert.equal(await video.evaluate((node) => node.currentTime), 12);
     assert.equal(await page.evaluate(() => window.__videoLoads), loads);
     if (name === 'Direct') {
@@ -273,13 +277,17 @@ try {
         ),
       ).toBeVisible();
       await subtitles.selectOption(es.id);
-      await expect.poll(cue).toContain('Español: después del salto');
+      await expect
+        .poll(cue, { timeout: 60000 })
+        .toContain('Español: después del salto');
       await page.unroute('**' + en.contentPath);
       await page.route('**' + es.contentPath, (route) =>
         route.fulfill({ status: 503, body: 'unavailable' }),
       );
       await subtitles.selectOption(en.id);
-      await expect.poll(cue).toContain('English: after seek and resume');
+      await expect
+        .poll(cue, { timeout: 60000 })
+        .toContain('English: after seek and resume');
       await subtitles.selectOption(es.id);
       await expect(
         page.getByText(
@@ -288,7 +296,9 @@ try {
       ).toBeVisible();
       await page.unroute('**' + es.contentPath);
       await page.getByRole('button', { name: 'Retry subtitles' }).click();
-      await expect.poll(cue).toContain('Español: después del salto');
+      await expect
+        .poll(cue, { timeout: 60000 })
+        .toContain('Español: después del salto');
       assert.equal(await page.evaluate(() => window.__videoLoads), loads);
       checks.push(
         'content failure permits changing track and retry without video reload',
@@ -299,7 +309,7 @@ try {
       fullPage: true,
     });
     await subtitles.selectOption('');
-    await expect.poll(cue).toBe('');
+    await expect.poll(cue, { timeout: 60000 }).toBe('');
     await expect
       .poll(() =>
         video.evaluate((node) =>
@@ -309,21 +319,29 @@ try {
       .toBe(true);
     await subtitles.selectOption(en.id);
     await seek(3);
-    await expect.poll(cue).toContain('English: first cue');
+    await expect.poll(cue, { timeout: 60000 }).toContain('English: first cue');
     await seek(12);
     await page.getByRole('button', { name: 'Back to details' }).click();
     await page.getByRole('button', { name: '▶ Resume', exact: true }).click();
-    await expect(subtitles.locator(`option[value="${en.id}"]`)).toHaveCount(1, {
-      timeout: 60000,
-    });
-    await expect(subtitles).toHaveValue(en.id);
+    // Pause as soon as resume restores the media clock. Waiting for discovery
+    // first lets slow codec work advance playback beyond this cue's end.
     await expect
       .poll(() => video.evaluate((node) => node.currentTime), {
         timeout: 60000,
       })
       .toBeGreaterThanOrEqual(11);
-    await video.evaluate((node) => node.pause());
-    await expect.poll(cue).toContain('English: after seek and resume');
+    const resumedAt = await video.evaluate((node) => {
+      node.pause();
+      return node.currentTime;
+    });
+    assert(resumedAt < 15);
+    await expect(subtitles.locator(`option[value="${en.id}"]`)).toHaveCount(1, {
+      timeout: 60000,
+    });
+    await expect(subtitles).toHaveValue(en.id);
+    await expect
+      .poll(cue, { timeout: 60000 })
+      .toContain('English: after seek and resume');
     checks.push(
       `${name}: default, embedded/external, absolute forward/backward seek, Off, no reload on selection, resume`,
     );
@@ -356,7 +374,7 @@ try {
           requestAnimationFrame(() => requestAnimationFrame(resolve)),
         ),
     );
-    await expect.poll(cue).toBe('');
+    await expect.poll(cue, { timeout: 60000 }).toBe('');
     assert(
       await video.evaluate((node) =>
         [...node.textTracks].every((track) => track.mode === 'disabled'),
@@ -441,7 +459,7 @@ try {
   await expect(page.getByText('Finding subtitle tracks.')).toHaveCount(0);
   await page.unroute('**/subtitles');
   await expect(subtitles).toHaveValue('');
-  await expect.poll(cue).toBe('');
+  await expect.poll(cue, { timeout: 60000 }).toBe('');
   checks.push('explicit Off during initial discovery remains Off');
   await page.getByRole('button', { name: 'Back to details' }).click();
   let releaseFinal;

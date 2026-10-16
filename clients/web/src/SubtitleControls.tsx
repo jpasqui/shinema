@@ -185,7 +185,9 @@ export function SubtitleControls({
             : error ||
               (info.tracks.length
                 ? selected
-                  ? 'Text subtitles · original media timing'
+                  ? automatic
+                    ? `Auto: ${track?.label ?? 'Subtitles ready'}`
+                    : 'Subtitles ready'
                   : 'Subtitles Off'
                 : 'No subtitle tracks found.')}
       </span>
