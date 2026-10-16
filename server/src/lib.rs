@@ -28,6 +28,7 @@ mod web;
 pub use catalog::Classification;
 pub use ssh::SshConfig;
 mod state_files;
+mod subtitles;
 
 #[cfg(test)]
 mod performance_budgets;
@@ -113,6 +114,7 @@ pub struct Library {
     series_entries: BTreeMap<String, String>,
     database: Mutex<Connection>,
     playback: playback::Engine,
+    subtitles: subtitles::Engine,
     metadata: Arc<metadata::Engine>,
     web_root: Option<PathBuf>,
 }
@@ -268,6 +270,7 @@ impl Library {
             entries,
             database: Mutex::new(db),
             playback,
+            subtitles: subtitles::Engine::new(),
             metadata: metadata::Engine::new(&state)?,
             web_root: web::configured()?,
         }))
@@ -402,6 +405,7 @@ impl Library {
             entries,
             database: Mutex::new(db),
             playback,
+            subtitles: subtitles::Engine::new(),
             metadata: metadata::Engine::new(&state)?,
             web_root: web::configured()?,
         }))
@@ -476,6 +480,7 @@ pub fn router(library: Arc<Library>) -> Router {
 }
 pub fn router_at(library: Arc<Library>, bind: std::net::SocketAddr) -> Router {
     library.playback.set_origin(bind);
+    library.subtitles.set_origin(bind);
     Router::new()
         .route(
             "/health",
@@ -491,6 +496,8 @@ pub fn router_at(library: Arc<Library>, bind: std::net::SocketAddr) -> Router {
         .route("/api/media/{id}/poster",get(poster))
         .route("/api/media/{id}/backdrop",get(backdrop))
         .route("/api/media/{id}/playback", get(playback_info))
+        .route("/api/media/{id}/subtitles", get(subtitles::list))
+        .route("/api/media/{id}/subtitles/{track}", get(subtitles::content))
         .route("/api/media/{id}/hls/{segment}", get(hls))
         .route("/api/media/{id}/progress", get(progress).put(save_progress))
         .layer(DefaultBodyLimit::max(4096))
