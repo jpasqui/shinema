@@ -22,6 +22,7 @@ mod cache_lease;
 mod catalog;
 mod metadata;
 mod playback;
+mod request_boundary;
 mod ssh;
 mod web;
 pub use catalog::Classification;
@@ -465,6 +466,7 @@ pub fn router_at(library: Arc<Library>, bind: std::net::SocketAddr) -> Router {
         .route("/api/media/{id}/progress", get(progress).put(save_progress))
         .layer(DefaultBodyLimit::max(4096))
         .fallback(static_web)
+        .layer(axum::middleware::from_fn(request_boundary::guard))
         .with_state(library)
 }
 
