@@ -152,3 +152,20 @@ test('catalog queries are encoded and empty values left out', async () => {
     'http://h:1/api/catalog?library=movies&search=%C3%A9+%26+b&offset=0&limit=60',
   );
 });
+
+test('the default fetch is called unbound, as browsers require', async () => {
+  const original = globalThis.fetch;
+  let receiver: unknown = 'not called';
+  globalThis.fetch = function (this: unknown) {
+    receiver = this;
+    return Promise.resolve(
+      new Response(JSON.stringify({ apiVersion: 1, authRequired: false })),
+    );
+  } as typeof fetch;
+  try {
+    await new ShinemaApi({ origin: 'http://h:1' }).health();
+    assert.ok(receiver === undefined || receiver === globalThis);
+  } finally {
+    globalThis.fetch = original;
+  }
+});

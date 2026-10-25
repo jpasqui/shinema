@@ -220,3 +220,61 @@ jobs:
             LICENSE
           if-no-files-found: error
           retention-days: 14
+  app:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.14.0'
+          cache: npm
+          cache-dependency-path: apps/shinema/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: apps/shinema
+      - run: npm run typecheck && npm test
+        working-directory: apps/shinema
+      - run: npx expo export --platform web --output-dir dist
+        working-directory: apps/shinema
+        env:
+          CI: 'true'
+      - name: Save web build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shinema-app-web-${{ github.event.pull_request.head.sha || github.sha }}
+          path: apps/shinema/dist/
+          if-no-files-found: error
+          retention-days: 14
+  app-android-tv:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.14.0'
+          cache: npm
+          cache-dependency-path: apps/shinema/package-lock.json
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: microsoft
+          java-version: '17'
+      - run: npm ci --no-audit --no-fund
+        working-directory: apps/shinema
+      # Generates the Android TV project (leanback launcher, TV banner) from app.json.
+      - run: npx expo prebuild --platform android --no-install --clean
+        working-directory: apps/shinema
+        env:
+          EXPO_TV: '1'
+          CI: 'true'
+      - run: ./gradlew --no-daemon assembleRelease -PreactNativeDevServerIp=127.0.0.1
+        working-directory: apps/shinema/android
+        env:
+          CI: 'true'
+      - name: Save Android TV development APK
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shinema-app-android-tv-${{ github.event.pull_request.head.sha || github.sha }}
+          path: apps/shinema/android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14

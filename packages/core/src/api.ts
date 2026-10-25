@@ -1,11 +1,13 @@
 import {
   parseCatalog,
+  parseLibraries,
   parsePlayback,
   parseSeasons,
   parseSeriesPage,
   parseSubtitles,
   parseSummary,
   type Catalog,
+  type Libraries,
   type Playback,
   type Seasons,
   type SeriesPage,
@@ -102,7 +104,11 @@ export class ShinemaApi {
   constructor(options: ApiOptions) {
     this.origin = options.origin.replace(/\/$/, '');
     this.token = options.token ?? null;
-    this.fetcher = options.fetch ?? (globalThis.fetch as FetchLike);
+    // Browsers reject fetch called as a method of another object
+    // ("Illegal invocation"), so the default calls it through globalThis.
+    this.fetcher =
+      options.fetch ??
+      ((input, init) => (globalThis.fetch as FetchLike)(input, init));
     this.timeoutMs = options.timeoutMs ?? 10000;
   }
 
@@ -259,6 +265,10 @@ export class ShinemaApi {
     )
       throw new ApiError('invalid', status, 'Invalid pairing response');
     return { deviceId: value.deviceId, name: value.name, token: value.token };
+  }
+
+  libraries(signal?: AbortSignal): Promise<Libraries> {
+    return this.get('/api/libraries', parseLibraries, signal);
   }
 
   summary(signal?: AbortSignal): Promise<LibrarySummary> {
