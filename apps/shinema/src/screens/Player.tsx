@@ -15,7 +15,7 @@ import { Button } from '../kit/Button';
 import { Focusable } from '../kit/Focusable';
 import { Message, Screen } from '../kit/Screen';
 import { Text } from '../kit/Text';
-import { colors, isTV, space } from '../kit/theme';
+import { colors, isTV, space, useMetrics } from '../kit/theme';
 import { useNavigation } from '../navigation';
 import { useRemote } from '../platform/remote';
 import { useEngine } from '../player/engine';
@@ -111,6 +111,7 @@ function Video({
   start: number;
   onFailed: (message: string) => void;
 }) {
+  const { gutter } = useMetrics();
   useKeepAwake();
   const { api, progress } = useConnected();
   const seek = useRef(new SeekTarget()).current;
@@ -279,8 +280,8 @@ function Video({
           pointerEvents="none"
           style={{
             position: 'absolute',
-            left: space.gutter,
-            right: space.gutter,
+            left: gutter,
+            right: gutter,
             bottom: controlsVisible ? 180 : space.xl,
             alignItems: 'center',
           }}
@@ -301,7 +302,7 @@ function Video({
       {engine.status === 'loading' ? (
         <View
           pointerEvents="none"
-          style={{ position: 'absolute', top: space.lg, right: space.gutter }}
+          style={{ position: 'absolute', top: space.lg, right: gutter }}
         >
           <Text variant="caption" muted>
             Loading…
@@ -316,7 +317,7 @@ function Video({
             left: 0,
             right: 0,
             bottom: 0,
-            padding: space.gutter,
+            padding: gutter,
             paddingTop: space.lg,
             backgroundColor: colors.scrim,
             gap: space.sm,
@@ -359,7 +360,15 @@ function Video({
               </Text>
             ) : (
               // Mouse and touch need visible controls; TVs use the remote.
-              <View style={{ flexDirection: 'row', gap: space.sm }}>
+              <View
+                style={{
+                  flexDirection: 'row',
+                  flexWrap: 'wrap',
+                  justifyContent: 'flex-end',
+                  gap: space.sm,
+                  flexShrink: 1,
+                }}
+              >
                 <Button
                   label="Back 10 s"
                   kind="secondary"
@@ -390,7 +399,7 @@ function Video({
         <View
           style={{
             position: 'absolute',
-            right: space.gutter,
+            right: gutter,
             bottom: 160,
             width: 300,
             padding: space.md,

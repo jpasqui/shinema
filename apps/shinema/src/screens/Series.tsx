@@ -9,7 +9,7 @@ import { useConnected } from '../connection';
 import { Focusable } from '../kit/Focusable';
 import { Message, Screen } from '../kit/Screen';
 import { Text } from '../kit/Text';
-import { colors, space } from '../kit/theme';
+import { colors, space, useMetrics } from '../kit/theme';
 import { useNavigation } from '../navigation';
 
 type Season = { season: number | null; episodes: number };
@@ -22,6 +22,7 @@ const seasonName = (season: number | null) =>
       : `Season ${season}`;
 
 export function SeriesScreen({ series }: { series: Series }) {
+  const { gutter } = useMetrics();
   const { api, progress } = useConnected();
   const navigation = useNavigation();
   const [seasons, setSeasons] = useState<Season[] | null>(null);
@@ -71,7 +72,7 @@ export function SeriesScreen({ series }: { series: Series }) {
     );
 
   return (
-    <Screen style={{ paddingHorizontal: space.gutter, paddingTop: space.lg }}>
+    <Screen style={{ paddingHorizontal: gutter, paddingTop: space.lg }}>
       <Text variant="hero" numberOfLines={2}>
         {series.title}
       </Text>

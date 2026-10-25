@@ -1,4 +1,4 @@
-import { Platform, type ViewStyle } from 'react-native';
+import { Platform, useWindowDimensions, type ViewStyle } from 'react-native';
 import { defaultTheme } from '../../../../packages/design-tokens/theme.ts';
 
 /**
@@ -59,3 +59,17 @@ export const isWeb = Platform.OS === 'web';
 export const noBrowserOutline = (
   Platform.OS === 'web' ? { outlineStyle: 'none' } : {}
 ) as ViewStyle;
+
+/**
+ * Narrow screens (phones in portrait) get a 16-point margin and smaller
+ * posters; TVs and desktops keep the 48-point TV-safe margin.
+ */
+export function useMetrics() {
+  const { width } = useWindowDimensions();
+  const compact = width < 600;
+  return {
+    compact,
+    gutter: compact ? space.md : space.gutter,
+    posterMinWidth: compact ? 96 : poster.minWidth,
+  };
+}

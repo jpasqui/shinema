@@ -4,10 +4,11 @@ import { useConnected } from '../connection';
 import { Button } from '../kit/Button';
 import { Screen } from '../kit/Screen';
 import { Text } from '../kit/Text';
-import { space } from '../kit/theme';
+import { space, useMetrics } from '../kit/theme';
 import { useNavigation } from '../navigation';
 
 export function SettingsScreen() {
+  const { gutter } = useMetrics();
   const connection = useConnected();
   const navigation = useNavigation();
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
@@ -28,7 +29,7 @@ export function SettingsScreen() {
   }
 
   return (
-    <Screen style={{ padding: space.gutter, gap: space.lg }}>
+    <Screen style={{ padding: gutter, gap: space.lg }}>
       <Text variant="title">Settings</Text>
       <View style={{ gap: space.xs }}>
         <Text variant="heading" muted>

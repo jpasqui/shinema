@@ -12,7 +12,7 @@ import { PosterCard } from '../kit/PosterCard';
 import { PosterGrid, artworkWidth, useGridLayout } from '../kit/PosterGrid';
 import { Message, Screen } from '../kit/Screen';
 import { Text } from '../kit/Text';
-import { colors, poster, space } from '../kit/theme';
+import { colors, poster, space, useMetrics } from '../kit/theme';
 import { usePagedList } from '../kit/usePagedList';
 import { useNavigation } from '../navigation';
 
@@ -39,6 +39,7 @@ export function LibraryScreen() {
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const { compact, gutter } = useMetrics();
 
   useEffect(() => {
     const controller = new AbortController();
@@ -66,14 +67,40 @@ export function LibraryScreen() {
   const library = libraries?.find((item) => item.id === selected) ?? null;
 
   // The header stays fixed above the grid, so switching libraries never
-  // rebuilds it and focus stays on the tab you are using.
+  // rebuilds it and focus stays on the tab you are using. On narrow phone
+  // screens the tabs move to their own row.
+  const tabs = (
+    <ScrollView
+      horizontal
+      style={{ flexGrow: 0, flexShrink: 1 }}
+      contentContainerStyle={{ gap: space.sm }}
+    >
+      {(libraries ?? []).map((item) => (
+        <Focusable
+          key={item.id}
+          accessibilityRole="tab"
+          accessibilityState={{ selected: item.id === selected }}
+          onPress={() => setSelected(item.id)}
+          style={{
+            borderRadius: 999,
+            paddingHorizontal: space.md,
+            paddingVertical: 6,
+            backgroundColor:
+              item.id === selected ? colors.elevated : 'transparent',
+          }}
+        >
+          <Text variant="label">{item.name}</Text>
+        </Focusable>
+      ))}
+    </ScrollView>
+  );
   const header = (
     <View
       style={{
-        paddingTop: space.lg,
+        paddingTop: compact ? space.md : space.lg,
         paddingBottom: space.md,
-        paddingHorizontal: space.gutter,
-        gap: space.lg,
+        paddingHorizontal: gutter,
+        gap: space.md,
       }}
     >
       <View
@@ -82,25 +109,7 @@ export function LibraryScreen() {
         <Text variant="title" style={{ marginRight: space.md }}>
           Shinema
         </Text>
-        <ScrollView horizontal contentContainerStyle={{ gap: space.sm }}>
-          {(libraries ?? []).map((item) => (
-            <Focusable
-              key={item.id}
-              accessibilityRole="tab"
-              accessibilityState={{ selected: item.id === selected }}
-              onPress={() => setSelected(item.id)}
-              style={{
-                borderRadius: 999,
-                paddingHorizontal: space.md,
-                paddingVertical: 6,
-                backgroundColor:
-                  item.id === selected ? colors.elevated : 'transparent',
-              }}
-            >
-              <Text variant="label">{item.name}</Text>
-            </Focusable>
-          ))}
-        </ScrollView>
+        {compact ? null : tabs}
         <View style={{ flex: 1 }} />
         <Focusable
           accessibilityRole="button"
@@ -116,6 +125,7 @@ export function LibraryScreen() {
           </Text>
         </Focusable>
       </View>
+      {compact ? tabs : null}
     </View>
   );
 

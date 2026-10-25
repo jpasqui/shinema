@@ -10,10 +10,11 @@ import { Button } from '../kit/Button';
 import { Screen } from '../kit/Screen';
 import { Text } from '../kit/Text';
 import { TextField } from '../kit/TextField';
-import { space } from '../kit/theme';
+import { space, useMetrics } from '../kit/theme';
 import { useNavigation } from '../navigation';
 
 export function ConnectScreen() {
+  const { gutter } = useMetrics();
   const navigation = useNavigation();
   const connection = useConnection();
   const { connect } = connection;
@@ -65,7 +66,7 @@ export function ConnectScreen() {
   }
 
   return (
-    <Screen style={{ justifyContent: 'center', padding: space.gutter }}>
+    <Screen style={{ justifyContent: 'center', padding: gutter }}>
       <View style={{ gap: space.lg, maxWidth: 560 }}>
         <Text variant="hero">Shinema</Text>
         <Text muted>

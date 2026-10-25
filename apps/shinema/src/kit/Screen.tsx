@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { ActivityIndicator, View, type ViewStyle } from 'react-native';
 import { Button } from './Button';
 import { Text } from './Text';
-import { colors, space } from './theme';
+import { colors, space, useMetrics } from './theme';
 
 export function Screen({
   children,
@@ -30,13 +30,14 @@ export function Message({
   loading?: boolean;
   action?: { label: string; onPress: () => void };
 }) {
+  const { gutter } = useMetrics();
   return (
     <View
       style={{
         flex: 1,
         alignItems: 'center',
         justifyContent: 'center',
-        padding: space.gutter,
+        padding: gutter,
         gap: space.md,
       }}
     >

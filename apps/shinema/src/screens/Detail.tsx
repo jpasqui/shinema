@@ -10,7 +10,7 @@ import { useConnected } from '../connection';
 import { Button } from '../kit/Button';
 import { Screen } from '../kit/Screen';
 import { Text } from '../kit/Text';
-import { colors, space } from '../kit/theme';
+import { colors, space, useMetrics } from '../kit/theme';
 import { useNavigation } from '../navigation';
 
 const formatTime = (seconds: number) => {
@@ -21,6 +21,7 @@ const formatTime = (seconds: number) => {
 };
 
 export function DetailScreen({ media }: { media: Media }) {
+  const { gutter } = useMetrics();
   const { api, progress } = useConnected();
   const navigation = useNavigation();
   const { width } = useWindowDimensions();
@@ -78,7 +79,7 @@ export function DetailScreen({ media }: { media: Media }) {
         style={{
           flex: 1,
           justifyContent: 'flex-end',
-          padding: space.gutter,
+          padding: gutter,
           gap: space.md,
           maxWidth: 760,
         }}

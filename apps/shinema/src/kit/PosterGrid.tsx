@@ -10,30 +10,32 @@ import type {
   ListSnapshot,
   PagedList,
 } from '../../../../packages/core/src/index.ts';
-import { poster, space } from './theme';
+import { poster, space, useMetrics } from './theme';
 
 export type GridLayout = {
   columns: number;
   cardWidth: number;
   rowHeight: number;
+  gap: number;
+  gutter: number;
 };
 
 /** Columns follow the width: about 6 on a TV, more on a wide browser window. */
 export function useGridLayout(): GridLayout {
   const { width } = useWindowDimensions();
+  const { gutter, posterMinWidth } = useMetrics();
   return useMemo(() => {
-    const usable = width - space.gutter * 2;
+    const usable = width - gutter * 2;
+    const gap = gutter < space.gutter ? space.sm : poster.gap;
     const columns = Math.max(
       2,
-      Math.floor((usable + poster.gap) / (poster.minWidth + poster.gap)),
+      Math.floor((usable + gap) / (posterMinWidth + gap)),
     );
-    const cardWidth = Math.floor(
-      (usable - poster.gap * (columns - 1)) / columns,
-    );
+    const cardWidth = Math.floor((usable - gap * (columns - 1)) / columns);
     const rowHeight =
-      Math.round(cardWidth * poster.ratio) + space.sm + 52 + poster.gap;
-    return { columns, cardWidth, rowHeight };
-  }, [width]);
+      Math.round(cardWidth * poster.ratio) + space.sm + 52 + gap;
+    return { columns, cardWidth, rowHeight, gap, gutter };
+  }, [width, gutter, posterMinWidth]);
 }
 
 /** Pixel width to request artwork at, so sized variants match the screen. */
@@ -64,7 +66,7 @@ export function PosterGrid<T>({
     width: number,
   ) => ReactElement;
 }) {
-  const { columns, cardWidth, rowHeight } = layout;
+  const { columns, cardWidth, rowHeight, gap, gutter } = layout;
   const rows =
     snapshot.total === null ? 1 : Math.ceil(snapshot.total / columns);
   const data = useMemo(
@@ -99,14 +101,12 @@ export function PosterGrid<T>({
       maxToRenderPerBatch={4}
       // Room for a focused poster to grow without being clipped.
       contentContainerStyle={{
-        paddingHorizontal: space.gutter,
+        paddingHorizontal: gutter,
         paddingTop: space.sm,
         paddingBottom: space.xl,
       }}
       renderItem={({ item: row }) => (
-        <View
-          style={{ flexDirection: 'row', gap: poster.gap, height: rowHeight }}
-        >
+        <View style={{ flexDirection: 'row', gap, height: rowHeight }}>
           {Array.from({ length: columns }, (_, column) => {
             const index = row * columns + column;
             if (snapshot.total !== null && index >= snapshot.total)

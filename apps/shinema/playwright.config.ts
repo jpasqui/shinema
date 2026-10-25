@@ -18,8 +18,21 @@ export default defineConfig({
     screenshot: 'only-on-failure',
   },
   projects: [
-    { name: 'tv', use: { viewport: { width: 960, height: 540 } } },
-    { name: 'desktop', use: { viewport: { width: 1440, height: 900 } } },
+    {
+      name: 'tv',
+      testIgnore: 'phone.spec.ts',
+      use: { viewport: { width: 960, height: 540 } },
+    },
+    {
+      name: 'desktop',
+      testIgnore: 'phone.spec.ts',
+      use: { viewport: { width: 1440, height: 900 } },
+    },
+    {
+      name: 'phone',
+      testMatch: 'phone.spec.ts',
+      use: { ...devices['Pixel 7'], ...(channel ? { channel } : {}) },
+    },
   ],
   webServer: [
     {
