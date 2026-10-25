@@ -344,3 +344,48 @@ jobs:
           path: apps/shinema/android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14
+  app-android-tv-screens:
+    needs: app-android-tv
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.14.0'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: shinema-app-android-tv-${{ github.event.pull_request.head.sha || github.sha }}
+          path: apk
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Generate a synthetic test clip
+        run: ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=640x360:rate=24:duration=30 -f lavfi -i sine=frequency=440:duration=30 -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 30 -c:a aac -b:a 64k -movflags +faststart -shortest "$RUNNER_TEMP/fixture.mp4"
+      - name: Start the mock server
+        run: nohup node apps/shinema/tests/mock-server.mjs 8790 >"$RUNNER_TEMP/mock.log" 2>&1 &
+        env:
+          SHINEMA_MOCK_VIDEO: ${{ runner.temp }}/fixture.mp4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Drive the Android TV build with a D-pad
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 34
+          target: android-tv
+          arch: x86
+          profile: tv_1080p
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: bash apps/shinema/tests/android-tv-screens.sh "$(ls apk/*.apk | head -1)" apps/shinema/test-results/android-tv
+      - name: Save Android TV screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shinema-app-android-tv-screens-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            apps/shinema/test-results/android-tv/
+            ${{ runner.temp }}/mock.log
+          if-no-files-found: ignore
+          retention-days: 14
