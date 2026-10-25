@@ -14,6 +14,7 @@ import {
   type Subtitles,
   type LibrarySummary,
 } from '../../contracts/index.ts';
+import { parseContinue, type ContinueItem } from './continue.ts';
 import { parseProgress, type Progress } from './progress-types.ts';
 
 export type FetchLike = (
@@ -309,6 +310,11 @@ export class ShinemaApi {
       (value) => parseSubtitles(value, id),
       signal,
     );
+  }
+
+  /** Titles started but not finished, most recently watched first. */
+  continueWatching(limit = 20, signal?: AbortSignal): Promise<ContinueItem[]> {
+    return this.get(`/api/continue?limit=${limit}`, parseContinue, signal);
   }
 
   progress(id: string, signal?: AbortSignal): Promise<Progress | null> {

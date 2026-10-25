@@ -9,6 +9,8 @@ import type {
   Media as ClientMedia,
   Playback as ClientPlayback,
 } from '../../contracts/index.ts';
+import type { ContinueItem as ClientContinueItem } from './continue.ts';
+import type { ContinueItem as ServerContinueItem } from './generated/ContinueItem.ts';
 import type { Media as ServerMedia } from './generated/Media.ts';
 import type { Playback as ServerPlayback } from './generated/Playback.ts';
 import type { Progress as ServerProgress } from './generated/Progress.ts';
@@ -25,4 +27,5 @@ export const contractMatches: [
   SameFields<ServerMedia, ClientMedia>,
   SameFields<ServerPlayback, ClientPlayback>,
   SameFields<ServerProgress, ClientProgress>,
-] = [true, true, true];
+  SameFields<ServerContinueItem, ClientContinueItem>,
+] = [true, true, true, true];

@@ -131,6 +131,27 @@ impl Progress {
             && self.duration_seconds <= 604800.0
             && self.position_seconds <= self.duration_seconds
     }
+
+    /// Started but not finished, by the same rule as the clients'
+    /// `watchState` (packages/core/src/progress-types.ts), so the
+    /// continue-watching list and the Resume button always agree.
+    pub fn in_progress(&self) -> bool {
+        let (position, duration) = (self.position_seconds, self.duration_seconds);
+        let remaining = duration - position;
+        let watched = position / duration >= 0.95
+            || (remaining <= 30.0 && duration > 120.0)
+            || remaining <= 3.0;
+        !watched && position >= 10.0
+    }
+}
+
+/// One title on the continue-watching list.
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct ContinueItem {
+    pub media: Media,
+    pub progress: Progress,
 }
 
 #[derive(Clone)]
@@ -785,6 +806,7 @@ fn configured_router(
         .route("/api/media/{id}/subtitles/{track}", get(subtitles::content))
         .route("/api/media/{id}/hls/{segment}", get(hls))
         .route("/api/media/{id}/progress", get(progress).put(save_progress))
+        .route("/api/continue", get(continue_watching))
         .layer(DefaultBodyLimit::max(4096))
         .fallback(static_web)
         .layer(axum::middleware::from_fn_with_state(
@@ -1266,6 +1288,76 @@ async fn progress(
     stored_progress(&db, &id)
         .map(Json)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct ContinueQuery {
+    limit: Option<usize>,
+}
+
+/// Titles started but not finished, most recently watched first, with their
+/// artwork and saved position. Progress for media no longer in the library
+/// is left out.
+async fn continue_watching(
+    State(library): State<Arc<Library>>,
+    Query(query): Query<ContinueQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let limit = query.limit.unwrap_or(20);
+    if !(1..=100).contains(&limit) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    blocking(move || continue_items(&library, limit))
+        .await
+        .map(|items| Json(serde_json::json!({ "items": items })))
+}
+
+fn continue_items(library: &Library, limit: usize) -> Result<Vec<ContinueItem>, StatusCode> {
+    let db = library
+        .database
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut statement = db
+        .prepare(
+            "SELECT m.media_json, p.position, p.duration, p.updated_at
+             FROM progress p JOIN media_catalog m ON m.id = p.id
+             ORDER BY p.updated_at DESC, p.id",
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let rows = statement
+        .query_map([], |row| {
+            let updated_at: u64 = row.get(3)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                Progress {
+                    position_seconds: row.get(1)?,
+                    duration_seconds: row.get(2)?,
+                    updated_at: (updated_at > 0).then_some(updated_at),
+                },
+            ))
+        })
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut items = Vec::new();
+    for row in rows {
+        let (json, progress) = row.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if !progress.in_progress() {
+            continue;
+        }
+        let media: Media =
+            serde_json::from_str(&json).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        items.push(ContinueItem { media, progress });
+        if items.len() == limit {
+            break;
+        }
+    }
+    drop(statement);
+    // Metadata overlays read files and their own cache; holding the catalog
+    // lock through them would stall streaming and progress saves.
+    drop(db);
+    for item in &mut items {
+        library.metadata.overlay(&mut item.media, false, false);
+    }
+    Ok(items)
 }
 
 /// Keeps the newest position. A write observed before the stored one (an

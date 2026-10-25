@@ -169,3 +169,44 @@ test('the default fetch is called unbound, as browsers require', async () => {
     globalThis.fetch = original;
   }
 });
+
+test('the continue-watching list is validated like catalog items', async () => {
+  const media = {
+    id: ID_A,
+    title: 'Generated film',
+    container: 'mkv',
+    sizeBytes: 10,
+    streamPath: `/api/media/${ID_A}/stream`,
+    contentTypeId: 'movies',
+    backdropPath: `/api/media/${ID_A}/backdrop`,
+  };
+  const progress = {
+    positionSeconds: 600,
+    durationSeconds: 6000,
+    updatedAt: 9,
+  };
+  const bodies: unknown[] = [
+    { items: [{ media, progress }] },
+    { items: [{ media: { ...media, id: 'not-an-id' }, progress }] },
+    { items: [{ media, progress: null }] },
+    {
+      items: [{ media, progress: { positionSeconds: 9, durationSeconds: 1 } }],
+    },
+    { items: 'nope' },
+  ];
+  const { fetch, calls } = fakeFetch(() => ({
+    status: 200,
+    body: bodies.shift(),
+  }));
+  const api = new ShinemaApi({ origin: 'http://h:1', fetch });
+  const list = await api.continueWatching(12);
+  assert.equal(calls[0]?.url, 'http://h:1/api/continue?limit=12');
+  assert.equal(list[0]?.media.title, 'Generated film');
+  assert.deepEqual(list[0]?.progress, progress);
+  for (let index = 0; index < 4; index += 1)
+    await assert.rejects(api.continueWatching(), (error: unknown) => {
+      assert.ok(error instanceof ApiError);
+      assert.equal(error.kind, 'invalid');
+      return true;
+    });
+});
