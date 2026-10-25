@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# One-off PR evidence: captures the previous TV app (main at 94dcac1) as the
-# "before" for the rebuild, then uninstalls it so the new app's checks start
-# clean. The old app accepts HTTPS servers only, so its first screen is shown.
+# One-off PR evidence: captures the previous TV app (main at 94dcac1, built
+# for x86) as the "before" for the rebuild, then uninstalls it so the new
+# app's checks start clean. The old app accepts HTTPS servers only, so its
+# first screen is shown.
 #   tests/android-tv-baseline.sh <unsigned-apk> <output-dir>
 set -euo pipefail
 unsigned="$1"
