@@ -354,7 +354,7 @@ async fn unreadable_folders_are_skipped_instead_of_stopping_startup() {
     let locked = media.join("lost+found");
     std::fs::create_dir(&locked).unwrap();
     std::fs::write(locked.join("hidden.mkv"), b"x").unwrap();
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0)).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
     let opened = Library::open(&media, &state);
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
     let app = router_with_admin_token(opened.unwrap(), None);
