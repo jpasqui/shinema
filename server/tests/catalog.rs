@@ -376,11 +376,8 @@ async fn an_existing_catalog_schema_is_rebuilt_without_losing_progress() {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(progress["positionSeconds"], 42.0);
         assert_eq!(progress["durationSeconds"], 120.0);
-        assert!(
-            progress["updatedAt"]
-                .as_u64()
-                .is_some_and(|stamp| stamp > 0)
-        );
+        // Rows saved before progress ordering existed carry no timestamp.
+        assert!(progress.get("updatedAt").is_none());
         let (status, catalog) = get(&app, &search_path("/api/catalog", "éclair")).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(catalog["total"], 1);
