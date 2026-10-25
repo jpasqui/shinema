@@ -104,6 +104,7 @@ export function SeriesScreen({ series }: { series: Series }) {
         <Message title="Loading episodes" loading />
       ) : (
         <FlatList
+          extraData={navigation.depth}
           data={episodes}
           keyExtractor={(item) => item.id}
           contentContainerStyle={{ gap: space.sm, paddingBottom: space.xl }}

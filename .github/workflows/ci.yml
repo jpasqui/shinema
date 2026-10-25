@@ -222,7 +222,7 @@ jobs:
           retention-days: 14
   app:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -238,6 +238,24 @@ jobs:
         working-directory: apps/shinema
         env:
           CI: 'true'
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Generate a synthetic test clip
+        run: ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=640x360:rate=24:duration=30 -f lavfi -i sine=frequency=440:duration=30 -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 30 -c:a aac -b:a 64k -movflags +faststart -shortest "$RUNNER_TEMP/fixture.mp4"
+      - run: npx playwright install --with-deps chromium
+        working-directory: apps/shinema
+      - name: Browser behaviour at TV and desktop sizes
+        run: npm run test:e2e
+        working-directory: apps/shinema
+        env:
+          SHINEMA_MOCK_VIDEO: ${{ runner.temp }}/fixture.mp4
+      - name: Save browser screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shinema-app-screens-${{ github.event.pull_request.head.sha || github.sha }}
+          path: apps/shinema/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Save web build
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

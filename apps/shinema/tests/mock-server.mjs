@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../dist/', import.meta.url));
 const port = Number(process.argv[2] ?? 8790);
 const pairing = process.env.SHINEMA_MOCK_PAIRING === '1';
+const video = process.env.SHINEMA_MOCK_VIDEO || null;
 const TOKEN = 'e'.repeat(64);
 const id = (text) => createHash('sha256').update(text).digest('hex');
 
@@ -177,9 +178,53 @@ createServer(async (request, response) => {
       }
       return json(response, 200, progress.get(media[1]) ?? null);
     }
+    // With SHINEMA_MOCK_VIDEO set, every title plays that file directly and
+    // offers one English caption track.
     if (media && media[2] === 'subtitles')
-      return json(response, 200, { tracks: [] });
-    if (media && media[2] === 'playback') return json(response, 422);
+      return json(response, 200, {
+        tracks: video
+          ? [
+              {
+                id: 'external-en',
+                label: 'English',
+                language: 'en',
+                default: false,
+                source: 'external',
+                contentPath: `/api/media/${media[1]}/subtitles/external-en.vtt`,
+              },
+            ]
+          : [],
+      });
+    if (media && media[2] === 'playback')
+      return video
+        ? json(response, 200, {
+            durationSeconds: 30,
+            mode: 'direct',
+            streamPath: `/api/media/${media[1]}/stream`,
+          })
+        : json(response, 422);
+    if (
+      video &&
+      /^\/api\/media\/[a-f0-9]{64}\/subtitles\/external-en\.vtt$/.test(path)
+    ) {
+      response.writeHead(200, { 'content-type': 'text/vtt' });
+      return response.end(
+        'WEBVTT\n\n00:00:01.000 --> 00:00:04.000\nGenerated caption one\n\n00:00:05.000 --> 00:00:08.000\nGenerated caption two\n',
+      );
+    }
+    if (video && /^\/api\/media\/[a-f0-9]{64}\/stream$/.test(path)) {
+      const size = statSync(video).size;
+      const range = /bytes=(\d*)-(\d*)/.exec(request.headers.range ?? '');
+      const start = range?.[1] ? Number(range[1]) : 0;
+      const end = range?.[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+      response.writeHead(range ? 206 : 200, {
+        'content-type': 'video/mp4',
+        'content-length': end - start + 1,
+        'accept-ranges': 'bytes',
+        ...(range ? { 'content-range': `bytes ${start}-${end}/${size}` } : {}),
+      });
+      return createReadStream(video, { start, end }).pipe(response);
+    }
     return json(response, 404);
   }
   // Static web app with single-page fallback.

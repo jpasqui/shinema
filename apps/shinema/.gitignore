@@ -5,3 +5,5 @@
 /web-build/
 .expo/
 expo-env.d.ts
+/test-results/
+/playwright-report/

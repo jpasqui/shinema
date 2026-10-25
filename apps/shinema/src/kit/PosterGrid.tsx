@@ -49,12 +49,15 @@ export function PosterGrid<T>({
   snapshot,
   layout,
   header,
+  refreshKey = 0,
   renderCard,
 }: {
   list: PagedList<T>;
   snapshot: ListSnapshot<T>;
   layout: GridLayout;
   header?: ReactElement;
+  /** Changes when cards should redraw, for example after watching something. */
+  refreshKey?: number;
   renderCard: (
     item: T | undefined,
     index: number,
@@ -83,6 +86,7 @@ export function PosterGrid<T>({
       data={data}
       keyExtractor={(row) => String(row)}
       ListHeaderComponent={header}
+      extraData={`${snapshot.version}:${refreshKey}`}
       onViewableItemsChanged={onViewable}
       viewabilityConfig={{ itemVisiblePercentThreshold: 1 }}
       getItemLayout={(_, index) => ({
@@ -93,8 +97,10 @@ export function PosterGrid<T>({
       initialNumToRender={3}
       windowSize={5}
       maxToRenderPerBatch={4}
+      // Room for a focused poster to grow without being clipped.
       contentContainerStyle={{
         paddingHorizontal: space.gutter,
+        paddingTop: space.sm,
         paddingBottom: space.xl,
       }}
       renderItem={({ item: row }) => (

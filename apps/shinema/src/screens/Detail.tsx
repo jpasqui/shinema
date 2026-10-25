@@ -25,6 +25,10 @@ export function DetailScreen({ media }: { media: Media }) {
   const navigation = useNavigation();
   const { width } = useWindowDimensions();
   const [saved, setSaved] = useState<Progress | null>(progress.local(media.id));
+  // Returning from the player uncovers this screen; show the new position.
+  useEffect(() => {
+    setSaved(progress.local(media.id));
+  }, [navigation.depth, progress, media.id]);
 
   // Merge server progress (another device may have watched more).
   useEffect(() => {

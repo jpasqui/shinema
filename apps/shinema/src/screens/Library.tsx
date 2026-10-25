@@ -183,6 +183,7 @@ function MediaGrid({ libraryId }: { libraryId: string }) {
       list={list}
       snapshot={snapshot}
       layout={layout}
+      refreshKey={navigation.depth}
       renderCard={(media, index, width) => {
         if (!media) return <Placeholder width={width} />;
         const state = watchState(progress.local(media.id));

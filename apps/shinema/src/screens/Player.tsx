@@ -1,6 +1,4 @@
-import { useEvent } from 'expo';
 import { useKeepAwake } from 'expo-keep-awake';
-import { VideoView, useVideoPlayer, type VideoSource } from 'expo-video';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, View } from 'react-native';
 import {
@@ -17,9 +15,10 @@ import { Button } from '../kit/Button';
 import { Focusable } from '../kit/Focusable';
 import { Message, Screen } from '../kit/Screen';
 import { Text } from '../kit/Text';
-import { colors, space } from '../kit/theme';
+import { colors, isTV, space } from '../kit/theme';
 import { useNavigation } from '../navigation';
 import { useRemote } from '../platform/remote';
+import { useEngine } from '../player/engine';
 import { SeekTarget } from '../player/seek';
 
 const SAVE_EVERY_MS = 10000;
@@ -114,18 +113,6 @@ function Video({
 }) {
   useKeepAwake();
   const { api, progress } = useConnected();
-  const source = useMemo<VideoSource>(
-    () => ({
-      uri: api.mediaUrl(playback.streamPath),
-      contentType: playback.mode === 'transcode' ? 'hls' : 'auto',
-      metadata: { title: media.title },
-    }),
-    [api, playback, media.title],
-  );
-  const player = useVideoPlayer(source, (instance) => {
-    instance.timeUpdateEventInterval = 0.25;
-    instance.play();
-  });
   const seek = useRef(new SeekTarget()).current;
   const [time, setTime] = useState(start);
   const [controlsUntil, setControlsUntil] = useState(Date.now() + 4000);
@@ -138,62 +125,60 @@ function Video({
   const lastFlush = useRef(Date.now());
   const duration = playback.durationSeconds;
 
-  const { isPlaying } = useEvent(player, 'playingChange', {
-    isPlaying: player.playing,
+  const source = useMemo(
+    () => ({
+      uri: api.mediaUrl(playback.streamPath),
+      hls: playback.mode === 'transcode',
+      title: media.title,
+    }),
+    [api, playback, media.title],
+  );
+  // Progress is recorded every 10 seconds and sent to the server every minute.
+  const engine = useEngine(source, (currentTime) => {
+    setTime(currentTime);
+    const now = Date.now();
+    if (!started.current || now - lastSave.current < SAVE_EVERY_MS) return;
+    lastSave.current = now;
+    if (!(duration > 0)) return;
+    progress.record(media.id, seek.current(currentTime, now), duration);
+    if (now - lastFlush.current >= FLUSH_EVERY_MS) {
+      lastFlush.current = now;
+      void progress
+        .persist()
+        .then(() => progress.flush(api))
+        .catch(() => {});
+    }
   });
-  const { status, error } = useEvent(player, 'statusChange', {
-    status: player.status,
-  });
+  const latestEngine = useRef(engine);
+  latestEngine.current = engine;
 
   // Jump to the resume point once the stream is ready.
   useEffect(() => {
-    if (status === 'readyToPlay' && !started.current) {
+    if (engine.status === 'ready' && !started.current) {
       started.current = true;
-      if (start > 0) player.currentTime = start;
+      if (start > 0) engine.seek(start);
     }
-    if (status === 'error')
+    if (engine.status === 'error')
       onFailed(
-        error?.message
-          ? 'The player could not play this file. It may use a format this device cannot decode.'
-          : 'Playback stopped unexpectedly.',
+        'The player could not play this file. It may use a format this device cannot decode.',
       );
-  }, [status, error, start, player, onFailed]);
-
-  const save = (position: number, persistNow: boolean) => {
-    if (!(duration > 0)) return;
-    progress.record(media.id, position, duration);
-    if (persistNow) void progress.persist().catch(() => {});
-  };
-
-  useEffect(() => {
-    const subscription = player.addListener('timeUpdate', ({ currentTime }) => {
-      setTime(currentTime);
-      const now = Date.now();
-      if (started.current && now - lastSave.current >= SAVE_EVERY_MS) {
-        lastSave.current = now;
-        save(
-          seek.current(currentTime, now),
-          now - lastFlush.current >= FLUSH_EVERY_MS,
-        );
-        if (now - lastFlush.current >= FLUSH_EVERY_MS) {
-          lastFlush.current = now;
-          void progress.flush(api).catch(() => {});
-        }
-      }
-    });
-    return () => subscription.remove();
-    // `save` reads only stable values.
-  }, [player, api, progress, seek]);
+  }, [engine, start, onFailed]);
 
   // Save and sync when leaving the player, including via Back.
   useEffect(
     () => () => {
-      if (started.current) {
-        save(seek.current(player.currentTime), true);
-        void progress.flush(api).catch(() => {});
-      }
+      if (!started.current || !(duration > 0)) return;
+      progress.record(
+        media.id,
+        seek.current(latestEngine.current.currentTime()),
+        duration,
+      );
+      void progress
+        .persist()
+        .then(() => progress.flush(api))
+        .catch(() => {});
     },
-    [player, api, progress, seek],
+    [api, progress, seek, media.id, duration],
   );
 
   // Subtitles: pick the default track, then load its cues.
@@ -228,8 +213,14 @@ function Video({
 
   const showControls = () => setControlsUntil(Date.now() + 4000);
   const toggle = () => {
-    if (player.playing) player.pause();
-    else player.play();
+    if (engine.playing) engine.pause();
+    else engine.play();
+    showControls();
+  };
+  const jump = (delta: number) => {
+    const target = seek.step(engine.currentTime(), duration, delta);
+    engine.seek(target);
+    setTime(target);
     showControls();
   };
 
@@ -243,17 +234,9 @@ function Video({
     }
     switch (key) {
       case 'left':
-      case 'right': {
-        const target = seek.step(
-          player.currentTime,
-          duration,
-          key === 'left' ? -SEEK_STEP : SEEK_STEP,
-        );
-        player.currentTime = target;
-        setTime(target);
-        showControls();
+      case 'right':
+        jump(key === 'left' ? -SEEK_STEP : SEEK_STEP);
         return true;
-      }
       case 'select':
       case 'playPause':
         toggle();
@@ -275,25 +258,20 @@ function Video({
     const timer = setInterval(() => forceTick((value) => value + 1), 1000);
     return () => clearInterval(timer);
   }, []);
-  const controlsVisible = !isPlaying || menu || Date.now() < controlsUntil;
+  const controlsVisible = !engine.playing || menu || Date.now() < controlsUntil;
   const shown = seek.current(time);
   const caption = cueTextAt(cues, time);
 
   return (
     <View style={{ flex: 1, backgroundColor: '#000' }}>
-      <VideoView
-        player={player}
-        nativeControls={false}
-        contentFit="contain"
-        style={{ position: 'absolute', inset: 0 }}
-      />
-      {/* Holds TV focus so remote keys reach the player; tap toggles on touch. */}
+      {engine.surface}
+      {/* Holds TV focus so remote keys reach the player; a tap shows controls. */}
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={isPlaying ? 'Pause' : 'Play'}
+        accessibilityLabel={engine.playing ? 'Pause' : 'Play'}
         hasTVPreferredFocus={!menu}
-        focusable={!menu}
-        onPress={toggle}
+        focusable={isTV && !menu}
+        onPress={isTV ? toggle : showControls}
         style={{ position: 'absolute', inset: 0 }}
       />
       {caption ? (
@@ -303,7 +281,7 @@ function Video({
             position: 'absolute',
             left: space.gutter,
             right: space.gutter,
-            bottom: controlsVisible ? 120 : space.xl,
+            bottom: controlsVisible ? 180 : space.xl,
             alignItems: 'center',
           }}
         >
@@ -320,7 +298,7 @@ function Video({
           </Text>
         </View>
       ) : null}
-      {status === 'loading' ? (
+      {engine.status === 'loading' ? (
         <View
           pointerEvents="none"
           style={{ position: 'absolute', top: space.lg, right: space.gutter }}
@@ -364,15 +342,47 @@ function Video({
             />
           </View>
           <View
-            style={{ flexDirection: 'row', justifyContent: 'space-between' }}
+            style={{
+              flexDirection: 'row',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: space.md,
+            }}
           >
             <Text variant="caption">
               {clock(shown)} / {clock(duration)}
             </Text>
-            <Text variant="caption" muted>
-              {isPlaying ? 'OK to pause' : 'OK to play'} · ◀ ▶ 10 seconds
-              {tracks.length ? ' · ▲ subtitles' : ''}
-            </Text>
+            {isTV ? (
+              <Text variant="caption" muted>
+                {engine.playing ? 'OK to pause' : 'OK to play'} · ◀ ▶ 10 seconds
+                {tracks.length ? ' · ▲ subtitles' : ''}
+              </Text>
+            ) : (
+              // Mouse and touch need visible controls; TVs use the remote.
+              <View style={{ flexDirection: 'row', gap: space.sm }}>
+                <Button
+                  label="Back 10 s"
+                  kind="secondary"
+                  onPress={() => jump(-SEEK_STEP)}
+                />
+                <Button
+                  label={engine.playing ? 'Pause' : 'Play'}
+                  onPress={toggle}
+                />
+                <Button
+                  label="Forward 10 s"
+                  kind="secondary"
+                  onPress={() => jump(SEEK_STEP)}
+                />
+                {tracks.length ? (
+                  <Button
+                    label="Subtitles"
+                    kind="secondary"
+                    onPress={() => setMenu(true)}
+                  />
+                ) : null}
+              </View>
+            )}
           </View>
         </View>
       ) : null}
@@ -381,7 +391,7 @@ function Video({
           style={{
             position: 'absolute',
             right: space.gutter,
-            bottom: 140,
+            bottom: 160,
             width: 300,
             padding: space.md,
             gap: space.xs,
