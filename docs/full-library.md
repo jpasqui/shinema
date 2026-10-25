@@ -32,21 +32,16 @@ $env:SHINEMA_BIND = '127.0.0.1:8787'
 .\target\debug\shinema-server.exe
 ```
 
-For the integrated prebuilt UI, build it and set its public asset directory before starting Rust:
+For the integrated web app, export it and set its directory before starting Rust:
 
 ```powershell
-npm --prefix clients/web run build
-$env:SHINEMA_WEB_ROOT = Join-Path (Get-Location).Path 'clients/web/dist'
+npm --prefix apps/shinema run export:web
+$env:SHINEMA_WEB_ROOT = Join-Path (Get-Location).Path 'apps/shinema/dist'
 ```
 
-The same Rust loopback origin then serves the UI and API. Development hot reload remains available in a second terminal:
+The same Rust origin then serves the app and the API. For development with hot reload, run `npm run web` in `apps/shinema` instead and enter the server's address in the app.
 
-```powershell
-$env:VITE_DEMO_MODE = 'false'
-npm --prefix clients/web run dev
-```
-
-Open `http://127.0.0.1:5173`. Both processes bind to loopback. Stop them after use. For a local filesystem source instead, unset `SHINEMA_SSH_CONFIG` and set `SHINEMA_MEDIA_ROOT` to a directory containing `tv` and `movies` folders. Writable state must remain separate from media.
+Both processes bind to loopback. Stop them after use. For a local filesystem source instead, unset `SHINEMA_SSH_CONFIG` and set `SHINEMA_MEDIA_ROOT` to a directory containing `tv` and `movies` folders. Writable state must remain separate from media.
 
 ## Full-duration playback
 
@@ -54,7 +49,7 @@ The playback descriptor reports the complete source duration. Browser-compatible
 
 Compatibility output currently uses CPU libx264, 1280-pixel-wide 8-bit H.264 and stereo AAC. At most two codec jobs and four SSH byte transfers run concurrently. Each segment is capped at 16 MiB; the 512 MiB playback cache reserves 64 MiB for the bounded probe database/journal, leaving 448 MiB for at most 4,096 retained segments. Cache identities include source modification metadata and the encoding revision. Abandoned response bodies abort codec jobs and own their child processes for cleanup. Very short trailing audio tails are merged into the last video segment.
 
-Playback starts muted; the user can enable audio. Progress uses the stable source ID and the full source timeline. A file that changes after indexing is rejected until the server is restarted and rescans it.
+Progress uses the stable source ID and the full source timeline. A file that changes after indexing is rejected until the next rescan (every 15 minutes, or `POST /api/admin/rescan`).
 
 ## Checks and present limits
 
@@ -63,15 +58,13 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 npm test
-npm --prefix clients/native run typecheck
-npm --prefix clients/web test
-npm --prefix clients/web run build
-node scripts/full-library-smoke.mjs
+npm --prefix apps/shinema run typecheck
+npm --prefix apps/shinema run test:e2e
 ```
 
-The final command uses generated full-duration media, 1,457 recursive media entries, an isolated full Chromium browser and separate loopback ports. It verifies complete paging, TV grouping, decoding, beginning/middle/end seeks, resume and cached browsing. CI runs POSIX helper path/link tests using local generated fixtures; no real NAS configuration or media enters CI.
+The browser suite runs the app against a mock server with a generated clip; the Rust tests cover paging, grouping, ranges, HLS segmenting and resume against generated fixtures. CI runs POSIX helper path/link tests using local generated fixtures; no real NAS configuration or media enters CI.
 
-This is an interactive development server, not a persistent deployment. There is one development profile and no production authentication/TLS termination. The native TV client consumes configured library labels, order and visibility, appends bounded 48-record batches, and does not offer per-client top-navigation editing. Its cache, row window and focus limits are documented in [loading and browsing](loading-and-browsing.md). This change does not validate Shield playback. Automatic rescans, new metadata matching beyond configured providers, subtitles, alternate audio selection, production GPU encoding and adaptive bitrate remain unfinished. Indexed formats may still contain an unsupported or corrupt codec; playback preparation fails visibly instead of inventing a playable result. Desktop timings do not establish TV input or frame performance.
+This is an interactive development server, not a persistent deployment. There is one profile; devices on the home network pair with a code, and HTTPS needs a reverse proxy. The app shows configured library labels, order and visibility. Shield playback is not validated yet. New metadata matching beyond configured providers, subtitles, alternate audio selection, production GPU encoding and adaptive bitrate remain unfinished. Indexed formats may still contain an unsupported or corrupt codec; playback preparation fails visibly instead of inventing a playable result. Desktop timings do not establish TV input or frame performance.
 
 
 ## Independent metadata and artwork
