@@ -39,6 +39,8 @@ key KEYCODE_BACK
 shot back-to-detail 3
 key KEYCODE_BACK
 shot back-to-library 3
+# Which control has focus now; Back should return to the poster we opened.
+adb exec-out uiautomator dump /dev/tty >"$out/back-to-library.xml" 2>/dev/null || true
 adb shell pkill -INT screenrecord || true
 wait "$recorder" || true
 sleep 2
@@ -56,6 +58,14 @@ fi
 if grep -q " E ReactNativeJS" "$out/react-native.log"; then
   echo "FAIL: JavaScript errors in the log"
   grep " E ReactNativeJS" "$out/react-native.log" | head -5
+  fail=1
+fi
+focused=$(grep -o '<node[^>]*focused="true"[^>]*>' "$out/back-to-library.xml" | grep -o 'content-desc="[^"]*"' | head -1 || true)
+echo "Focused after Back: ${focused:-unknown}"
+if [ -z "$focused" ]; then
+  echo "WARN: could not read focus after Back"
+elif ! echo "$focused" | grep -q "Northern Lines"; then
+  echo "FAIL: Back did not return focus to the poster that was opened"
   fail=1
 fi
 # The second title was played from about 8 s and moved 20 s forward with

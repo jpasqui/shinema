@@ -60,9 +60,14 @@ export function PosterCard({
             accessibilityIgnoresInvertColors
           />
         ) : (
-          <TitleArt title={title} width={width} height={height} />
+          <TitleArt
+            title={title}
+            width={width}
+            height={height}
+            watched={watched}
+          />
         )}
-        {watched ? (
+        {watched && imageUrl ? (
           <View
             style={{
               position: 'absolute',

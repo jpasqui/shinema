@@ -30,12 +30,19 @@ export function ScreenFocusProvider({
   children: ReactNode;
 }) {
   const last = useRef<string | null>(null);
+  // What had focus when this screen was covered. Android TV focuses the first
+  // control of an uncovered screen before this restore runs, so the restore
+  // must not use whatever was focused most recently.
+  const covered = useRef<string | null>(null);
   const wasVisible = useRef(visible);
+  const shown = useRef(visible);
+  shown.current = visible;
   const [restoring, setRestoring] = useState<string | null>(null);
 
   useEffect(() => {
-    if (visible && !wasVisible.current && last.current)
-      setRestoring(last.current);
+    if (!visible && wasVisible.current) covered.current = last.current;
+    if (visible && !wasVisible.current && covered.current)
+      setRestoring(covered.current);
     wasVisible.current = visible;
   }, [visible]);
 
@@ -47,7 +54,7 @@ export function ScreenFocusProvider({
   }, [restoring]);
 
   const remember = useCallback((key: string) => {
-    last.current = key;
+    if (shown.current) last.current = key;
   }, []);
   const value = useMemo(() => ({ remember, restoring }), [remember, restoring]);
   return (
