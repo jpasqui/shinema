@@ -499,7 +499,8 @@ pub async fn list(
     ApiPath(id): ApiPath<String>,
 ) -> Result<Json<Tracks>, StatusCode> {
     crate::require_playable(&library, &id)?;
-    let entry = library.entries.get(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let entry = library.entry(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let entry = &entry;
     crate::verify_source(&library, entry).await?;
     let mut warnings = Vec::new();
     let mut tracks = match library.subtitles.embedded(&library, entry).await {
@@ -540,7 +541,8 @@ pub async fn content(
         .filter(|id| valid_track_id(id))
         .ok_or(StatusCode::NOT_FOUND)?;
     crate::require_playable(&library, &id)?;
-    let entry = library.entries.get(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let entry = library.entry(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let entry = &entry;
     crate::verify_source(&library, entry).await?;
     let body = if track_id.starts_with("external-") {
         let tracks = external(&library, entry)

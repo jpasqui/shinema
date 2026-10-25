@@ -106,6 +106,25 @@ pub struct Scan {
     pub files_seen: u64,
     pub ignored_files: u64,
     pub links_skipped: u64,
+    /// Folders and files the helper could not read and skipped.
+    #[serde(default)]
+    pub unreadable: u64,
+}
+pub struct ScanCounts {
+    pub files_seen: u64,
+    pub ignored_files: u64,
+    pub links_skipped: u64,
+    pub unreadable: u64,
+}
+impl Scan {
+    pub fn counts(&self) -> ScanCounts {
+        ScanCounts {
+            files_seen: self.files_seen,
+            ignored_files: self.ignored_files,
+            links_skipped: self.links_skipped,
+            unreadable: self.unreadable,
+        }
+    }
 }
 fn rejected(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)

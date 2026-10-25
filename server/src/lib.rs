@@ -4,23 +4,26 @@ use axum::{
     extract::{DefaultBodyLimit, Extension, Path as ApiPath, Query, State},
     http::{HeaderMap, Method, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{delete, get, post},
 };
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
+    time::Duration,
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
+mod artwork;
 mod cache_lease;
 mod catalog;
 mod content_registry;
+pub mod devices;
 mod libraries;
 mod metadata;
 mod playback;
@@ -44,11 +47,13 @@ use performance_budgets::EntryIndex;
 mod performance_tests;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct Media {
     pub id: String,
     pub title: String,
     pub container: String,
+    #[cfg_attr(test, ts(as = "f64"))]
     pub size_bytes: u64,
     pub stream_path: String,
     #[serde(flatten)]
@@ -58,35 +63,63 @@ pub struct Media {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase", default)]
 pub struct Presentation {
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub poster_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub backdrop_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub year: Option<u32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(test, ts(optional, as = "Option<Vec<String>>"))]
     pub genres: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub file_title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub file_year: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub metadata_source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
     pub metadata_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional, as = "Option<f64>"))]
     pub metadata_expires_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Progress {
     pub position_seconds: f64,
     pub duration_seconds: f64,
+    /// Milliseconds since the Unix epoch when the client observed this
+    /// position. The server keeps the newest write; an omitted value means
+    /// "now", which preserves the original last-write-wins behaviour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional, as = "Option<f64>"))]
+    pub updated_at: Option<u64>,
+}
+
+/// Result of a library scan, reported at startup and by rescans.
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct ScanReport {
+    pub media: u32,
+    /// Folders and files that could not be read and were skipped.
+    pub unreadable: u32,
 }
 
 impl Progress {
@@ -108,18 +141,184 @@ struct Entry {
     modified: Option<std::time::SystemTime>,
 }
 
+/// The scanned media and folders. Rescans build a new one and swap it in.
+struct Index {
+    entries: EntryIndex,
+    source_folders: BTreeSet<String>,
+}
+
 pub struct Library {
     root: Option<PathBuf>,
     directory: Option<cap_std::fs::Dir>,
     remote: Option<SshConfig>,
     remote_transfers: Arc<tokio::sync::Semaphore>,
-    entries: EntryIndex,
-    source_folders: BTreeSet<String>,
+    index: RwLock<Arc<Index>>,
+    rescanning: tokio::sync::Mutex<()>,
     database: Mutex<Connection>,
     playback: playback::Engine,
     subtitles: subtitles::Engine,
     metadata: Arc<metadata::Engine>,
+    artwork: artwork::Variants,
+    devices: devices::Registry,
     web_root: Option<PathBuf>,
+}
+
+const REMOTE_PERMIT_WAIT: Duration = Duration::from_secs(30);
+
+fn open_state_database(state: &Path) -> rusqlite::Result<Connection> {
+    let db = Connection::open_with_flags(
+        state.join("progress.sqlite3"),
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?;
+    db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS progress(id TEXT PRIMARY KEY, position REAL NOT NULL, duration REAL NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0);")?;
+    // Databases created before progress ordering lack the timestamp column.
+    let ordered = db
+        .prepare("SELECT 1 FROM pragma_table_info('progress') WHERE name='updated_at'")?
+        .exists([])?;
+    if !ordered {
+        db.execute_batch("ALTER TABLE progress ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;")?;
+    }
+    devices::initialize(&db)?;
+    Ok(db)
+}
+
+fn prepare_entries(entries: &mut BTreeMap<String, Entry>) {
+    for entry in entries.values_mut() {
+        metadata::prepare(&mut entry.media);
+        if entry.media.classification.collection.as_deref() == Some("movies")
+            && entry.media.presentation.year.is_none()
+        {
+            entry.media.presentation.year = entry
+                .relative
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|p| p.to_str())
+                .and_then(|p| metadata::title_year(p).1);
+        }
+    }
+}
+
+fn rebuild_catalog(
+    db: &mut Connection,
+    entries: &BTreeMap<String, Entry>,
+    source_folders: &BTreeSet<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let configuration = libraries::initialize(db, entries, source_folders)?;
+    catalog::replace_index(db, libraries::assign(entries, &configuration).into_iter())?;
+    Ok(())
+}
+
+fn report_scan(report: &ScanReport) {
+    if report.unreadable > 0 {
+        eprintln!(
+            "Shinema indexed {} media files; skipped {} unreadable folders or files",
+            report.media, report.unreadable
+        );
+    } else {
+        eprintln!("Shinema indexed {} media files", report.media);
+    }
+}
+
+type ScannedEntries = (BTreeMap<String, Entry>, BTreeSet<String>);
+
+fn remote_entries(
+    config: &SshConfig,
+    scan: ssh::Scan,
+) -> Result<ScannedEntries, Box<dyn std::error::Error>> {
+    let mut entries = BTreeMap::new();
+    let mut source_folders = config.roots.keys().cloned().collect::<BTreeSet<_>>();
+    for record in scan.items {
+        let relative = PathBuf::from(&record.relative);
+        let mut parent = relative.parent();
+        while let Some(folder) = parent.filter(|folder| !folder.as_os_str().is_empty()) {
+            source_folders.insert(
+                folder
+                    .components()
+                    .map(|part| part.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/"),
+            );
+            parent = folder.parent();
+        }
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+            || record.size_bytes > 9007199254740991
+        {
+            return Err("Invalid remote media identity".into());
+        }
+        let kind = record
+            .relative
+            .split('/')
+            .next()
+            .ok_or("Missing remote collection")?;
+        let root = config.roots.get(kind).ok_or("Unknown remote collection")?;
+        let id = format!(
+            "{:x}",
+            Sha256::digest(
+                format!(
+                    "shinema-ssh-library-v1\0{}\0{}\0{}",
+                    config.destination, root, record.relative
+                )
+                .as_bytes()
+            )
+        );
+        let mut classification = catalog::classify(&relative);
+        if let Some(series) = &classification.series_id {
+            classification.series_id = Some(format!(
+                "{:x}",
+                Sha256::digest(format!("{}\0{}\0{}", config.destination, root, series).as_bytes())
+            ));
+        }
+        let title = relative
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .chars()
+            .take(200)
+            .collect::<String>()
+            .replace('_', " ");
+        let container = relative
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !content_registry::supports_play(None, &container) {
+            return Err("Remote helper returned an unsupported container".into());
+        }
+        entries.insert(
+            id.clone(),
+            Entry {
+                media: Media {
+                    stream_path: format!("/api/media/{id}/stream"),
+                    id,
+                    title,
+                    container,
+                    size_bytes: record.size_bytes,
+                    classification,
+                    presentation: Presentation::default(),
+                },
+                relative,
+                remote: Some(record),
+                modified: None,
+            },
+        );
+    }
+    Ok((entries, source_folders))
+}
+
+fn record_remote_scan(db: &Connection, scan: &ssh::ScanCounts) -> rusqlite::Result<()> {
+    db.execute_batch("CREATE TABLE IF NOT EXISTS scan_summary(files_seen INTEGER,ignored_files INTEGER,links_skipped INTEGER);")?;
+    db.execute("DELETE FROM scan_summary", [])?;
+    db.execute(
+        "INSERT INTO scan_summary VALUES (?1,?2,?3)",
+        params![scan.files_seen, scan.ignored_files, scan.links_skipped],
+    )?;
+    Ok(())
 }
 
 fn checked_file(root: &Path, relative: &Path) -> std::io::Result<PathBuf> {
@@ -224,36 +423,17 @@ impl Library {
         }
         let mut entries = BTreeMap::new();
         let mut source_folders = BTreeSet::from([".".to_string()]);
-        Self::scan(&root, &mut entries, &mut source_folders)?;
+        let unreadable = Self::scan(&root, &mut entries, &mut source_folders)?;
+        report_scan(&ScanReport {
+            media: entries.len() as u32,
+            unreadable,
+        });
         state_files::validate(&state)?;
         let playback = playback::Engine::new(&state)?;
-        let mut db = Connection::open_with_flags(
-            state.join("progress.sqlite3"),
-            OpenFlags::SQLITE_OPEN_READ_WRITE
-                | OpenFlags::SQLITE_OPEN_CREATE
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        )?;
+        let mut db = open_state_database(&state)?;
         state_files::validate(&state)?;
-        db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS progress(id TEXT PRIMARY KEY, position REAL NOT NULL, duration REAL NOT NULL);")?;
-        for entry in entries.values_mut() {
-            metadata::prepare(&mut entry.media);
-            if entry.media.classification.collection.as_deref() == Some("movies")
-                && entry.media.presentation.year.is_none()
-            {
-                entry.media.presentation.year = entry
-                    .relative
-                    .parent()
-                    .and_then(|p| p.file_name())
-                    .and_then(|p| p.to_str())
-                    .and_then(|p| metadata::title_year(p).1);
-            }
-        }
-        let configuration = libraries::initialize(&db, &entries, &source_folders)?;
-        catalog::replace_index(
-            &mut db,
-            libraries::assign(&entries, &configuration).into_iter(),
-        )?;
+        prepare_entries(&mut entries);
+        rebuild_catalog(&mut db, &entries, &source_folders)?;
         let directory = cap_std::fs::Dir::open_ambient_dir(&root, cap_std::ambient_authority())?;
         #[cfg(test)]
         let entries = EntryIndex::from(entries);
@@ -262,12 +442,17 @@ impl Library {
             directory: Some(directory),
             remote: None,
             remote_transfers: Arc::new(tokio::sync::Semaphore::new(4)),
-            entries,
-            source_folders,
+            index: RwLock::new(Arc::new(Index {
+                entries,
+                source_folders,
+            })),
+            rescanning: tokio::sync::Mutex::new(()),
             database: Mutex::new(db),
             playback,
             subtitles: subtitles::Engine::new(),
             metadata: metadata::Engine::new(&state)?,
+            artwork: artwork::Variants::new(&state)?,
+            devices: devices::Registry::new(),
             web_root: web::configured()?,
         }))
     }
@@ -287,125 +472,21 @@ impl Library {
             return Err("SSH state must be an absolute local directory without traversal".into());
         }
         let scan = config.scan().await?;
-        let mut entries = BTreeMap::new();
-        let mut source_folders = config.roots.keys().cloned().collect::<BTreeSet<_>>();
-        for record in scan.items {
-            let relative = PathBuf::from(&record.relative);
-            let mut parent = relative.parent();
-            while let Some(folder) = parent.filter(|folder| !folder.as_os_str().is_empty()) {
-                source_folders.insert(
-                    folder
-                        .components()
-                        .map(|part| part.as_os_str().to_string_lossy())
-                        .collect::<Vec<_>>()
-                        .join("/"),
-                );
-                parent = folder.parent();
-            }
-            if relative.is_absolute()
-                || relative
-                    .components()
-                    .any(|c| !matches!(c, std::path::Component::Normal(_)))
-                || record.size_bytes > 9007199254740991
-            {
-                return Err("Invalid remote media identity".into());
-            }
-            let kind = record
-                .relative
-                .split('/')
-                .next()
-                .ok_or("Missing remote collection")?;
-            let root = config.roots.get(kind).ok_or("Unknown remote collection")?;
-            let id = format!(
-                "{:x}",
-                Sha256::digest(
-                    format!(
-                        "shinema-ssh-library-v1\0{}\0{}\0{}",
-                        config.destination, root, record.relative
-                    )
-                    .as_bytes()
-                )
-            );
-            let mut classification = catalog::classify(&relative);
-            if let Some(series) = &classification.series_id {
-                classification.series_id = Some(format!(
-                    "{:x}",
-                    Sha256::digest(
-                        format!("{}\0{}\0{}", config.destination, root, series).as_bytes()
-                    )
-                ));
-            }
-            let title = relative
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .chars()
-                .take(200)
-                .collect::<String>()
-                .replace('_', " ");
-            let container = relative
-                .extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            if !content_registry::supports_play(None, &container) {
-                return Err("Remote helper returned an unsupported container".into());
-            }
-            entries.insert(
-                id.clone(),
-                Entry {
-                    media: Media {
-                        stream_path: format!("/api/media/{id}/stream"),
-                        id,
-                        title,
-                        container,
-                        size_bytes: record.size_bytes,
-                        classification,
-                        presentation: Presentation::default(),
-                    },
-                    relative,
-                    remote: Some(record),
-                    modified: None,
-                },
-            );
-        }
+        let counts = scan.counts();
+        let (mut entries, source_folders) = remote_entries(&config, scan)?;
+        report_scan(&ScanReport {
+            media: entries.len() as u32,
+            unreadable: counts.unreadable as u32,
+        });
         state_files::create_private_directory(state_dir)?;
         let state = state_dir.canonicalize()?;
         state_files::validate(&state)?;
         let playback = playback::Engine::new(&state)?;
-        let mut db = Connection::open_with_flags(
-            state.join("progress.sqlite3"),
-            OpenFlags::SQLITE_OPEN_READ_WRITE
-                | OpenFlags::SQLITE_OPEN_CREATE
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        )?;
+        let mut db = open_state_database(&state)?;
         state_files::validate(&state)?;
-        db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS progress(id TEXT PRIMARY KEY, position REAL NOT NULL, duration REAL NOT NULL);")?;
-        for entry in entries.values_mut() {
-            metadata::prepare(&mut entry.media);
-            if entry.media.classification.collection.as_deref() == Some("movies")
-                && entry.media.presentation.year.is_none()
-            {
-                entry.media.presentation.year = entry
-                    .relative
-                    .parent()
-                    .and_then(|p| p.file_name())
-                    .and_then(|p| p.to_str())
-                    .and_then(|p| metadata::title_year(p).1);
-            }
-        }
-        let configuration = libraries::initialize(&db, &entries, &source_folders)?;
-        catalog::replace_index(
-            &mut db,
-            libraries::assign(&entries, &configuration).into_iter(),
-        )?;
-        db.execute_batch("CREATE TABLE IF NOT EXISTS scan_summary(files_seen INTEGER,ignored_files INTEGER,links_skipped INTEGER);")?;
-        db.execute("DELETE FROM scan_summary", [])?;
-        db.execute(
-            "INSERT INTO scan_summary VALUES (?1,?2,?3)",
-            params![scan.files_seen, scan.ignored_files, scan.links_skipped],
-        )?;
+        prepare_entries(&mut entries);
+        rebuild_catalog(&mut db, &entries, &source_folders)?;
+        record_remote_scan(&db, &counts)?;
         #[cfg(test)]
         let entries = EntryIndex::from(entries);
         Ok(Arc::new(Self {
@@ -413,28 +494,132 @@ impl Library {
             directory: None,
             remote: Some(config),
             remote_transfers: Arc::new(tokio::sync::Semaphore::new(4)),
-            entries,
-            source_folders,
+            index: RwLock::new(Arc::new(Index {
+                entries,
+                source_folders,
+            })),
+            rescanning: tokio::sync::Mutex::new(()),
             database: Mutex::new(db),
             playback,
             subtitles: subtitles::Engine::new(),
             metadata: metadata::Engine::new(&state)?,
+            artwork: artwork::Variants::new(&state)?,
+            devices: devices::Registry::new(),
             web_root: web::configured()?,
         }))
     }
 
+    /// The current scan. Callers hold the snapshot for the whole request so
+    /// a concurrent rescan cannot change entries underneath them.
+    fn index(&self) -> Arc<Index> {
+        match self.index.read() {
+            Ok(index) => index.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    fn entry(&self, id: &str) -> Option<Entry> {
+        self.index().entries.get(id).cloned()
+    }
+
+    /// A pairing code to print at startup, only while no device is paired.
+    pub fn startup_pairing_code(&self) -> Option<devices::PairingCode> {
+        let db = self.database.lock().ok()?;
+        if devices::Registry::has_devices(&db) {
+            return None;
+        }
+        drop(db);
+        self.devices.create_code().ok()
+    }
+
+    /// Scans the media again and swaps in the result. Media IDs are derived
+    /// from paths, so saved progress and library assignments carry over.
+    pub async fn rescan(self: &Arc<Self>) -> Result<ScanReport, String> {
+        let _running = self.rescanning.lock().await;
+        let (mut entries, source_folders, unreadable, counts) = if let Some(config) = &self.remote {
+            let scan = config.scan().await.map_err(|error| error.to_string())?;
+            let counts = scan.counts();
+            let (entries, folders) =
+                remote_entries(config, scan).map_err(|error| error.to_string())?;
+            (entries, folders, counts.unreadable as u32, Some(counts))
+        } else {
+            let root = self.root.clone().ok_or("No media root")?;
+            tokio::task::spawn_blocking(move || {
+                let mut entries = BTreeMap::new();
+                let mut folders = BTreeSet::from([".".to_string()]);
+                let unreadable = Self::scan(&root, &mut entries, &mut folders)
+                    .map_err(|error| error.to_string())?;
+                Ok::<_, String>((entries, folders, unreadable, None))
+            })
+            .await
+            .map_err(|error| error.to_string())??
+        };
+        prepare_entries(&mut entries);
+        let library = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut db = library
+                .database
+                .lock()
+                .map_err(|_| "Database unavailable".to_string())?;
+            rebuild_catalog(&mut db, &entries, &source_folders)
+                .map_err(|error| error.to_string())?;
+            if let Some(counts) = &counts {
+                record_remote_scan(&db, counts).map_err(|error| error.to_string())?;
+            }
+            let report = ScanReport {
+                media: entries.len() as u32,
+                unreadable,
+            };
+            #[cfg(test)]
+            let entries = EntryIndex::from(entries);
+            // Swap while holding the database lock so the catalog and the
+            // in-memory index always describe the same scan.
+            *library
+                .index
+                .write()
+                .map_err(|_| "Index unavailable".to_string())? = Arc::new(Index {
+                entries,
+                source_folders,
+            });
+            Ok(report)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    /// Walks the media root. The root itself must be readable; any folder or
+    /// file below it that cannot be read is skipped and counted, so one locked
+    /// folder or a file removed mid-scan never stops the server.
     fn scan(
         root: &Path,
         entries: &mut BTreeMap<String, Entry>,
         source_folders: &mut BTreeSet<String>,
-    ) -> std::io::Result<()> {
+    ) -> std::io::Result<u32> {
+        let mut unreadable = 0_u32;
         let mut directories = vec![root.to_path_buf()];
         while let Some(directory) = directories.pop() {
-            let mut children = fs::read_dir(&directory)?.collect::<Result<Vec<_>, _>>()?;
+            let listing = match fs::read_dir(&directory) {
+                Ok(listing) => listing,
+                Err(error) if directory == root => return Err(error),
+                Err(_) => {
+                    unreadable += 1;
+                    continue;
+                }
+            };
+            let mut children = Vec::new();
+            for child in listing {
+                match child {
+                    Ok(child) => children.push(child),
+                    Err(_) => unreadable += 1,
+                }
+            }
             children.sort_by_key(|entry| entry.file_name());
             for child in children {
                 let path = child.path();
-                let metadata = fs::symlink_metadata(&path)?;
+                let Ok(metadata) = fs::symlink_metadata(&path) else {
+                    unreadable += 1;
+                    continue;
+                };
                 if metadata.file_type().is_symlink() {
                     continue;
                 }
@@ -479,7 +664,10 @@ impl Library {
                     .strip_prefix(root)
                     .map_err(|_| std::io::ErrorKind::PermissionDenied)?
                     .to_path_buf();
-                checked_file(root, &relative)?;
+                if checked_file(root, &relative).is_err() {
+                    unreadable += 1;
+                    continue;
+                }
                 let id = media_id(&relative);
                 let title = path
                     .file_stem()
@@ -509,7 +697,7 @@ impl Library {
                 );
             }
         }
-        Ok(())
+        Ok(unreadable)
     }
 }
 
@@ -536,6 +724,16 @@ pub fn router_with_admin_token(library: Arc<Library>, token: Option<String>) -> 
     )
 }
 
+/// As `router_with_admin_token`, for an explicit bind address. A
+/// non-loopback address requires paired device tokens.
+pub fn router_at_with_admin_token(
+    library: Arc<Library>,
+    bind: std::net::SocketAddr,
+    token: Option<String>,
+) -> Router {
+    configured_router(library, bind, token, requests::Engine::disabled())
+}
+
 pub fn router_at_with_requests(
     library: Arc<Library>,
     bind: std::net::SocketAddr,
@@ -557,11 +755,19 @@ fn configured_router(
 ) -> Router {
     library.playback.set_origin(bind);
     library.subtitles.set_origin(bind);
+    let exposure = devices::Exposure::for_bind(bind);
+    library.devices.set_exposure(exposure);
     Router::new()
         .route(
             "/health",
-            get(|State(library):State<Arc<Library>>| async move { Json(serde_json::json!({"status":"ok","apiVersion":1,"playback":library.playback.statistics()})) }),
+            get(|State(library):State<Arc<Library>>| async move { Json(serde_json::json!({"status":"ok","apiVersion":1,"authRequired":library.devices.auth_required(),"playback":library.playback.statistics()})) }),
         )
+        .route("/api/session", get(devices::session))
+        .route("/api/pairing/codes", post(devices::create_code))
+        .route("/api/pairing/claim", post(devices::claim))
+        .route("/api/devices", get(devices::list))
+        .route("/api/devices/{id}", delete(devices::revoke))
+        .route("/api/admin/rescan", post(rescan))
         .route("/api/catalog", get(catalog))
         .route("/api/library", get(library_summary))
         .route("/api/libraries", get(libraries_public))
@@ -581,20 +787,49 @@ fn configured_router(
         .route("/api/media/{id}/progress", get(progress).put(save_progress))
         .layer(DefaultBodyLimit::max(4096))
         .fallback(static_web)
+        .layer(axum::middleware::from_fn_with_state(
+            library.clone(),
+            devices::guard,
+        ))
         .layer(Extension(libraries::ManagementAccess::new(token)))
         .with_state(library)
         .merge(requests::router(requests, bind))
-        .layer(axum::middleware::from_fn(request_boundary::guard))
+        .layer(axum::middleware::from_fn_with_state(
+            exposure,
+            request_boundary::guard,
+        ))
+}
+
+/// Runs synchronous SQLite and filesystem work off the async worker threads.
+/// Tests run it inline so per-thread work counters still observe it.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, StatusCode> + Send + 'static,
+) -> Result<T, StatusCode> {
+    if cfg!(test) {
+        return work();
+    }
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+}
+
+async fn rescan(State(library): State<Arc<Library>>) -> Result<Json<ScanReport>, StatusCode> {
+    library
+        .rescan()
+        .await
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 async fn libraries_public(
     State(library): State<Arc<Library>>,
 ) -> Result<impl IntoResponse, StatusCode> {
+    let index = library.index();
     let db = library
         .database
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let value = libraries::read(&db, false, &library.source_folders)
+    let value = libraries::read(&db, false, &index.source_folders)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(value)))
 }
@@ -602,11 +837,12 @@ async fn libraries_public(
 async fn registry_public(
     State(library): State<Arc<Library>>,
 ) -> Result<impl IntoResponse, StatusCode> {
+    let index = library.index();
     let db = library
         .database
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let value = libraries::read(&db, false, &library.source_folders)
+    let value = libraries::read(&db, false, &index.source_folders)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok((
         [(header::CACHE_CONTROL, "no-store")],
@@ -617,11 +853,12 @@ async fn registry_public(
 async fn libraries_admin(
     State(library): State<Arc<Library>>,
 ) -> Result<impl IntoResponse, StatusCode> {
+    let index = library.index();
     let db = library
         .database
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let value = libraries::read(&db, true, &library.source_folders)
+    let value = libraries::read(&db, true, &index.source_folders)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(value)))
 }
@@ -634,8 +871,10 @@ async fn libraries_save(
         .database
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    libraries::update(&mut db, value, &library.entries, &library.source_folders)?;
-    let value = libraries::read(&db, true, &library.source_folders)
+    // Read the index under the database lock: a rescan swaps both together.
+    let index = library.index();
+    libraries::update(&mut db, value, &index.entries, &index.source_folders)?;
+    let value = libraries::read(&db, true, &index.source_folders)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(value)))
 }
@@ -657,7 +896,7 @@ fn check_revision(db: &Connection, query: &catalog::CatalogQuery) -> Result<(), 
 }
 
 fn current_media(library: &Library, id: &str) -> Result<Media, StatusCode> {
-    if !library.entries.contains_key(id) {
+    if !library.index().entries.contains_key(id) {
         return Err(StatusCode::NOT_FOUND);
     }
     let db = library
@@ -697,6 +936,15 @@ async fn catalog(
     Query(query): Query<catalog::CatalogQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     query.validate().map_err(|_| StatusCode::BAD_REQUEST)?;
+    blocking(move || catalog_page(&library, query))
+        .await
+        .map(Json)
+}
+
+fn catalog_page(
+    library: &Library,
+    query: catalog::CatalogQuery,
+) -> Result<serde_json::Value, StatusCode> {
     let db = library
         .database
         .lock()
@@ -715,7 +963,7 @@ async fn catalog(
         *row = serde_json::to_value(item).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
     value["metadataPending"] = pending.into();
-    Ok(Json(value))
+    Ok(value)
 }
 async fn library_summary(
     State(library): State<Arc<Library>>,
@@ -733,6 +981,15 @@ async fn series(
     Query(query): Query<catalog::CatalogQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     query.validate().map_err(|_| StatusCode::BAD_REQUEST)?;
+    blocking(move || series_page(&library, query))
+        .await
+        .map(Json)
+}
+
+fn series_page(
+    library: &Library,
+    query: catalog::CatalogQuery,
+) -> Result<serde_json::Value, StatusCode> {
     let db = library
         .database
         .lock()
@@ -740,6 +997,9 @@ async fn series(
     check_revision(&db, &query)?;
     let (mut value, representatives) = catalog::series_with_representatives(&db, query)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Metadata overlays read files and their own cache; holding the catalog
+    // lock through them would stall streaming and progress saves.
+    drop(db);
     let mut pending = false;
     for row in value["items"]
         .as_array_mut()
@@ -776,7 +1036,7 @@ async fn series(
         }
     }
     value["metadataPending"] = pending.into();
-    Ok(Json(value))
+    Ok(value)
 }
 
 async fn seasons(
@@ -841,7 +1101,8 @@ async fn playback_info(
     ApiPath(id): ApiPath<String>,
 ) -> Result<Json<playback::Playback>, StatusCode> {
     require_playable(&library, &id)?;
-    let entry = library.entries.get(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let entry = library.entry(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let entry = &entry;
     verify_source(&library, entry).await?;
     library
         .playback
@@ -855,7 +1116,8 @@ async fn hls(
     ApiPath((id, segment)): ApiPath<(String, String)>,
 ) -> Result<Response, StatusCode> {
     require_playable(&library, &id)?;
-    let entry = library.entries.get(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let entry = library.entry(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let entry = &entry;
     verify_source(&library, entry).await?;
     let metadata = library
         .playback
@@ -909,89 +1171,137 @@ async fn media_metadata(
     ))
 }
 
+/// `w` asks for artwork no wider than that many pixels. Widths snap to a
+/// small fixed set so the variant cache stays bounded.
+#[derive(Deserialize, Default)]
+struct ArtworkQuery {
+    w: Option<u32>,
+}
+
 async fn poster(
     State(library): State<Arc<Library>>,
     ApiPath(id): ApiPath<String>,
+    Query(query): Query<ArtworkQuery>,
 ) -> Result<Response, StatusCode> {
-    image_response(library, id, "poster").await
+    image_response(library, id, false, query.w).await
 }
 async fn backdrop(
     State(library): State<Arc<Library>>,
     ApiPath(id): ApiPath<String>,
+    Query(query): Query<ArtworkQuery>,
 ) -> Result<Response, StatusCode> {
-    image_response(library, id, "backdrop").await
+    image_response(library, id, true, query.w).await
 }
 async fn image_response(
     library: Arc<Library>,
     id: String,
-    kind: &str,
+    wide: bool,
+    width: Option<u32>,
 ) -> Result<Response, StatusCode> {
-    let item = current_media(&library, &id)?;
-    let bytes = library
-        .metadata
-        .image(&item, kind == "backdrop")
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let width = width
+        .map(|value| artwork::snap_width(value).ok_or(StatusCode::BAD_REQUEST))
+        .transpose()?;
+    let bytes = blocking(move || {
+        let item = current_media(&library, &id)?;
+        let (key, original) = library
+            .metadata
+            .image_source(&item, wide)
+            .map_err(|_| StatusCode::NOT_FOUND)?;
+        match width {
+            Some(width) => library
+                .artwork
+                .variant(&key, &original, width)
+                .map_err(|_| StatusCode::UNPROCESSABLE_ENTITY),
+            None => Ok(original),
+        }
+    })
+    .await?;
     let mime = if bytes.starts_with(b"\x89PNG") {
         "image/png"
     } else {
         "image/jpeg"
     };
+    // Sized variants are derived from cached artwork and safe for clients to
+    // keep briefly; the original keeps its uncached behaviour.
+    let cache = if width.is_some() {
+        "private, max-age=3600"
+    } else {
+        "no-store"
+    };
     Response::builder()
         .header(header::CONTENT_TYPE, mime)
-        .header(header::CACHE_CONTROL, "no-store")
+        .header(header::CACHE_CONTROL, cache)
         .header("X-Content-Type-Options", "nosniff")
         .body(Body::from(bytes))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn stored_progress(db: &Connection, id: &str) -> rusqlite::Result<Option<Progress>> {
+    db.query_row(
+        "SELECT position, duration, updated_at FROM progress WHERE id=?1",
+        params![id],
+        |row| {
+            let updated_at: u64 = row.get(2)?;
+            Ok(Progress {
+                position_seconds: row.get(0)?,
+                duration_seconds: row.get(1)?,
+                updated_at: (updated_at > 0).then_some(updated_at),
+            })
+        },
+    )
+    .optional()
 }
 
 async fn progress(
     State(library): State<Arc<Library>>,
     ApiPath(id): ApiPath<String>,
 ) -> Result<Json<Option<Progress>>, StatusCode> {
-    if !library.entries.contains_key(&id) {
+    if !library.index().entries.contains_key(&id) {
         return Err(StatusCode::NOT_FOUND);
     }
     let db = library
         .database
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mut query = db
-        .prepare("SELECT position, duration FROM progress WHERE id=?1")
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mut rows = query
-        .query(params![id])
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let value = rows
-        .next()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .map(|row| {
-            Ok::<_, rusqlite::Error>(Progress {
-                position_seconds: row.get(0)?,
-                duration_seconds: row.get(1)?,
-            })
-        })
-        .transpose()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(value))
+    stored_progress(&db, &id)
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+/// Keeps the newest position. A write observed before the stored one (an
+/// offline device catching up, or a delayed periodic save) is refused with
+/// 409 and the stored progress, so the client can adopt it.
 async fn save_progress(
     State(library): State<Arc<Library>>,
     ApiPath(id): ApiPath<String>,
     Json(value): Json<Progress>,
-) -> Result<StatusCode, StatusCode> {
-    if !library.entries.contains_key(&id) {
+) -> Result<Response, StatusCode> {
+    if !library.index().entries.contains_key(&id) {
         return Err(StatusCode::NOT_FOUND);
     }
     if !value.valid() {
         return Err(StatusCode::BAD_REQUEST);
     }
+    // Future client clocks are clamped so one device cannot pin progress.
+    let now = devices::now_millis();
+    let observed = value.updated_at.map_or(now, |stamp| stamp.min(now));
     let db = library
         .database
         .lock()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    db.execute("INSERT INTO progress(id,position,duration) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET position=excluded.position,duration=excluded.duration", params![id, value.position_seconds, value.duration_seconds]).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(StatusCode::NO_CONTENT)
+    let changed = db
+        .execute(
+            "INSERT INTO progress(id,position,duration,updated_at) VALUES(?1,?2,?3,?4)
+             ON CONFLICT(id) DO UPDATE SET position=excluded.position,duration=excluded.duration,updated_at=excluded.updated_at
+             WHERE excluded.updated_at>=progress.updated_at",
+            params![id, value.position_seconds, value.duration_seconds, observed],
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if changed > 0 {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    }
+    let current = stored_progress(&db, &id).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok((StatusCode::CONFLICT, Json(current)).into_response())
 }
 
 /// One byte range only. Invalid/multiple/unsatisfiable ranges receive 416.
@@ -1030,16 +1340,20 @@ async fn stream(
     headers: HeaderMap,
 ) -> Result<Response, StatusCode> {
     require_playable(&library, &id)?;
-    let entry = library.entries.get(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let entry = library.entry(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let entry = &entry;
     let size = entry.media.size_bytes;
+    // Paused players can hold all remote transfers; fail fast instead of
+    // queueing forever behind them.
     let remote_permit = if library.remote.is_some() {
         Some(
-            library
-                .remote_transfers
-                .clone()
-                .acquire_owned()
-                .await
-                .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?,
+            tokio::time::timeout(
+                REMOTE_PERMIT_WAIT,
+                library.remote_transfers.clone().acquire_owned(),
+            )
+            .await
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?,
         )
     } else {
         None
@@ -1144,13 +1458,15 @@ mod cache_identity_tests {
                 .unwrap();
         }
         let a = Library::open(&first, &state).unwrap();
-        let entry = a.entries.values().next().unwrap();
+        let index = a.index();
+        let entry = index.entries.values().next().unwrap();
         let id = entry.media.id.clone();
         let stamp = entry.modified;
         let fingerprint = entry.fingerprint(a.root.as_deref());
         drop(a);
         let b = Library::open(&second, &state).unwrap();
-        let entry = b.entries.values().next().unwrap();
+        let index = b.index();
+        let entry = index.entries.values().next().unwrap();
         assert_eq!(entry.media.id, id);
         assert_eq!(entry.media.size_bytes, 8);
         assert_eq!(entry.modified, stamp);

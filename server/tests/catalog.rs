@@ -374,9 +374,12 @@ async fn an_existing_catalog_schema_is_rebuilt_without_losing_progress() {
         let app = router(Library::open(&root, &state).unwrap());
         let (status, progress) = get(&app, &format!("/api/media/{id}/progress")).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(
-            progress,
-            serde_json::json!({"positionSeconds":42.0,"durationSeconds":120.0})
+        assert_eq!(progress["positionSeconds"], 42.0);
+        assert_eq!(progress["durationSeconds"], 120.0);
+        assert!(
+            progress["updatedAt"]
+                .as_u64()
+                .is_some_and(|stamp| stamp > 0)
         );
         let (status, catalog) = get(&app, &search_path("/api/catalog", "éclair")).await;
         assert_eq!(status, StatusCode::OK);
