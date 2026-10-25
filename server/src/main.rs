@@ -31,7 +31,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind = listener.local_addr()?;
     match shinema_server::devices::Exposure::for_bind(bind) {
         shinema_server::devices::Exposure::Loopback => {
-            eprintln!("Shinema listening on {bind} (this computer only); API version 1");
+            // Scripts wait for "Shinema listening on loopback"; keep that phrase.
+            eprintln!(
+                "Shinema listening on loopback at {bind} (this computer only); API version 1"
+            );
         }
         shinema_server::devices::Exposure::Network => {
             eprintln!(
