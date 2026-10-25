@@ -2,13 +2,12 @@ import { useState } from 'react';
 import { View } from 'react-native';
 import { useConnected } from '../connection';
 import { Button } from '../kit/Button';
-import { Screen } from '../kit/Screen';
+import { Panel } from '../kit/Panel';
 import { Text } from '../kit/Text';
-import { space, useMetrics } from '../kit/theme';
+import { colors, space } from '../kit/theme';
 import { useNavigation } from '../navigation';
 
 export function SettingsScreen() {
-  const { gutter } = useMetrics();
   const connection = useConnected();
   const navigation = useNavigation();
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
@@ -29,9 +28,15 @@ export function SettingsScreen() {
   }
 
   return (
-    <Screen style={{ padding: gutter, gap: space.lg }}>
-      <Text variant="title">Settings</Text>
-      <View style={{ gap: space.xs }}>
+    <Panel eyebrow="Settings" title="This device">
+      <View
+        style={{
+          gap: space.xs,
+          paddingTop: space.md,
+          borderTopWidth: 1,
+          borderTopColor: colors.line,
+        }}
+      >
         <Text variant="heading" muted>
           Server
         </Text>
@@ -42,7 +47,14 @@ export function SettingsScreen() {
           </Text>
         ) : null}
       </View>
-      <View style={{ gap: space.xs }}>
+      <View
+        style={{
+          gap: space.xs,
+          paddingTop: space.md,
+          borderTopWidth: 1,
+          borderTopColor: colors.line,
+        }}
+      >
         <Text variant="heading" muted>
           Watch progress
         </Text>
@@ -72,6 +84,6 @@ export function SettingsScreen() {
         Changing server keeps this device's unsynced progress for this server
         and sends it if you reconnect.
       </Text>
-    </Screen>
+    </Panel>
   );
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ScrollView, View } from 'react-native';
+import { View } from 'react-native';
 import {
   watchState,
   type LibraryDescriptor,
@@ -7,12 +7,12 @@ import {
   type Series,
 } from '../../../../packages/core/src/index.ts';
 import { useConnected } from '../connection';
-import { Focusable } from '../kit/Focusable';
 import { PosterCard } from '../kit/PosterCard';
 import { PosterGrid, artworkWidth, useGridLayout } from '../kit/PosterGrid';
 import { Message, Screen } from '../kit/Screen';
-import { Text } from '../kit/Text';
-import { colors, poster, space, useMetrics } from '../kit/theme';
+import { SectionHeading } from '../kit/SectionHeading';
+import { TopBar } from '../kit/TopBar';
+import { colors, poster, radius } from '../kit/theme';
 import { usePagedList } from '../kit/usePagedList';
 import { useNavigation } from '../navigation';
 
@@ -25,7 +25,7 @@ function Placeholder({ width }: { width: number }) {
       style={{
         width,
         height: Math.round(width * poster.ratio),
-        borderRadius: 6,
+        borderRadius: radius.card,
         backgroundColor: colors.surface,
       }}
     />
@@ -39,7 +39,6 @@ export function LibraryScreen() {
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const { compact, gutter } = useMetrics();
 
   useEffect(() => {
     const controller = new AbortController();
@@ -66,69 +65,18 @@ export function LibraryScreen() {
 
   const library = libraries?.find((item) => item.id === selected) ?? null;
 
-  // The header stays fixed above the grid, so switching libraries never
-  // rebuilds it and focus stays on the tab you are using. On narrow phone
-  // screens the tabs move to their own row.
-  const tabs = (
-    <ScrollView
-      horizontal
-      style={{ flexGrow: 0, flexShrink: 1 }}
-      contentContainerStyle={{ gap: space.sm }}
-    >
-      {(libraries ?? []).map((item) => (
-        <Focusable
-          key={item.id}
-          accessibilityRole="tab"
-          accessibilityState={{ selected: item.id === selected }}
-          onPress={() => setSelected(item.id)}
-          focusKey={`tab:${item.id}`}
-          style={{
-            borderRadius: 999,
-            paddingHorizontal: space.md,
-            paddingVertical: 6,
-            backgroundColor:
-              item.id === selected ? colors.elevated : 'transparent',
-          }}
-        >
-          <Text variant="label">{item.name}</Text>
-        </Focusable>
-      ))}
-    </ScrollView>
-  );
+  // The bar stays fixed above the grid, so switching libraries never rebuilds
+  // it and focus stays on the tab you are using.
   const header = (
-    <View
-      style={{
-        paddingTop: compact ? space.md : space.lg,
-        paddingBottom: space.md,
-        paddingHorizontal: gutter,
-        gap: space.md,
-      }}
-    >
-      <View
-        style={{ flexDirection: 'row', alignItems: 'center', gap: space.lg }}
-      >
-        <Text variant="title" style={{ marginRight: space.md }}>
-          Shinema
-        </Text>
-        {compact ? null : tabs}
-        <View style={{ flex: 1 }} />
-        <Focusable
-          accessibilityRole="button"
-          onPress={() => navigation.push({ name: 'settings' })}
-          focusKey="settings"
-          style={{
-            borderRadius: 999,
-            paddingHorizontal: space.md,
-            paddingVertical: 6,
-          }}
-        >
-          <Text variant="label" muted>
-            Settings
-          </Text>
-        </Focusable>
-      </View>
-      {compact ? tabs : null}
-    </View>
+    <TopBar
+      tabs={(libraries ?? []).map((item) => ({
+        id: item.id,
+        label: item.name,
+      }))}
+      selected={selected}
+      onSelect={setSelected}
+      onSettings={() => navigation.push({ name: 'settings' })}
+    />
   );
 
   if (error)
@@ -163,15 +111,16 @@ export function LibraryScreen() {
     <Screen>
       {header}
       {showsSeries(library) ? (
-        <SeriesGrid key={library.id} libraryId={library.id} />
+        <SeriesGrid key={library.id} library={library} />
       ) : (
-        <MediaGrid key={library.id} libraryId={library.id} />
+        <MediaGrid key={library.id} library={library} />
       )}
     </Screen>
   );
 }
 
-function MediaGrid({ libraryId }: { libraryId: string }) {
+function MediaGrid({ library }: { library: LibraryDescriptor }) {
+  const libraryId = library.id;
   const { api, progress } = useConnected();
   const navigation = useNavigation();
   const layout = useGridLayout();
@@ -195,6 +144,13 @@ function MediaGrid({ libraryId }: { libraryId: string }) {
       list={list}
       snapshot={snapshot}
       layout={layout}
+      header={
+        <SectionHeading
+          eyebrow="Your personal picture house"
+          title={library.name}
+          count={snapshot.total}
+        />
+      }
       refreshKey={navigation.depth}
       renderCard={(media, index, width) => {
         if (!media) return <Placeholder width={width} />;
@@ -202,7 +158,10 @@ function MediaGrid({ libraryId }: { libraryId: string }) {
         return (
           <PosterCard
             title={media.title}
-            detail={media.year ? String(media.year) : undefined}
+            detail={
+              [media.year, media.genres?.[0]].filter(Boolean).join(' · ') ||
+              undefined
+            }
             imageUrl={
               media.posterPath
                 ? api.mediaUrl(media.posterPath, { width: artworkWidth(width) })
@@ -221,7 +180,8 @@ function MediaGrid({ libraryId }: { libraryId: string }) {
   );
 }
 
-function SeriesGrid({ libraryId }: { libraryId: string }) {
+function SeriesGrid({ library }: { library: LibraryDescriptor }) {
+  const libraryId = library.id;
   const { api } = useConnected();
   const navigation = useNavigation();
   const layout = useGridLayout();
@@ -245,6 +205,13 @@ function SeriesGrid({ libraryId }: { libraryId: string }) {
       list={list}
       snapshot={snapshot}
       layout={layout}
+      header={
+        <SectionHeading
+          eyebrow="Your personal picture house"
+          title={library.name}
+          count={snapshot.total}
+        />
+      }
       renderCard={(series, index, width) =>
         series ? (
           <PosterCard

@@ -32,14 +32,14 @@ export function TextField({
           fontFamily: fonts.ui,
           fontSize: 18,
           color: colors.text,
-          backgroundColor: colors.surface,
-          borderRadius: 6,
+          backgroundColor: colors.glass,
+          borderRadius: 4,
           borderWidth: 2,
           borderColor: error
             ? colors.danger
             : focused
               ? colors.focus
-              : colors.elevated,
+              : colors.line,
           paddingHorizontal: space.md,
           paddingVertical: 12,
         }}

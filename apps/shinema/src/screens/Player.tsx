@@ -1,4 +1,5 @@
 import { useKeepAwake } from 'expo-keep-awake';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, View } from 'react-native';
 import {
@@ -293,7 +294,7 @@ function Video({
             position: 'absolute',
             left: gutter,
             right: gutter,
-            bottom: controlsVisible ? 180 : space.xl,
+            bottom: controlsVisible ? 230 : space.xl,
             alignItems: 'center',
           }}
         >
@@ -321,34 +322,43 @@ function Video({
         </View>
       ) : null}
       {controlsVisible ? (
-        <View
+        <LinearGradient
           pointerEvents="box-none"
+          colors={['rgba(16, 19, 17, 0)', 'rgba(16, 19, 17, 0.92)']}
+          locations={[0, 0.45]}
           style={{
             position: 'absolute',
             left: 0,
             right: 0,
             bottom: 0,
             padding: gutter,
-            paddingTop: space.lg,
-            backgroundColor: colors.scrim,
+            paddingTop: space.xl * 2,
             gap: space.sm,
           }}
         >
-          <Text variant="title" numberOfLines={1}>
+          <Text variant="heading" muted numberOfLines={1}>
+            {media.seriesTitle && media.episode !== undefined
+              ? `${media.seriesTitle} · S${media.season ?? 0} E${media.episode}`
+              : 'Now playing'}
+          </Text>
+          <Text
+            variant="hero"
+            numberOfLines={1}
+            style={{ fontSize: 28, lineHeight: 34, letterSpacing: -0.5 }}
+          >
             {media.title}
           </Text>
           <View
             style={{
-              height: 4,
+              height: 3,
+              marginTop: space.xs,
               backgroundColor: colors.track,
-              borderRadius: 2,
             }}
           >
             <View
               style={{
                 width: `${duration > 0 ? Math.min(100, (shown / duration) * 100) : 0}%`,
-                height: 4,
-                borderRadius: 2,
+                height: 3,
                 backgroundColor: colors.accent,
               }}
             />
@@ -361,7 +371,7 @@ function Video({
               gap: space.md,
             }}
           >
-            <Text variant="caption">
+            <Text variant="caption" numberOfLines={1} style={{ flexShrink: 0 }}>
               {clock(shown)} / {clock(duration)}
             </Text>
             {isTV ? (
@@ -404,7 +414,7 @@ function Video({
               </View>
             )}
           </View>
-        </View>
+        </LinearGradient>
       ) : null}
       {menu ? (
         <View
@@ -415,8 +425,10 @@ function Video({
             width: 300,
             padding: space.md,
             gap: space.xs,
-            backgroundColor: colors.surface,
-            borderRadius: 8,
+            backgroundColor: colors.background,
+            borderWidth: 1,
+            borderColor: colors.line,
+            borderRadius: 4,
           }}
         >
           <Text variant="heading" muted>

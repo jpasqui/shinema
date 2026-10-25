@@ -3,10 +3,10 @@ import { Platform, View } from 'react-native';
 import { ApiError, ShinemaApi } from '../../../../packages/core/src/index.ts';
 import { useConnection } from '../connection';
 import { Button } from '../kit/Button';
-import { Screen } from '../kit/Screen';
+import { Panel } from '../kit/Panel';
 import { Text } from '../kit/Text';
 import { TextField } from '../kit/TextField';
-import { space, useMetrics } from '../kit/theme';
+import { space } from '../kit/theme';
 import { useNavigation } from '../navigation';
 
 function defaultDeviceName(): string {
@@ -16,7 +16,6 @@ function defaultDeviceName(): string {
 }
 
 export function PairScreen({ origin }: { origin: string }) {
-  const { gutter } = useMetrics();
   const navigation = useNavigation();
   const { connect } = useConnection();
   const [code, setCode] = useState('');
@@ -43,9 +42,8 @@ export function PairScreen({ origin }: { origin: string }) {
   }
 
   return (
-    <Screen style={{ justifyContent: 'center', padding: gutter }}>
-      <View style={{ gap: space.lg, maxWidth: 560 }}>
-        <Text variant="title">Pair this device</Text>
+    <Panel eyebrow="One more step" title="Pair this device">
+      <>
         <Text muted>
           The server prints a six-digit pairing code when it starts. You can
           also create one on the server computer. Codes last 10 minutes.
@@ -81,7 +79,7 @@ export function PairScreen({ origin }: { origin: string }) {
             onPress={() => navigation.back()}
           />
         </View>
-      </View>
-    </Screen>
+      </>
+    </Panel>
   );
 }

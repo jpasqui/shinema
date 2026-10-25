@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { View } from 'react-native';
 import {
   ApiError,
   ShinemaApi,
@@ -7,14 +6,12 @@ import {
 } from '../../../../packages/core/src/index.ts';
 import { useConnection } from '../connection';
 import { Button } from '../kit/Button';
-import { Screen } from '../kit/Screen';
+import { Panel } from '../kit/Panel';
 import { Text } from '../kit/Text';
 import { TextField } from '../kit/TextField';
-import { space, useMetrics } from '../kit/theme';
 import { useNavigation } from '../navigation';
 
 export function ConnectScreen() {
-  const { gutter } = useMetrics();
   const navigation = useNavigation();
   const connection = useConnection();
   const { connect } = connection;
@@ -66,9 +63,8 @@ export function ConnectScreen() {
   }
 
   return (
-    <Screen style={{ justifyContent: 'center', padding: gutter }}>
-      <View style={{ gap: space.lg, maxWidth: 560 }}>
-        <Text variant="hero">Shinema</Text>
+    <Panel eyebrow="Your personal picture house" title="Connect your library">
+      <>
         <Text muted>
           Enter the address of the computer running the Shinema server. It is
           printed when the server starts, for example 192.168.1.20:8787.
@@ -95,7 +91,7 @@ export function ConnectScreen() {
           onPress={submit}
           disabled={busy}
         />
-      </View>
-    </Screen>
+      </>
+    </Panel>
   );
 }

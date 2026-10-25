@@ -4,9 +4,13 @@
 //
 //   node tests/mock-server.mjs [port]   (default 8790)
 //   SHINEMA_MOCK_PAIRING=1 also requires pairing with code 123-456.
+//   SHINEMA_MOCK_ARTWORK=1 gives some titles posters and backdrops cut from
+//   tests/fixtures/cinema-atlas.png with ffmpeg; the rest keep none.
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createReadStream, existsSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, mkdtempSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -16,6 +20,39 @@ const pairing = process.env.SHINEMA_MOCK_PAIRING === '1';
 const video = process.env.SHINEMA_MOCK_VIDEO || null;
 const TOKEN = 'e'.repeat(64);
 const id = (text) => createHash('sha256').update(text).digest('hex');
+
+// Six 16:9 scenes in a 3 x 2 grid: backdrops are whole scenes, posters their
+// 2:3 centres.
+function cutArtwork() {
+  const atlas = fileURLToPath(
+    new URL('./fixtures/cinema-atlas.png', import.meta.url),
+  );
+  const dir = mkdtempSync(join(tmpdir(), 'shinema-art-'));
+  const cut = (filter, file) =>
+    execFileSync('ffmpeg', [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-y',
+      '-i',
+      atlas,
+      '-vf',
+      filter,
+      '-q:v',
+      '3',
+      join(dir, file),
+    ]);
+  for (let index = 0; index < 6; index += 1) {
+    const scene = `crop=iw/3:ih/2:iw/3*${index % 3}:ih/2*${Math.floor(index / 3)}`;
+    cut(`${scene},scale=1280:720`, `backdrop-${index}.jpg`);
+    cut(`${scene},crop=ih*2/3:ih,scale=400:600`, `poster-${index}.jpg`);
+  }
+  return dir;
+}
+const artwork = process.env.SHINEMA_MOCK_ARTWORK === '1' ? cutArtwork() : null;
+/** Scene number per media or series id. */
+const art = new Map();
+const GENRES = ['Drama', 'Adventure', 'Mystery', 'Documentary', 'Sci-fi'];
 
 const films = [
   'The Lighthouse Keeper',
@@ -46,6 +83,7 @@ const films = [
   collection: 'movies',
   libraryId: 'movies',
   year: 1994 + index,
+  genres: [GENRES[index % GENRES.length]],
   summary: 'A generated fixture title with no real media behind it.',
 }));
 const shows = [
@@ -60,6 +98,17 @@ const shows = [
   seasons: 2,
   libraryId: 'tv',
 }));
+// Some films and shows get a scene; the rest show the no-artwork design.
+if (artwork) {
+  const give = (item, scene, backdrop) => {
+    art.set(item.id, scene);
+    item.posterPath = `/api/media/${item.id}/poster`;
+    if (backdrop) item.backdropPath = `/api/media/${item.id}/backdrop`;
+  };
+  [0, 2, 3, 5, 6, 9].forEach((film, scene) => give(films[film], scene, true));
+  give(shows[0], 1, false);
+  give(shows[2], 5, false);
+}
 
 const json = (response, status, body) => {
   response.writeHead(status, {
@@ -166,6 +215,18 @@ createServer(async (request, response) => {
           { season: 2, episodes: 8 },
         ],
       });
+    const picture = path.match(
+      /^\/api\/media\/([a-f0-9]{64})\/(poster|backdrop)$/,
+    );
+    if (picture && artwork && art.has(picture[1])) {
+      response.writeHead(200, {
+        'content-type': 'image/jpeg',
+        'cache-control': 'max-age=3600',
+      });
+      return createReadStream(
+        join(artwork, `${picture[2]}-${art.get(picture[1])}.jpg`),
+      ).pipe(response);
+    }
     const media = path.match(
       /^\/api\/media\/([a-f0-9]{64})\/(progress|subtitles|playback)$/,
     );
