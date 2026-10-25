@@ -38,8 +38,17 @@ export function Focusable({
   const [focused, setFocused] = useState(false);
   const ref = useRef<View>(null);
   const screen = useScreenFocus();
-  const wanted =
-    preferred || (focusKey !== undefined && screen?.restoring === focusKey);
+  const restoringThis =
+    focusKey !== undefined && screen?.restoring === focusKey;
+  const wanted = preferred || restoringThis;
+  // Coming back to a screen: ask for focus directly as well, since Android TV
+  // only applies hasTVPreferredFocus reliably when a view first appears.
+  useEffect(() => {
+    if (restoringThis)
+      (
+        ref.current as { requestTVFocus?: () => void } | null
+      )?.requestTVFocus?.();
+  }, [restoringThis]);
   // `hasTVPreferredFocus` covers TVs; the web needs an explicit focus call.
   useEffect(() => {
     if (wanted) focusIfIdle(ref.current);

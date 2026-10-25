@@ -45,7 +45,14 @@ export function useEngine(
   return {
     playing: isPlaying,
     status: mapped,
-    currentTime: () => player.currentTime,
+    // Reading a released player throws on Android; fall back to zero.
+    currentTime: () => {
+      try {
+        return player.currentTime;
+      } catch {
+        return 0;
+      }
+    },
     play: () => player.play(),
     pause: () => player.pause(),
     seek: (seconds) => {
