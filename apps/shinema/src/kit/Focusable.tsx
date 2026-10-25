@@ -7,6 +7,7 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { focusIfIdle } from '../platform/focus-memory';
+import { useScreenFocus } from './focus-memory';
 import { colors, noBrowserOutline } from './theme';
 
 /**
@@ -21,6 +22,7 @@ export function Focusable({
   outline = true,
   onFocusChange,
   preferred = false,
+  focusKey,
   ...props
 }: Omit<PressableProps, 'style' | 'children'> & {
   children: ReactNode | ((focused: boolean) => ReactNode);
@@ -30,22 +32,28 @@ export function Focusable({
   onFocusChange?: (focused: boolean) => void;
   /** Receives focus when the screen opens (TV). */
   preferred?: boolean;
+  /** Identifies this control so focus returns to it after Back. */
+  focusKey?: string;
 }) {
   const [focused, setFocused] = useState(false);
   const ref = useRef<View>(null);
+  const screen = useScreenFocus();
+  const wanted =
+    preferred || (focusKey !== undefined && screen?.restoring === focusKey);
   // `hasTVPreferredFocus` covers TVs; the web needs an explicit focus call.
   useEffect(() => {
-    if (preferred) focusIfIdle(ref.current);
-  }, [preferred]);
+    if (wanted) focusIfIdle(ref.current);
+  }, [wanted]);
   const change = (value: boolean) => {
     setFocused(value);
+    if (value && focusKey !== undefined) screen?.remember(focusKey);
     onFocusChange?.(value);
   };
   return (
     <Pressable
       {...props}
       ref={ref}
-      hasTVPreferredFocus={preferred}
+      hasTVPreferredFocus={wanted}
       onFocus={(event) => {
         change(true);
         props.onFocus?.(event);
