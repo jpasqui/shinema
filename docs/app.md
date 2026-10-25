@@ -19,10 +19,12 @@ Start the Rust server (see [development](development.md)). To reach it from a TV
 ```bash
 cd apps/shinema
 npm ci
-npm run web
+npm run export:web
 ```
 
-`npm run web` opens the app in a browser. To have the server host the web app itself, run `npm run export:web` and start the server with `SHINEMA_WEB_ROOT=apps/shinema/dist`; it then serves the app at its own address. Enter the server address (`192.168.1.20:8787`, or `127.0.0.1:8787` for a server on the same computer). Arrow keys, Enter and Escape behave like a TV remote.
+Then start the server with `SHINEMA_WEB_ROOT=apps/shinema/dist` and open the server's address in a browser; the server hosts the app and its API on one origin. Arrow keys, Enter and Escape behave like a TV remote.
+
+For quick UI work without the Rust server, `node tests/mock-server.mjs` serves the exported build with generated titles at `http://127.0.0.1:8790`. Expo's hot-reload dev server (`npm run web`) runs on a different origin, and neither server accepts API calls from another origin, so rebuild with `export:web` to try a change against real data.
 
 ### Android TV (Shield)
 
