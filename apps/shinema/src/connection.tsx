@@ -11,13 +11,35 @@ import { AppState } from 'react-native';
 import {
   ProgressQueue,
   ShinemaApi,
+  parseLegacyState,
   readJson,
   writeJson,
 } from '../../../packages/core/src/index.ts';
+import { readLegacyState } from './platform/legacy';
 import { store } from './platform/storage';
 
 const KEY = 'shinema.connection';
 const VERSION = 1;
+const LEGACY_KEY = 'shinema.legacy-imported';
+
+/**
+ * Once per install: carries unsynced progress from the previous TV app into
+ * this app's queue for the same server, and returns that server's address
+ * so the connect screen can offer it.
+ */
+async function importLegacy(): Promise<string | null> {
+  if ((await store.read(LEGACY_KEY)) !== null) return null;
+  const file = await readLegacyState();
+  const legacy = file ? parseLegacyState(file.text, file.modifiedAt) : null;
+  if (legacy?.origin && legacy.pending.length > 0) {
+    const queue = new ProgressQueue(store, legacy.origin);
+    await queue.load();
+    for (const [id, progress] of legacy.pending) queue.adopt(id, progress);
+    await queue.persist();
+  }
+  await store.write(LEGACY_KEY, '1');
+  return legacy?.origin ?? null;
+}
 
 type Saved = {
   origin: string;
@@ -28,7 +50,7 @@ type Saved = {
 export type Connection =
   | { status: 'loading' }
   | { status: 'storageFailed'; message: string }
-  | { status: 'disconnected' }
+  | { status: 'disconnected'; suggestedOrigin?: string | null }
   | {
       status: 'connected';
       origin: string;
@@ -85,11 +107,12 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     (async () => {
       try {
+        const suggestedOrigin = await importLegacy();
         const saved = await readJson(store, KEY, VERSION, parseSaved);
-        const next =
+        const next: Connection =
           saved.status === 'ok'
             ? await open(saved.value)
-            : ({ status: 'disconnected' } as const);
+            : { status: 'disconnected', suggestedOrigin };
         if (!cancelled) setConnection(next);
       } catch {
         if (!cancelled)

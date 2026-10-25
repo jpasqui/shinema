@@ -96,6 +96,17 @@ export class ProgressQueue {
     return progress;
   }
 
+  /**
+   * Queues progress observed earlier (carried over from the old app),
+   * unless this device already has something newer for the title.
+   */
+  adopt(id: string, progress: Progress): void {
+    const local = this.local(id);
+    if (local && (local.updatedAt ?? 0) >= (progress.updatedAt ?? 0)) return;
+    this.state.pending[id] = progress;
+    this.remember(id, progress);
+  }
+
   /** The newest progress this device knows for a title. */
   local(id: string): Progress | null {
     return newer(this.state.pending[id], this.state.known[id]) ?? null;

@@ -15,8 +15,14 @@ import { useNavigation } from '../navigation';
 
 export function ConnectScreen() {
   const navigation = useNavigation();
-  const { connect } = useConnection();
-  const [address, setAddress] = useState('');
+  const connection = useConnection();
+  const { connect } = connection;
+  // After upgrading from the old TV app, offer the server it used.
+  const [address, setAddress] = useState(
+    connection.status === 'disconnected'
+      ? (connection.suggestedOrigin ?? '')
+      : '',
+  );
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
