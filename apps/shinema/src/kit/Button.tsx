@@ -3,6 +3,10 @@ import { Focusable } from './Focusable';
 import { Text } from './Text';
 import { colors, fonts, radius, space } from './theme';
 
+/**
+ * Primary actions are cream with dark text; secondary ones are dark glass
+ * with a hairline edge, so they read over artwork and plain backgrounds.
+ */
 export function Button({
   label,
   onPress,
@@ -10,6 +14,7 @@ export function Button({
   icon,
   preferred,
   disabled,
+  focusKey,
 }: {
   label: string;
   onPress: () => void;
@@ -17,8 +22,10 @@ export function Button({
   icon?: string;
   preferred?: boolean;
   disabled?: boolean;
+  focusKey?: string;
 }) {
   const primary = kind === 'primary';
+  const color = primary ? colors.background : colors.text;
   return (
     <Focusable
       accessibilityRole="button"
@@ -26,9 +33,12 @@ export function Button({
       onPress={onPress}
       disabled={disabled}
       preferred={preferred}
+      focusKey={focusKey}
       style={{
         borderRadius: radius.button,
-        backgroundColor: primary ? colors.accent : colors.elevated,
+        backgroundColor: primary ? colors.focus : colors.glass,
+        borderWidth: primary ? 0 : 1,
+        borderColor: colors.line,
         opacity: disabled ? 0.5 : 1,
         alignSelf: 'flex-start',
       }}
@@ -37,25 +47,19 @@ export function Button({
         style={{
           flexDirection: 'row',
           alignItems: 'center',
-          gap: space.sm,
-          paddingHorizontal: space.lg,
-          paddingVertical: 10,
+          gap: space.sm + 2,
+          minHeight: 40,
+          paddingHorizontal: space.lg - 2,
         }}
       >
         {icon ? (
-          <Text
-            variant="label"
-            style={{ color: primary ? colors.onAccent : colors.text }}
-          >
+          <Text variant="label" style={{ color, fontSize: 12 }}>
             {icon}
           </Text>
         ) : null}
         <Text
           variant="label"
-          style={{
-            color: primary ? colors.onAccent : colors.text,
-            fontFamily: fonts.uiBold,
-          }}
+          style={{ color, fontFamily: fonts.uiBold, fontSize: 15 }}
         >
           {label}
         </Text>

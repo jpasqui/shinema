@@ -1,19 +1,40 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   Pressable,
-  type View,
+  StyleSheet,
+  View,
   type PressableProps,
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
 import { focusIfIdle } from '../platform/focus-memory';
 import { useScreenFocus } from './focus-memory';
-import { colors, noBrowserOutline } from './theme';
+import { colors, noBrowserOutline, ring } from './theme';
+
+/** The focus ring sits outside the control, following its corner radius. */
+function Ring({ radius }: { radius: number }) {
+  const offset = -(ring.gap + ring.width);
+  return (
+    <View
+      pointerEvents="none"
+      style={{
+        position: 'absolute',
+        top: offset,
+        left: offset,
+        right: offset,
+        bottom: offset,
+        borderWidth: ring.width,
+        borderColor: colors.focus,
+        borderRadius: radius + ring.gap + ring.width,
+      }}
+    />
+  );
+}
 
 /**
  * Everything selectable is a Focusable: D-pad focus on TVs, arrow keys and
  * hover on the web, touch on phones. Focus is shown the same way everywhere,
- * with an outline and a slight lift, so people always know where they are.
+ * with a ring around the control, so people always know where they are.
  */
 export function Focusable({
   children,
@@ -28,6 +49,7 @@ export function Focusable({
   children: ReactNode | ((focused: boolean) => ReactNode);
   style?: StyleProp<ViewStyle>;
   focusedStyle?: StyleProp<ViewStyle>;
+  /** False when the control draws its own focus state. */
   outline?: boolean;
   onFocusChange?: (focused: boolean) => void;
   /** Receives focus when the screen opens (TV). */
@@ -77,15 +99,16 @@ export function Focusable({
         (event.currentTarget as unknown as { focus?: () => void }).focus?.()
       }
       style={[
-        { borderRadius: 6, borderWidth: 2, borderColor: 'transparent' },
+        { borderRadius: 4 },
         noBrowserOutline,
         style,
-        focused && outline && { borderColor: colors.focus },
-        focused && { transform: [{ scale: 1.04 }] },
         focused && focusedStyle,
       ]}
     >
       {typeof children === 'function' ? children(focused) : children}
+      {focused && outline ? (
+        <Ring radius={Number(StyleSheet.flatten(style)?.borderRadius ?? 4)} />
+      ) : null}
     </Pressable>
   );
 }

@@ -33,7 +33,7 @@ export function useGridLayout(): GridLayout {
     );
     const cardWidth = Math.floor((usable - gap * (columns - 1)) / columns);
     const rowHeight =
-      Math.round(cardWidth * poster.ratio) + space.sm + 52 + gap;
+      Math.round(cardWidth * poster.ratio) + poster.textHeight + gap;
     return { columns, cardWidth, rowHeight, gap, gutter };
   }, [width, gutter, posterMinWidth]);
 }

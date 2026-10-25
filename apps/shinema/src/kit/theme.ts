@@ -10,6 +10,10 @@ export const colors = {
   ...defaultTheme.colors,
   scrim: 'rgba(16, 19, 17, 0.72)',
   track: 'rgba(242, 240, 232, 0.24)',
+  /** Hairline dividers and secondary button edges. */
+  line: 'rgba(255, 255, 255, 0.14)',
+  /** Secondary buttons over artwork. */
+  glass: 'rgba(16, 19, 17, 0.55)',
 } as const;
 
 export const fonts = {
@@ -20,19 +24,44 @@ export const fonts = {
   body: 'Figtree_400Regular',
 } as const;
 
-/** Sizes in density-independent pixels, tuned for a 960x540 TV canvas. */
+/**
+ * Sizes in density-independent pixels, tuned for a 960x540 TV canvas: the
+ * Marquee design at 1600x900 scaled to 0.6.
+ */
 export const type = {
-  hero: { fontFamily: fonts.display, fontSize: 40, lineHeight: 44 },
-  title: { fontFamily: fonts.display, fontSize: 28, lineHeight: 32 },
+  /** Detail and hero titles: large serif, tight leading. */
+  hero: {
+    fontFamily: fonts.display,
+    fontSize: 46,
+    lineHeight: 48,
+    letterSpacing: -1,
+  },
+  /** Section headings such as a library name. */
+  title: {
+    fontFamily: fonts.uiBold,
+    fontSize: 32,
+    lineHeight: 38,
+    letterSpacing: -1,
+  },
+  /** Small capitals above a title. */
   heading: {
     fontFamily: fonts.uiBold,
-    fontSize: 15,
-    lineHeight: 20,
-    letterSpacing: 1.2,
+    fontSize: 10,
+    lineHeight: 14,
+    letterSpacing: 2.6,
   },
+  tagline: { fontFamily: fonts.displayItalic, fontSize: 18, lineHeight: 24 },
+  wordmark: {
+    fontFamily: fonts.uiBold,
+    fontSize: 21,
+    lineHeight: 26,
+    letterSpacing: -0.6,
+  },
+  nav: { fontFamily: fonts.ui, fontSize: 14, lineHeight: 20 },
   body: { fontFamily: fonts.body, fontSize: 15, lineHeight: 22 },
   label: { fontFamily: fonts.ui, fontSize: 14, lineHeight: 18 },
-  caption: { fontFamily: fonts.body, fontSize: 12, lineHeight: 16 },
+  cardTitle: { fontFamily: fonts.uiBold, fontSize: 13, lineHeight: 17 },
+  caption: { fontFamily: fonts.body, fontSize: 11, lineHeight: 15 },
   subtitle: { fontFamily: fonts.ui, fontSize: 22, lineHeight: 28 },
 } as const;
 
@@ -44,10 +73,24 @@ export const space = {
   xl: 40,
   gutter: 48,
 } as const;
-export const radius = { card: 6, button: 999 } as const;
+export const radius = { card: 4, button: 4 } as const;
 
-/** Poster cards keep a 2:3 ratio; the column count follows the screen width. */
-export const poster = { minWidth: 118, gap: 18, ratio: 1.5 } as const;
+/**
+ * Focus is a solid ring drawn a few points outside the control, so it stays
+ * visible over any artwork.
+ */
+export const ring = { width: 3, gap: 4 } as const;
+
+/**
+ * Poster cards keep a 2:3 ratio with a fixed text block below; the column
+ * count follows the screen width.
+ */
+export const poster = {
+  minWidth: 118,
+  gap: 18,
+  ratio: 1.5,
+  textHeight: 42,
+} as const;
 
 export const isTV = Platform.isTV;
 export const isWeb = Platform.OS === 'web';

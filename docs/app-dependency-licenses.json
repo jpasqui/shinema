@@ -1208,6 +1208,11 @@
       "license": "MIT"
     },
     {
+      "package": "expo-build-properties",
+      "version": "57.0.11",
+      "license": "MIT"
+    },
+    {
       "package": "expo-constants",
       "version": "57.0.22",
       "license": "MIT"
@@ -1234,6 +1239,11 @@
     },
     {
       "package": "expo-keep-awake",
+      "version": "57.0.2",
+      "license": "MIT"
+    },
+    {
+      "package": "expo-linear-gradient",
       "version": "57.0.2",
       "license": "MIT"
     },
