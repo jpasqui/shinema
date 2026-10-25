@@ -350,6 +350,10 @@ jobs:
     needs: app-android-tv
     runs-on: ubuntu-24.04
     timeout-minutes: 35
+    # actions: read fetches the previous TV app from main's CI run.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -359,6 +363,14 @@ jobs:
         with:
           name: shinema-app-android-tv-${{ github.event.pull_request.head.sha || github.sha }}
           path: apk
+      # One-off "before" evidence: the previous TV app from main at 94dcac1.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          name: shinema-android-unsigned-development-94dcac102352a85a2d5631599103332497e5b5fb
+          path: baseline
+          run-id: 38914024841
+          github-token: ${{ github.token }}
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Generate a synthetic test clip
         run: ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=640x360:rate=24:duration=30 -f lavfi -i sine=frequency=440:duration=30 -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 30 -c:a aac -b:a 64k -movflags +faststart -shortest "$RUNNER_TEMP/fixture.mp4"
@@ -382,7 +394,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           # The behaviour checks fail the job; emulator timings are
           # indicative only, so the budget run never does.
-          script: bash apps/shinema/tests/android-tv-screens.sh "$(ls apk/*.apk | head -1)" apps/shinema/test-results/android-tv; result=$?; bash apps/shinema/tests/tv-budgets.sh apps/shinema/test-results/android-tv/budgets.json || true; exit $result
+          script: bash apps/shinema/tests/android-tv-baseline.sh "$(find baseline -name '*.apk' | head -1)" apps/shinema/test-results/android-tv || true; bash apps/shinema/tests/android-tv-screens.sh "$(ls apk/*.apk | head -1)" apps/shinema/test-results/android-tv; result=$?; bash apps/shinema/tests/tv-budgets.sh apps/shinema/test-results/android-tv/budgets.json || true; exit $result
       - name: Save Android TV screenshots
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

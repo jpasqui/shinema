@@ -15,6 +15,10 @@ shot() {
 key() { adb shell input keyevent "$1"; }
 
 adb install -r "$apk"
+# Records the walkthrough for PR evidence; a recording failure is not a test
+# failure.
+adb shell screenrecord --size 1280x720 --bit-rate 4000000 /sdcard/walkthrough.mp4 &
+recorder=$!
 adb shell am start -W -n io.shinema.tv/.MainActivity
 shot connect 15
 # The address field has focus on the first screen.
@@ -35,6 +39,10 @@ key KEYCODE_BACK
 shot back-to-detail 3
 key KEYCODE_BACK
 shot back-to-library 3
+adb shell pkill -INT screenrecord || true
+wait "$recorder" || true
+sleep 2
+adb pull /sdcard/walkthrough.mp4 "$out/walkthrough.mp4" || true
 adb logcat -d -s ReactNativeJS:V >"$out/react-native.log" || true
 adb logcat -d >"$out/logcat.txt" || true
 
