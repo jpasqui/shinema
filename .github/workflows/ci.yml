@@ -378,7 +378,10 @@ jobs:
           profile: tv_1080p
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
-          script: bash apps/shinema/tests/android-tv-screens.sh "$(ls apk/*.apk | head -1)" apps/shinema/test-results/android-tv
+          # Screens first (pairs the app with the mock), then the budget run.
+          # Emulator timings are indicative only, so the budget result does
+          # not fail the job; the reference device is the real check.
+          script: bash apps/shinema/tests/android-tv-screens.sh "$(ls apk/*.apk | head -1)" apps/shinema/test-results/android-tv && (bash apps/shinema/tests/tv-budgets.sh apps/shinema/test-results/android-tv/budgets.json || true)
       - name: Save Android TV screenshots
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

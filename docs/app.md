@@ -49,9 +49,19 @@ The app uses the old TV client's package name, `io.shinema.tv`, so it installs o
 
 `node tests/mock-server.mjs` serves the exported web build with generated titles on port 8790, so the app can be looked at without building the Rust server.
 
+## Performance budgets on a TV
+
+With the app installed and paired on the device, and the device connected over `adb`:
+
+```bash
+bash apps/shinema/tests/tv-budgets.sh budgets.json
+```
+
+It measures cold start (budget under 3 s), janky frames while scrolling the grid with the D-pad (under 5%), 95th-percentile frame time (under 33 ms) and memory before and after repeated browsing (flat within 15%), writes a JSON report and exits non-zero if a budget is missed. CI runs it in the emulator for information only; the reference Google TV stick is the real check.
+
 ## Not yet covered
 
-- Hardware performance budgets (cold start, focus latency, scroll smoothness) need the reference Google TV stick; they are not measured yet.
+- The budgets above have not been measured on real hardware yet.
 - Screenshot comparison between web and the Android TV emulator is not automated; CI keeps browser screenshots and builds the APK.
 - Phone portrait layouts work through the same responsive grid but have not been tuned on a device.
 - Themes, Radarr/Sonarr requests and SSH libraries are paused until after v1; the server still supports them.
