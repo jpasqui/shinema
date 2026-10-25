@@ -38,7 +38,11 @@ export function TitleArt({
   height: number;
   label?: string;
 }) {
-  const size = Math.max(14, Math.min(30, Math.round(width * 0.15)));
+  // The longest word must fit on one line: serif letters average a little
+  // over half their size in width.
+  const longest = Math.max(1, ...title.split(/\s+/).map((word) => word.length));
+  const fits = Math.floor((width * 0.84) / (longest * 0.56));
+  const size = Math.max(11, Math.min(30, Math.round(width * 0.15), fits));
   return (
     <LinearGradient
       colors={[toneFor(title), colors.background]}
