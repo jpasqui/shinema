@@ -1,6 +1,7 @@
 export * from './address.ts';
 export * from './api.ts';
 export * from './captions.ts';
+export * from './continue.ts';
 export * from './legacy.ts';
 export * from './paged-list.ts';
 export * from './progress-queue.ts';

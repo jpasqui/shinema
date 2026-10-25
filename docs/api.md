@@ -42,12 +42,15 @@ In loopback mode, the server accepts only `localhost` or literal loopback IP req
 | `GET /api/media/{id}/poster`, `/backdrop` | Cached artwork; `?w=` returns a JPEG no wider than the next supported width (160, 240, 320, 480, 640, 960, 1280 or 1920) |
 | `GET /api/media/{id}/progress` | `Progress` or `null` |
 | `PUT /api/media/{id}/progress` | Validated `Progress`; a save returns 204, or 409 with the stored `Progress` when that is newer |
+| `GET /api/continue?limit=` | `{ items: ContinueItem[] }`: titles started but not finished, most recently saved first; `limit` 1–100, default 20 |
 
 Media has `id`, `title`, `container`, `sizeBytes`, and `streamPath`. No server filesystem path is returned. IDs hash the media-relative path, remain stable through server restarts, and change when a file is renamed. This first slice lists filename-derived titles and format/size metadata; it does not scrape posters or private metadata.
 
 Ordinary Unicode path components are joined with `/` for portable stable IDs; actual filename characters are preserved. Non-Unicode names use a versioned, length-framed encoding of raw platform units, so lossy display replacements cannot merge distinct entries. Ordinary existing path IDs remain unchanged. Titles are limited to 200 Unicode scalar values in both Rust and TypeScript, rather than 200 JavaScript UTF-16 units.
 
 Progress has finite `positionSeconds` and `durationSeconds`; position must be between zero and duration, and duration must be positive and no greater than one week. This is one shared development profile, not an authentication or multi-user system. Optional `updatedAt` is the time in Unix milliseconds when the client observed the position. The server keeps the newest write and answers an older one with 409 and the stored progress, so an offline device catching up cannot move another device's progress backwards. A missing `updatedAt` counts as the server's current time, and times ahead of the server's clock are clamped to it. A position within three seconds of the end starts playback from the beginning.
+
+`ContinueItem` is `{ media: Media, progress: Progress }`, with the same media fields and artwork paths as the catalog. A title is listed while it is in progress by the clients' rule: at least 10 seconds in, and not watched (95% through, within the last 30 seconds of anything over two minutes, or within the last 3 seconds). Progress for files no longer in the library is kept but not listed.
 
 Supported range forms are `bytes=start-end`, `bytes=start-`, and `bytes=-suffix`. Invalid, multiple and unsatisfiable ranges receive 416 and `Content-Range: bytes */size`. The original range endpoint does not implement multipart ranges or conditional `If-Range` validation. Compatibility playback is a separate full-duration HLS path. Files are opened for reading relative to a directory capability and streamed in chunks; they are not loaded entirely into memory.
 

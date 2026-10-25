@@ -16,6 +16,7 @@ import { Button } from '../kit/Button';
 import { Focusable } from '../kit/Focusable';
 import { Message, Screen } from '../kit/Screen';
 import { Text } from '../kit/Text';
+import { clock } from '../kit/time';
 import { colors, isTV, space, useMetrics } from '../kit/theme';
 import { useNavigation } from '../navigation';
 import { useRemote } from '../platform/remote';
@@ -25,14 +26,6 @@ import { SeekTarget } from '../player/seek';
 const SAVE_EVERY_MS = 10000;
 const FLUSH_EVERY_MS = 60000;
 const SEEK_STEP = 10;
-
-const clock = (seconds: number) => {
-  const total = Math.max(0, Math.floor(seconds));
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = String(total % 60).padStart(2, '0');
-  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`;
-};
 
 export function PlayerScreen({
   media,

@@ -188,11 +188,12 @@ jobs:
           path: apk
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Generate a synthetic test clip
-        run: ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=640x360:rate=24:duration=30 -f lavfi -i sine=frequency=440:duration=30 -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 30 -c:a aac -b:a 64k -movflags +faststart -shortest "$RUNNER_TEMP/fixture.mp4"
+        run: ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=640x360:rate=24:duration=120 -f lavfi -i sine=frequency=440:duration=120 -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 30 -c:a aac -b:a 64k -movflags +faststart -shortest "$RUNNER_TEMP/fixture.mp4"
       - name: Start the mock server
         run: nohup node apps/shinema/tests/mock-server.mjs 8790 >"$RUNNER_TEMP/mock.log" 2>&1 &
         env:
           SHINEMA_MOCK_VIDEO: ${{ runner.temp }}/fixture.mp4
+          SHINEMA_MOCK_DURATION: '120'
           SHINEMA_MOCK_ARTWORK: '1'
       - name: Enable KVM
         run: |

@@ -18,6 +18,8 @@ const root = fileURLToPath(new URL('../dist/', import.meta.url));
 const port = Number(process.argv[2] ?? 8790);
 const pairing = process.env.SHINEMA_MOCK_PAIRING === '1';
 const video = process.env.SHINEMA_MOCK_VIDEO || null;
+// The clip's length in seconds; SHINEMA_MOCK_DURATION overrides the 30 s default.
+const duration = Number(process.env.SHINEMA_MOCK_DURATION ?? 30);
 const TOKEN = 'e'.repeat(64);
 const id = (text) => createHash('sha256').update(text).digest('hex');
 
@@ -135,6 +137,44 @@ const authorised = (request, url) =>
   request.headers.authorization === `Bearer ${TOKEN}` ||
   url.searchParams.get('access_token') === TOKEN;
 
+const episodesOf = (series, season) => {
+  const show = shows.find((item) => item.id === series);
+  return Array.from({ length: 8 }, (_, index) => {
+    const media = id(`tv/${show?.title}/S${season}E${index + 1}.mkv`);
+    return {
+      id: media,
+      title: `Episode ${index + 1}`,
+      container: 'mkv',
+      sizeBytes: 500,
+      streamPath: `/api/media/${media}/stream`,
+      contentTypeId: 'tv',
+      collection: 'tv',
+      seriesId: series,
+      seriesTitle: show?.title,
+      season,
+      episode: index + 1,
+    };
+  });
+};
+const mediaById = (key) =>
+  films.find((film) => film.id === key) ??
+  shows
+    .flatMap((show) => [1, 2].flatMap((season) => episodesOf(show.id, season)))
+    .find((episode) => episode.id === key);
+// The same rule as packages/core watchState: started and not finished.
+const inProgress = ({
+  positionSeconds: position,
+  durationSeconds: duration,
+}) => {
+  const remaining = duration - position;
+  const watched =
+    position / duration >= 0.95 ||
+    (remaining <= 30 && duration > 120) ||
+    remaining <= 3;
+  return !watched && position >= 10;
+};
+
+// Saved progress in the order it was last written.
 const progress = new Map();
 
 createServer(async (request, response) => {
@@ -184,27 +224,24 @@ createServer(async (request, response) => {
     if (path === '/api/catalog') {
       const series = url.searchParams.get('series');
       if (series) {
-        const show = shows.find((item) => item.id === series);
         const season = Number(url.searchParams.get('season') ?? 1);
-        const episodes = Array.from({ length: 8 }, (_, index) => {
-          const media = id(`tv/${show?.title}/S${season}E${index + 1}.mkv`);
-          return {
-            id: media,
-            title: `Episode ${index + 1}`,
-            container: 'mkv',
-            sizeBytes: 500,
-            streamPath: `/api/media/${media}/stream`,
-            contentTypeId: 'tv',
-            collection: 'tv',
-            seriesId: series,
-            seriesTitle: show?.title,
-            season,
-            episode: index + 1,
-          };
+        return json(response, 200, {
+          apiVersion: 1,
+          ...page(episodesOf(series, season), url),
         });
-        return json(response, 200, { apiVersion: 1, ...page(episodes, url) });
       }
       return json(response, 200, { apiVersion: 1, ...page(films, url) });
+    }
+    // Started titles, most recently saved first, by the clients' rule.
+    if (path === '/api/continue') {
+      const limit = Number(url.searchParams.get('limit') ?? 20);
+      const items = [...progress]
+        .reverse()
+        .filter(([, saved]) => inProgress(saved))
+        .map(([key, saved]) => ({ media: mediaById(key), progress: saved }))
+        .filter((item) => item.media)
+        .slice(0, limit);
+      return json(response, 200, { items });
     }
     if (path === '/api/series') return json(response, 200, page(shows, url));
     const seasons = path.match(/^\/api\/series\/([a-f0-9]{64})\/seasons$/);
@@ -234,6 +271,8 @@ createServer(async (request, response) => {
       if (request.method === 'PUT') {
         let body = '';
         for await (const chunk of request) body += chunk;
+        // Re-inserting keeps the map in last-written order.
+        progress.delete(media[1]);
         progress.set(media[1], JSON.parse(body));
         return json(response, 204);
       }
@@ -259,7 +298,7 @@ createServer(async (request, response) => {
     if (media && media[2] === 'playback')
       return video
         ? json(response, 200, {
-            durationSeconds: 30,
+            durationSeconds: duration,
             mode: 'direct',
             streamPath: `/api/media/${media[1]}/stream`,
           })

@@ -24,12 +24,23 @@ async function connect(page: Page, origin: string) {
   await address.press('Enter');
 }
 
+/** Home opens first, with its featured title's main button focused. */
+async function home(page: Page) {
+  await expect.poll(() => focused(page)).toMatch(/^(Play|Resume from)/);
+}
+
+async function openLibrary(page: Page, name: string) {
+  await page.getByRole('tab', { name }).click();
+  await expect(page.getByText('Your personal picture house')).toBeVisible();
+}
+
 test('browses the library with arrow keys and returns to the same poster', async ({
   page,
 }, info) => {
   await connect(page, OPEN);
-  await expect(page.getByText('Northern Lines').first()).toBeVisible();
-  await expect.poll(() => focused(page)).toContain('The Lighthouse Keeper');
+  await home(page);
+  await openLibrary(page, 'Movies');
+  await page.getByRole('button', { name: /^The Lighthouse Keeper/ }).focus();
   await page.keyboard.press('ArrowRight');
   await expect.poll(() => focused(page)).toContain('Northern Lines');
   await page.screenshot({ path: info.outputPath('library.png') });
@@ -48,27 +59,29 @@ test('library tabs switch on select without stealing focus', async ({
   page,
 }) => {
   await connect(page, OPEN);
-  await expect.poll(() => focused(page)).toContain('The Lighthouse Keeper');
-  await page.keyboard.press('ArrowUp');
+  await home(page);
+  await page.getByRole('tab', { name: 'Movies' }).focus();
   await page.keyboard.press('ArrowRight');
   await expect.poll(() => focused(page)).toBe('TV');
-  // Focus alone does not switch libraries.
-  await expect(page.getByText('The Lighthouse Keeper').first()).toBeVisible();
+  // Focus alone does not switch: Home is still showing.
+  await expect(page.getByText('Your personal picture house')).toHaveCount(0);
   await page.keyboard.press('Enter');
+  await expect(page.getByText('Your personal picture house')).toBeVisible();
   await expect(page.getByText('Harbour Lights').first()).toBeVisible();
   await expect.poll(() => focused(page)).toBe('TV');
 });
 
-test('plays, seeks with repeated presses, saves progress and offers Resume', async ({
+test('plays, seeks, saves progress, offers Resume and lists it on Home', async ({
   page,
 }, info) => {
   test.skip(!process.env.SHINEMA_MOCK_VIDEO, 'needs a generated test clip');
   // Each viewport watches its own title; the mock server keeps progress.
   const title = info.project.name === 'tv' ? 'Paper Moons' : 'Low Tide';
   await connect(page, OPEN);
-  await expect.poll(() => focused(page)).toContain('The Lighthouse Keeper');
+  await home(page);
   await page
     .getByRole('button', { name: new RegExp(`^${title}`) })
+    .first()
     .press('Enter');
   await page.getByRole('button', { name: 'Play', exact: true }).press('Enter');
 
@@ -108,6 +121,19 @@ test('plays, seeks with repeated presses, saves progress and offers Resume', asy
         ?.positionSeconds;
     })
     .toBeGreaterThan(15);
+
+  // Back on Home it is first in Continue watching and in the hero.
+  await page.keyboard.press('Escape');
+  await expect(
+    page.getByText('Continue watching', { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: new RegExp(`^${title}, .*left$`) }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: /^Resume from/ }),
+  ).toBeVisible();
+  await page.screenshot({ path: info.outputPath('home.png') });
 });
 
 test('pairs with a code when the server requires it', async ({ page }) => {
