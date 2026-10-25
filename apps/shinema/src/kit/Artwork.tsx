@@ -32,11 +32,14 @@ export function TitleArt({
   width,
   height,
   label = 'Shinema collection',
+  watched = false,
 }: {
   title: string;
   width: number;
   height: number;
   label?: string;
+  /** Replaces the label, so a watched title needs no badge on top. */
+  watched?: boolean;
 }) {
   // The longest word must fit on one line: serif letters average a little
   // over half their size in width.
@@ -60,9 +63,13 @@ export function TitleArt({
       <Text
         variant="heading"
         numberOfLines={1}
-        style={{ fontSize: 7, letterSpacing: 1.6, color: colors.muted }}
+        style={{
+          fontSize: 7,
+          letterSpacing: 1.6,
+          color: watched ? colors.accent : colors.muted,
+        }}
       >
-        {width < 120 ? 'Shinema' : label}
+        {watched ? 'Watched' : width < 120 ? 'Shinema' : label}
       </Text>
       <Text
         numberOfLines={4}
