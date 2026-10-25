@@ -160,7 +160,7 @@ export function moveTopNavigation(
   const index = entries.findIndex((entry) => entry.id === id);
   const target = index + direction;
   if (index < 0 || target < 0 || target >= entries.length) return preferences;
-  [entries[index], entries[target]] = [entries[target], entries[index]];
+  [entries[index], entries[target]] = [entries[target]!, entries[index]!];
   return {
     version: 1,
     entries: entries.map((entry, order) => ({ ...entry, order })),

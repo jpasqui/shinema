@@ -21,6 +21,7 @@ jobs:
           cache-dependency-path: package-lock.json
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run lint && npm run format:check
+      - run: npm run test:core && npm run typecheck:core
       - run: node --test scripts/libraries-diagnostics.test.mjs
       - run: python3 scripts/test_ci_artifacts.py
   web-preview:

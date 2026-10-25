@@ -6,12 +6,15 @@
     "test": "npm --prefix packages/design-tokens test && npm --prefix clients/native test",
     "typecheck": "npm --prefix clients/native run typecheck",
     "lint": "eslint . --max-warnings 0",
-    "format:check": "prettier --check \"**/*.{js,mjs,ts,tsx}\" package.json eslint.config.mjs .prettierrc.json .github/workflows/ci.yml"
+    "format:check": "prettier --check \"**/*.{js,mjs,ts,tsx}\" package.json eslint.config.mjs .prettierrc.json .github/workflows/ci.yml",
+    "test:core": "npm --prefix packages/core test",
+    "typecheck:core": "tsc -p packages/core/tsconfig.json"
   },
   "license": "MIT",
   "type": "module",
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@types/node": "24.19.2",
     "eslint": "10.12.0",
     "globals": "17.13.0",
     "prettier": "3.9.10",
