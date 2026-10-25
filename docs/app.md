@@ -19,10 +19,12 @@ Start the Rust server (see [development](development.md)). To reach it from a TV
 ```bash
 cd apps/shinema
 npm ci
-npm run web
+npm run export:web
 ```
 
-`npm run web` opens the app in a browser. To have the server host the web app itself, run `npm run export:web` and start the server with `SHINEMA_WEB_ROOT=apps/shinema/dist`; it then serves the app at its own address. Enter the server address (`192.168.1.20:8787`, or `127.0.0.1:8787` for a server on the same computer). Arrow keys, Enter and Escape behave like a TV remote.
+Then start the server with `SHINEMA_WEB_ROOT=apps/shinema/dist` and open the server's address in a browser; the server hosts the app and its API on one origin. Arrow keys, Enter and Escape behave like a TV remote.
+
+For quick UI work without the Rust server, `node tests/mock-server.mjs` serves the exported build with generated titles at `http://127.0.0.1:8790`. Expo's hot-reload dev server (`npm run web`) runs on a different origin, and neither server accepts API calls from another origin, so rebuild with `export:web` to try a change against real data.
 
 ### Android TV (Shield)
 
@@ -47,9 +49,19 @@ The app uses the old TV client's package name, `io.shinema.tv`, so it installs o
 
 `node tests/mock-server.mjs` serves the exported web build with generated titles on port 8790, so the app can be looked at without building the Rust server.
 
+## Performance budgets on a TV
+
+With the app installed and paired on the device, and the device connected over `adb`:
+
+```bash
+bash apps/shinema/tests/tv-budgets.sh budgets.json
+```
+
+It measures cold start (budget under 3 s), janky frames while scrolling the grid with the D-pad (under 5%), 95th-percentile frame time (under 33 ms) and memory before and after repeated browsing (flat within 15%), writes a JSON report and exits non-zero if a budget is missed. CI runs it in the emulator for information only; the reference Google TV stick is the real check.
+
 ## Not yet covered
 
-- Hardware performance budgets (cold start, focus latency, scroll smoothness) need the reference Google TV stick; they are not measured yet.
+- The budgets above have not been measured on real hardware yet.
 - Screenshot comparison between web and the Android TV emulator is not automated; CI keeps browser screenshots and builds the APK.
 - Phone portrait layouts work through the same responsive grid but have not been tuned on a device.
 - Themes, Radarr/Sonarr requests and SSH libraries are paused until after v1; the server still supports them.
