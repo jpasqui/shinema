@@ -13,7 +13,7 @@ Apple TV is on the roadmap and has no web view, which rules out running the web 
 1. Keep the Rust server. Extend API v1 additively for multi-device use.
 2. Replace both clients with one Expo app using `react-native-tvos` as its React Native dependency, rendered on the web with react-native-web. Video uses each platform's native player behind an adapter.
 3. Screens use only a small component kit. Fonts are bundled so every platform renders the same faces. CI compares screenshots across platforms.
-4. TypeScript 7 is the type checker of record. Client types for server responses are generated from the Rust structs with `ts-rs`.
+4. Client types for server responses are generated from the Rust structs with `ts-rs`, and a compile-time check fails if the client's validated types drift from them. Type checking stays on TypeScript 6 for now: typescript-eslint relies on TypeScript's programmatic API, which TypeScript 7 does not yet offer as stable. Move to 7.x once it does.
 
 ## Scope for v1
 
