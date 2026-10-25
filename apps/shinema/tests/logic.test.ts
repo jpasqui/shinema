@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { pickNeighbour, type Rect } from '../src/focus/spatial.ts';
 import { SeekTarget } from '../src/player/seek.ts';
+import { KeyPresses } from '../src/platform/key-presses.ts';
 
 const cell = (column: number, row: number): Rect => ({
   left: column * 110,
@@ -41,4 +42,20 @@ test('seeks stay inside the title', () => {
   const seek = new SeekTarget();
   assert.equal(seek.step(5, 600, -10, 0), 0);
   assert.equal(seek.step(595, 600, 10, 5000), 599);
+});
+
+test('a remote press acts once whether Android sends key-up alone or both', () => {
+  const presses = new KeyPresses();
+  // Default Android TV: key-up only, one per press.
+  assert.equal(presses.accept('right', 1), true);
+  assert.equal(presses.accept('right', 1), true);
+  // Key-down events enabled: act on the down, not the matching up.
+  assert.equal(presses.accept('left', 0), true);
+  assert.equal(presses.accept('left', 1), false);
+  // A held key repeats its key-down; the release does not add a step.
+  assert.equal(presses.accept('right', 0), true);
+  assert.equal(presses.accept('right', 0), true);
+  assert.equal(presses.accept('right', 1), false);
+  // Events without a key action, such as Apple TV gestures, always act.
+  assert.equal(presses.accept('up', -1), true);
 });

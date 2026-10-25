@@ -226,7 +226,10 @@ function Video({
     showControls();
   };
   const jump = (delta: number) => {
-    const target = seek.step(engine.currentTime(), duration, delta);
+    const from = engine.currentTime();
+    const target = seek.step(from, duration, delta);
+    if (process.env.EXPO_PUBLIC_SHINEMA_LOG_KEYS === '1')
+      console.log(`[shinema] seek ${from} -> ${target}`);
     engine.seek(target);
     setTime(target);
     showControls();
