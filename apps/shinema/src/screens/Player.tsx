@@ -135,7 +135,11 @@ function Video({
     [api, playback, media.title],
   );
   // Progress is recorded every 10 seconds and sent to the server every minute.
+  // The last time the player reported. Exiting saves this rather than asking
+  // the player, which Android may already have released.
+  const lastTime = useRef(start);
   const engine = useEngine(source, (currentTime) => {
+    lastTime.current = currentTime;
     setTime(currentTime);
     const now = Date.now();
     if (!started.current || now - lastSave.current < SAVE_EVERY_MS) return;
@@ -150,8 +154,15 @@ function Video({
         .catch(() => {});
     }
   });
-  const latestEngine = useRef(engine);
-  latestEngine.current = engine;
+  // On TVs the video view can take focus; keep it on the surface that
+  // receives the remote's keys.
+  const surface = useRef<View>(null);
+  useEffect(() => {
+    if (!isTV) return;
+    (
+      surface.current as { requestTVFocus?: () => void } | null
+    )?.requestTVFocus?.();
+  }, [engine.status, menu]);
 
   // Jump to the resume point once the stream is ready.
   useEffect(() => {
@@ -169,11 +180,7 @@ function Video({
   useEffect(
     () => () => {
       if (!started.current || !(duration > 0)) return;
-      progress.record(
-        media.id,
-        seek.current(latestEngine.current.currentTime()),
-        duration,
-      );
+      progress.record(media.id, seek.current(lastTime.current), duration);
       void progress
         .persist()
         .then(() => progress.flush(api))
@@ -268,6 +275,7 @@ function Video({
       {engine.surface}
       {/* Holds TV focus so remote keys reach the player; a tap shows controls. */}
       <Pressable
+        ref={surface}
         accessibilityRole="button"
         accessibilityLabel={engine.playing ? 'Pause' : 'Play'}
         hasTVPreferredFocus={!menu}
