@@ -27,6 +27,7 @@ key KEYCODE_DPAD_CENTER
 shot detail 4
 key KEYCODE_DPAD_CENTER
 shot player 8
+adb shell dumpsys window | grep -E "mCurrentFocus|mFocusedApp" >"$out/focus-in-player.txt" || true
 key KEYCODE_DPAD_RIGHT
 key KEYCODE_DPAD_RIGHT
 shot player-seek 2
@@ -35,6 +36,7 @@ shot back-to-detail 3
 key KEYCODE_BACK
 shot back-to-library 3
 adb logcat -d -s ReactNativeJS:V >"$out/react-native.log" || true
+adb logcat -d >"$out/logcat.txt" || true
 
 # Behaviour checks, so a regression fails the job instead of hiding in a
 # screenshot.
