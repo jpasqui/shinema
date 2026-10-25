@@ -11,17 +11,9 @@ import { Button } from '../kit/Button';
 import { Focusable } from '../kit/Focusable';
 import { Screen } from '../kit/Screen';
 import { Text } from '../kit/Text';
+import { clock } from '../kit/time';
 import { colors, space, useMetrics } from '../kit/theme';
 import { useNavigation } from '../navigation';
-
-/** 24, 3:05 or 1:02:10, as a player shows it. */
-export const clock = (seconds: number) => {
-  const total = Math.max(0, Math.floor(seconds));
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = String(total % 60).padStart(2, '0');
-  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`;
-};
 
 const size = (bytes: number) =>
   bytes >= 1e9

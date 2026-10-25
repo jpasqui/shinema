@@ -6,8 +6,8 @@
 
 | Folder | What lives there |
 | --- | --- |
-| `src/kit/` | The only place colours, fonts, spacing and focus styles are defined, following the Marquee design chosen in [PR 11](https://github.com/jpasqui/shinema/pull/11): `theme.ts`, `Text`, `Focusable` (the focus ring), `Button`, `TopBar`, `SectionHeading`, `PosterCard`, `PosterGrid`, `Artwork` (backdrops, and designed stand-ins for missing posters), `Panel`, `Screen`, `TextField`. |
-| `src/screens/` | Connect, Pair, Library, Series, Detail, Player, Settings. Screens use only kit components. |
+| `src/kit/` | The only place colours, fonts, spacing and focus styles are defined, following the Marquee design chosen in [PR 11](https://github.com/jpasqui/shinema/pull/11): `theme.ts`, `Text`, `Focusable` (the focus ring), `Button`, `TopBar`, `SectionHeading`, `PosterCard`, `PosterGrid`, `Artwork` (backdrops, and designed stand-ins for missing posters), `WideCard`, `Rail`, `Panel`, `Screen`, `TextField`. |
+| `src/screens/` | Connect, Pair, Home (featured title, continue watching and a row per library, the first tab), Library, Series, Detail, Player, Settings. Screens use only kit components. |
 | `src/platform/` | The adapters that differ by platform: storage, remote/keyboard input, focus memory, and the old-app importer. Files ending `.web.ts` replace their native twin in the browser. |
 | `src/player/` | The video adapter (`engine.tsx` uses expo-video; `engine.web.tsx` uses a video element with hls.js) and remote seeking. |
 | `../../packages/core/` | Shared data layer: API client, progress queue, paging, captions, watched rules. Also used by tests. |
@@ -47,7 +47,7 @@ The app uses the old TV client's package name, `io.shinema.tv`, so it installs o
 | `npm run export:web` | A production web build in `dist/` |
 | `npm run test:e2e` | Browser behaviour at TV (960x540) and desktop sizes against `tests/mock-server.mjs`: arrow-key browsing, Back restoring focus, library tabs, playback with captions, seeking, saved progress, Resume, pairing. Set `SHINEMA_MOCK_VIDEO` to a short clip for the playback test, and `PLAYWRIGHT_CHANNEL=msedge` or `chrome` to use an installed browser. |
 
-`node tests/mock-server.mjs` serves the exported web build with generated titles on port 8790, so the app can be looked at without building the Rust server. With `SHINEMA_MOCK_ARTWORK=1` (needs ffmpeg) some titles get posters and backdrops cut from the synthetic [test artwork](../apps/shinema/tests/fixtures/ARTWORK.md) and the rest keep none, so both looks can be checked.
+`node tests/mock-server.mjs` serves the exported web build with generated titles on port 8790, so the app can be looked at without building the Rust server. With `SHINEMA_MOCK_ARTWORK=1` (needs ffmpeg) some titles get posters and backdrops cut from the synthetic [test artwork](../apps/shinema/tests/fixtures/ARTWORK.md) and the rest keep none, so both looks can be checked. `SHINEMA_MOCK_DURATION` sets the test clip's length in seconds (default 30).
 
 ## Performance budgets on a TV
 

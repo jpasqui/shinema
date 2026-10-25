@@ -15,9 +15,10 @@ import { TopBar } from '../kit/TopBar';
 import { colors, poster, radius } from '../kit/theme';
 import { usePagedList } from '../kit/usePagedList';
 import { useNavigation } from '../navigation';
+import { HomeView, showsSeries } from './Home';
 
-const showsSeries = (library: LibraryDescriptor) =>
-  library.contentTypeId === 'tv' || library.mediaType === 'tv';
+/** The Home tab; library ids never start with a colon. */
+const HOME = ':home';
 
 function Placeholder({ width }: { width: number }) {
   return (
@@ -36,9 +37,10 @@ export function LibraryScreen() {
   const { api } = useConnected();
   const navigation = useNavigation();
   const [libraries, setLibraries] = useState<LibraryDescriptor[] | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string>(HOME);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [scrolled, setScrolled] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -50,7 +52,6 @@ export function LibraryScreen() {
           .filter((library) => library.visible)
           .sort((a, b) => a.order - b.order);
         setLibraries(visible);
-        setSelected((current) => current ?? visible[0]?.id ?? null);
       })
       .catch((problem: Error & { kind?: string }) => {
         if (controller.signal.aborted) return;
@@ -65,16 +66,22 @@ export function LibraryScreen() {
 
   const library = libraries?.find((item) => item.id === selected) ?? null;
 
-  // The bar stays fixed above the grid, so switching libraries never rebuilds
-  // it and focus stays on the tab you are using.
+  const home = selected === HOME || !library;
+
+  // The bar is the same element on every tab, so switching never rebuilds it
+  // and focus stays on the tab you are using. On Home it floats over the
+  // featured artwork.
   const header = (
     <TopBar
-      tabs={(libraries ?? []).map((item) => ({
-        id: item.id,
-        label: item.name,
-      }))}
+      tabs={[
+        { id: HOME, label: 'Home' },
+        ...(libraries ?? []).map((item) => ({ id: item.id, label: item.name })),
+      ]}
       selected={selected}
-      onSelect={setSelected}
+      onSelect={(id) => {
+        setScrolled(false);
+        setSelected(id);
+      }}
       onSettings={() => navigation.push({ name: 'settings' })}
     />
   );
@@ -98,7 +105,7 @@ export function LibraryScreen() {
         <Message title="Loading your library" loading />
       </Screen>
     );
-  if (!library)
+  if (libraries.length === 0)
     return (
       <Screen>
         <Message
@@ -109,8 +116,30 @@ export function LibraryScreen() {
     );
   return (
     <Screen>
-      {header}
-      {showsSeries(library) ? (
+      <View
+        style={
+          home
+            ? {
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                zIndex: 2,
+                paddingBottom: 6,
+                backgroundColor: scrolled ? colors.background : 'transparent',
+              }
+            : undefined
+        }
+      >
+        {header}
+      </View>
+      {home ? (
+        <HomeView
+          libraries={libraries}
+          onOpenLibrary={setSelected}
+          onScrolled={setScrolled}
+        />
+      ) : showsSeries(library) ? (
         <SeriesGrid key={library.id} library={library} />
       ) : (
         <MediaGrid key={library.id} library={library} />

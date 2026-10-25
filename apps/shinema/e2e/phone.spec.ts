@@ -18,8 +18,11 @@ test('fits a phone screen and opens a title by tapping', async ({
   );
   expect(overflow).toBeLessThanOrEqual(0);
   await expect(page.getByRole('button', { name: 'Settings' })).toBeInViewport();
-  await page.screenshot({ path: info.outputPath('library.png') });
-  await page.getByRole('button', { name: /^Northern Lines/ }).tap();
+  await page.screenshot({ path: info.outputPath('home.png') });
+  await page
+    .getByRole('button', { name: /^Northern Lines/ })
+    .first()
+    .tap();
   await expect(
     page.getByRole('button', { name: 'Play', exact: true }),
   ).toBeInViewport();
