@@ -10,6 +10,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import { View } from 'react-native';
 import { ConnectionProvider, useConnection } from './connection';
+import { ScreenFocusProvider } from './kit/focus-memory';
 import { Message, Screen } from './kit/Screen';
 import { colors } from './kit/theme';
 import { NavigationProvider, useNavigation, type Route } from './navigation';
@@ -85,11 +86,13 @@ function Router() {
         const needsServer = route.name !== 'connect' && route.name !== 'pair';
         return (
           <View key={index} style={{ flex: 1, display: top ? 'flex' : 'none' }}>
-            {needsServer && connection.status !== 'connected' ? (
-              <ConnectScreen />
-            ) : (
-              <RouteScreen route={route} />
-            )}
+            <ScreenFocusProvider visible={top}>
+              {needsServer && connection.status !== 'connected' ? (
+                <ConnectScreen />
+              ) : (
+                <RouteScreen route={route} />
+              )}
+            </ScreenFocusProvider>
           </View>
         );
       })}

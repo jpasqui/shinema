@@ -81,6 +81,7 @@ export function LibraryScreen() {
           accessibilityRole="tab"
           accessibilityState={{ selected: item.id === selected }}
           onPress={() => setSelected(item.id)}
+          focusKey={`tab:${item.id}`}
           style={{
             borderRadius: 999,
             paddingHorizontal: space.md,
@@ -114,6 +115,7 @@ export function LibraryScreen() {
         <Focusable
           accessibilityRole="button"
           onPress={() => navigation.push({ name: 'settings' })}
+          focusKey="settings"
           style={{
             borderRadius: 999,
             paddingHorizontal: space.md,
@@ -211,6 +213,7 @@ function MediaGrid({ libraryId }: { libraryId: string }) {
             watched={state.kind === 'watched'}
             onPress={() => navigation.push({ name: 'detail', media })}
             preferred={index === 0}
+            focusKey={media.id}
           />
         );
       }}
@@ -257,6 +260,7 @@ function SeriesGrid({ libraryId }: { libraryId: string }) {
             width={width}
             onPress={() => navigation.push({ name: 'series', series })}
             preferred={index === 0}
+            focusKey={series.id}
           />
         ) : (
           <Placeholder width={width} />

@@ -17,6 +17,7 @@ export function PosterCard({
   watched,
   onPress,
   preferred,
+  focusKey,
 }: {
   title: string;
   detail?: string;
@@ -27,6 +28,7 @@ export function PosterCard({
   watched?: boolean;
   onPress: () => void;
   preferred?: boolean;
+  focusKey?: string;
 }) {
   const height = Math.round(width * poster.ratio);
   return (
@@ -35,6 +37,7 @@ export function PosterCard({
       accessibilityLabel={detail ? `${title}, ${detail}` : title}
       onPress={onPress}
       preferred={preferred}
+      focusKey={focusKey}
       outline={false}
       style={{ width, borderWidth: 0 }}
     >

@@ -115,6 +115,7 @@ export function SeriesScreen({ series }: { series: Series }) {
               <Focusable
                 accessibilityRole="button"
                 onPress={() => navigation.push({ name: 'detail', media: item })}
+                focusKey={item.id}
                 style={{
                   backgroundColor: colors.surface,
                   paddingHorizontal: space.md,
