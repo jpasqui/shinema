@@ -171,6 +171,22 @@ jobs:
       - run: cargo +1.94.0 fmt --all --check
       - run: cargo +1.94.0 clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo +1.94.0 test --workspace --locked
+      # cargo test regenerates the client types from the Rust API structs.
+      - name: Save generated client types
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shinema-generated-types-${{ github.event.pull_request.head.sha || github.sha }}
+          path: packages/core/src/generated/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Generated client types match the server
+        run: |
+          if [ -n "$(git status --porcelain -- packages/core/src/generated)" ]; then
+            git status --porcelain -- packages/core/src/generated
+            echo "Client types are out of date. Commit packages/core/src/generated from this run's artifact (or run cargo test locally)."
+            exit 1
+          fi
       - name: Synthetic remote reader policy regressions
         run: python3 -m unittest discover -s server/tests -p 'test_remote_reader.py'
       - run: cargo +1.94.0 build --workspace --locked
