@@ -1,0 +1,14 @@
+# Only sources go into the image build; dependencies are installed inside it.
+**/node_modules
+**/target
+**/dist
+**/.expo
+**/test-results
+**/playwright-report
+.git
+.local
+.private
+.env
+.env.*
+clients
+design
