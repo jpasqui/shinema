@@ -12,7 +12,7 @@ On the NAS, from a copy of this repository:
 docker build -t shinema:local .
 ```
 
-The build compiles the Rust server and the web app and installs ffmpeg, which prepares streams a TV cannot play directly. It needs internet access for Rust crates and npm packages and takes several minutes the first time.
+The build compiles the Rust server and the web app and installs ffmpeg, which prepares streams a TV cannot play directly. It needs internet access for Rust crates and npm packages and takes several minutes the first time. On a NAS that is busy with other apps, add `--build-arg CARGO_BUILD_JOBS=4` to use less memory while compiling.
 
 ## Run it
 

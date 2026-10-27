@@ -7,6 +7,8 @@ COPY Cargo.toml Cargo.lock ./
 COPY server server
 # The server embeds the content registry.
 COPY packages/contracts packages/contracts
+# Pass --build-arg CARGO_BUILD_JOBS=4 to limit memory on a busy NAS.
+ARG CARGO_BUILD_JOBS
 RUN cargo build --release --locked -p shinema-server
 
 FROM node:24-bookworm-slim AS web
