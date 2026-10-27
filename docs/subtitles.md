@@ -64,47 +64,6 @@ different title/server.
   extraction response aborts its task and kills the child process. The clients
   independently cap subtitle content at 4 MiB and discard stale work.
 
-## Host validation
+## Validation
 
-Run the normal Rust/client checks, then these codec/browser checks with FFmpeg
-and Playwright Chromium installed:
-
-```text
-cargo test --workspace --locked generated_embedded_formats -- --ignored --nocapture
-node scripts/subtitle-smoke.mjs
-```
-
-The codec test generates SubRip, mov_text and WebVTT tracks and verifies exact
-absolute timestamps. The browser script generates its own color/sine clips and
-authored multilingual text, exercises direct and compatibility playback, default
-and external selection, Off, seek/resume, failures/retry and interrupted flows.
-Screenshots and check results are saved under `.local/subtitle-evidence/` and
-remain outside public commits. The dedicated subtitle workflow also runs these
-checks. This is host evidence; it does not claim TV/Shield or live NAS validation.
-
-If its browser smoke fails, the workflow retains `shinema-subtitle-failure-<head>`
-for seven days after a dedicated allowlist/privacy audit succeeds. It contains a
-structured phase/source-line/count log and summary (64 KiB each), plus one fixed
-1280x1080 screenshot (2 MiB maximum) when the generated-fixture page is available.
-Startup failures may have no screenshot. Raw errors, stacks, console/server text,
-request URLs, traces, media and application state are excluded. Vite's error
-overlay is disabled so a build error cannot put host paths into the screenshot.
-Neither `.local/subtitle-evidence` nor any Library demonstration is uploaded by
-this failure-artifact step.
-
-The diagnostics helper and privacy guard have focused regression tests. To
-exercise a real failure after the synthetic player and first cue are visible,
-use the command below; exit status 1 is expected. The evidence switch preserves
-existing successful screenshots/check results. Audit before inspecting or
-sharing the dedicated failure directory, then run the smoke without the failure
-switch to restore green:
-
-```text
-node --test scripts/subtitle-diagnostics.test.mjs
-node --input-type=module -e "process.env.SHINEMA_SUBTITLE_TEST_FAILURE='1'; process.env.SHINEMA_SUBTITLE_WRITE_EVIDENCE='0'; await import('./scripts/subtitle-smoke.mjs')"
-python3 scripts/audit_ci_artifacts.py subtitle-diagnostics ci-artifacts/subtitle-failure
-node --input-type=module -e "process.env.SHINEMA_SUBTITLE_WRITE_EVIDENCE='0'; await import('./scripts/subtitle-smoke.mjs')"
-```
-
-Every smoke run clears only its dedicated allowlisted failure files, preventing
-an older failure from being retained after a later successful run.
+The Rust tests cover parsing, conversion, sidecar discovery and link refusal with generated fixtures. The app parses the served WebVTT in `packages/core/src/captions.ts` (unit-tested) and draws captions itself, so they look the same on TV, web and phone; the browser suite checks that a caption appears in sync. Shield rendering of captions is not yet validated on the device.

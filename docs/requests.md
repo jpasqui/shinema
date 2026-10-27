@@ -151,8 +151,9 @@ to ephemeral loopback ports. It covers authentication and same-origin checks,
 validation, movie/series policies, duplicate handling, concurrent submits,
 status refresh, durable ambiguity across restart, a real HTTP timeout, safe
 failure handling, response-size limits, and refusal to follow redirects.
-`node scripts/requests-smoke.mjs` exercises the running server against synthetic
-providers. No real title, media, or live service is required.
+Requests are paused in the new app until after v1 ([ADR 0001](decisions/0001-client-rebuild.md));
+the server feature and its Rust tests remain. No real title, media, or live
+service is required by those tests.
 
 On **2026-10-16**, the official release API identified stable
 [Sonarr v4.0.20.3014](https://github.com/Sonarr/Sonarr/releases/tag/v4.0.20.3014)

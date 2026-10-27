@@ -3,12 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "test": "npm --prefix packages/design-tokens test && npm --prefix clients/native test",
-    "typecheck": "npm --prefix clients/native run typecheck",
+    "test": "npm --prefix packages/design-tokens test && npm --prefix packages/core test",
+    "typecheck": "tsc -p packages/core/tsconfig.json",
     "lint": "eslint . --max-warnings 0",
-    "format:check": "prettier --check \"**/*.{js,mjs,ts,tsx}\" package.json eslint.config.mjs .prettierrc.json .github/workflows/ci.yml",
-    "test:core": "npm --prefix packages/core test",
-    "typecheck:core": "tsc -p packages/core/tsconfig.json"
+    "format:check": "prettier --check \"**/*.{js,mjs,ts,tsx}\" package.json eslint.config.mjs .prettierrc.json .github/workflows/ci.yml"
   },
   "license": "MIT",
   "type": "module",

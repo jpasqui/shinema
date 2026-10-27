@@ -30,6 +30,6 @@ Apple TV is on the roadmap and has no web view, which rules out running the web 
 
 ## Consequences
 
-- `clients/web`, `clients/native` and their evidence tooling are frozen to bug fixes and deleted at cutover.
+- `clients/web`, `clients/native` and their evidence tooling were removed at cutover; the app imports the old TV client's unsynced progress on first start.
 - The server gains a devices table, progress timestamps, resilient and repeatable scans, sized artwork variants and generated TypeScript bindings.
 - Android TV builds run on EAS or on a machine with the Android SDK; tvOS builds run on EAS.

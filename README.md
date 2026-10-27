@@ -4,11 +4,10 @@ A self-hosted media server in Rust with one app for Android TV, the web and Andr
 
 ## Status
 
-Early development under draft review; not a production deployment. The clients are being rebuilt as one app ([ADR 0001](docs/decisions/0001-client-rebuild.md)).
+Early development under draft review; not a production deployment. The previous separate web and TV clients were replaced by one app ([ADR 0001](docs/decisions/0001-client-rebuild.md)).
 
 - **Server** (`server/`): Rust. Scans media folders (skipping unreadable ones), rescans every 15 minutes, streams with byte ranges or HLS transcoding, keeps watch progress in SQLite with newest-write-wins ordering, and serves sized artwork. Bound to loopback it needs no sign-in; bound to the home network it requires devices to pair with a six-digit code. It speaks plain HTTP; use a reverse proxy for HTTPS outside the home. See the [API](docs/api.md).
 - **App** (`apps/shinema/`): one Expo + React Native TV app for Android TV and the web, with Android phones next. Same screens and look everywhere. See [the app guide](docs/app.md).
-- **Old clients** (`clients/native/`, `clients/web/`): frozen to bug fixes and removed once the new app replaces them on the Shield.
 - **CI** checks Rust formatting, lint and tests; shared and app types and tests; browser behaviour at TV and desktop sizes; and builds an installable Android TV APK.
 
 Hardware validation on the Shield and performance budgets on a low-end Google TV stick are still to do.
@@ -21,8 +20,6 @@ apps/shinema/            The app: Android TV, web, Android phone (Expo)
 packages/core/           Shared client data layer: API client, progress sync, paging, captions
 packages/contracts/      Response validators shared by the clients
 packages/design-tokens/  Shared palette and theme contract
-clients/native/          Previous Android TV client (being replaced)
-clients/web/             Previous web preview (being replaced)
 docs/                    Setup, API, decisions and dependency license review
 scripts/                 Generated fixtures and host integration checks
 ```

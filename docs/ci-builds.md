@@ -1,31 +1,30 @@
-# CI development builds and checks
+# CI builds and checks
 
-Open a completed **First slice checks** run in GitHub Actions to download its artifacts. Build names contain the PR head commit (or main commit); GitHub's run page also shows the tested merge commit for PR runs. Builds are kept for 14 days. They are development snapshots, with no store publishing, signing or deployment.
+Every pull request and push to `main` runs **Checks** (`.github/workflows/ci.yml`). Artifacts are named with the commit and kept for 14 days. They are development builds: no store publishing, production signing or deployment is configured, and no secrets or private library data are used.
 
-- **shinema-android-unsigned-development** contains `app-release-unsigned.apk`. This is an unsigned ARM64 development build of the release variant. Android cannot install it until it is signed locally using an approved test identity; CI supplies no key or signing service. It retains the client's HTTPS policy and has no configured media server. CI sets React Native's `reactNativeDevServerIp` Gradle property to `127.0.0.1`, preventing the build runner's network address from appearing in its debugger resource. No device validation is implied.
-- **shinema-web-development** contains `clients/web/dist`, this guide, the project license and React runtime licenses. The static client uses relative `/api` requests; it requires the Rust server. For a local generated-fixture preview, use the setup in [web-preview.md](web-preview.md), run the Rust server on loopback with generated media and separate state, then change into `clients/web` and run `npm exec -- vite preview`. The loopback preview proxies `/api` to `127.0.0.1:8787`. Opening `index.html` directly does not provide a working API. The build contains no media or server configuration. No hosted deployment is created.
-- **shinema-browser-failure** is retained for 7 days when the browser workload fails. Explicit Bash `pipefail` preserves the Node failure even when output is piped through `tee`. Evidence goes into the visible `ci-artifacts/browser-failure` directory and is uploaded only after an allowlist/privacy audit succeeds. It contains the workload log, partial results and screenshots of open pages captured before teardown, when Chromium started successfully. Startup failures have logs but may have no screenshot. Only generated fixtures and isolated loopback test contexts are used. CI never uploads the entire `.local` directory, application state, caches or media.
+## Jobs
 
-Before uploading builds, CI inspects their contents for private-key/token markers, credential-bearing origins, unexpected private network IPs, NAS roots and private/state/media file extensions. The locked React Native dependency includes the public emulator loopback aliases `10.0.2.2` and `10.0.3.2`; the guard permits only their standalone DEX string constants, not configured origins or URLs. Its debugger help also contains the public example `10.0.1.1:<PORT>`; that address is allowed only inside the exact upstream DEX help instruction with the placeholder intact. This is a narrow guard, not a general secret detector. Fresh public runners build only tracked public source and locked public dependencies without secrets or private library input. Dependency licenses remain in their packages; see [dependency-licenses.md](dependency-licenses.md) for notice obligations before any wider distribution.
+| Job | What it checks | Artifacts |
+| --- | --- | --- |
+| `javascript-quality` | ESLint and Prettier for the repository, design-token and core tests, and the core type-check (including the server/client contract check). | none |
+| `server-and-contracts` | `cargo fmt`, `clippy -D warnings` and `cargo test`; the remote reader's Python tests; that `packages/core/src/generated` matches the Rust API types; and `scripts/host-smoke.mjs` against the real server. | `shinema-generated-types-<commit>` |
+| `app` | The app's type-check and unit tests, a web export, and the Playwright suite at TV (960x540), desktop and phone sizes against the mock server with a generated 30-second clip. | `shinema-app-web-<commit>`, `shinema-app-screens-<commit>` |
+| `app-android-tv` | Generates the Android TV project (`EXPO_TV=1 expo prebuild`) and builds a release APK. | `shinema-app-android-tv-<commit>` |
+| `app-android-phone` | The same app built for phones and tablets. | `shinema-app-android-phone-<commit>` |
+| `app-android-tv-screens` | Installs the TV APK in an Android TV emulator, drives it with D-pad key events over plain HTTP against the mock server, and screenshots connect, library, detail, player, seek and Back. | `shinema-app-android-tv-screens-<commit>` |
 
-The isolated playback suite also retains **shinema-playback-failure** for 7 days when its step fails, including when that failure skips the later browser smoke. Its dedicated `ci-artifacts/playback-failure` audit permits at most 16 fixed 1280x900 PNGs (2 MiB each) and a structured summary/log (64 KiB each). Logs contain source-relative locations and outcomes, excluding raw errors, stacks, console output and request URLs. The audit also rejects private host paths, unexpected files and screenshots not declared by the summary. Raw Playwright results, traces and media are never uploaded; see [playback regressions](playback-regressions.md).
+Compare the `shinema-app-screens` (web) and `shinema-app-android-tv-screens` (emulator) images to see that the TV and web builds look the same. An emulator is not a Shield: decoding, frame rate and remote feel still need the real device.
 
-## JavaScript checks
+## Installing a development APK
 
-From the repository root, use `npm ci --ignore-scripts --no-audit --no-fund`, `npm run lint` and `npm run format:check`. ESLint checks JS/TS in both clients, shared packages and scripts for basic code errors and unused variables. Existing TypeScript compilation and all existing tests remain separate checks.
+The Android APKs are release builds signed with the default development key that `expo prebuild` generates, so they install directly:
 
-Prettier checks new JS/TS files, root tooling/configuration and this CI workflow. `.prettierignore` lists the existing JS/TS formatting baseline so this change does not rewrite unrelated source. Remove a file's exact entry when intentionally formatting it; new source files are checked automatically. Existing source remains covered by ESLint. Exact development-tool versions and their transitive closure are locked in the root `package-lock.json`.
+```bash
+adb install shinema-app-android-tv.apk
+```
 
-Rust caches contain only Cargo registry/git dependencies and build output, separated by job, runner OS, Rust version, lockfile and source hash. They never include Cargo configuration/credentials or `.local` application state. Workflows retain read-only repository permissions and SHA-pinned actions, run on PRs and main, and do not use path filters that could strand required checks.
+They use the package name `io.shinema.tv`, the same as the previous TV client. Android only installs over an existing app signed with the same key; if the old app was signed differently, uninstall it first.
 
-## Main enforcement sequence
+## Caches and permissions
 
-Require pull requests and successful checks without requiring unavailable reviewers. Verify check names and a successful run before changing protection. Initially only the existing `web-preview`, `server-and-contracts` and `android-release` checks are eligible. Add `javascript-quality` only after this workflow is merged and a main run succeeds; never require a new check while main cannot produce it. Repository settings are managed separately from this PR. Merging still requires explicit approval under the repository working rules.
-
-## Generated UI comparison evidence
-
-The web-preview job runs the full synthetic library workload with 1,457 original generated entries. It captures ready-state Movies/TV screenshots from the pinned before-client revision `c2d82902fab5fc9e4e16555d5978df943f5ab865` and the current client on the same current backend/catalog. It records the successful desktop Chromium interactions silently and without trimming. Provider access is disabled, writable state is isolated, browser traffic is restricted to loopback, and every before-client source file is checked against the pinned revision.
-
-The dedicated `shinema-generated-ui-evidence-<head>` artifact contains four PNG screenshots, one WebM recording and a provenance JSON with source revisions, workload checks and SHA-256 hashes. An explicit allowlist, signature/dimension checks, video-only duration bounds, private-marker checks and provenance/hash validation must pass before the pinned upload action runs. The general build/media exclusions remain in force for other artifacts. No NAS data or development `.local` files are uploaded. Artifact links are in the run summary and PR description; GitHub may require sign-in and artifacts expire after 14 days. This is desktop visual/integration evidence, not a Shield frame-time or remote-input benchmark.
-
-Native-browser HLS resume has application logic regression coverage; Safari/iOS native-HLS execution was not performed in this Windows environment.
+Rust caches hold only Cargo registry/git dependencies and build output, keyed by runner OS, toolchain, lockfile and source hash. Workflows use read-only repository permissions and SHA-pinned actions, and run without path filters so required checks are never stranded.
