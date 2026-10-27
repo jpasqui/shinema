@@ -952,7 +952,8 @@ impl Engine {
             .expect("Metadata pending")
             .contains(&q.key())
     }
-    pub fn image(&self, item: &Media, wide: bool) -> io::Result<Vec<u8>> {
+    /// The cached artwork and its cache key, which identifies sized variants.
+    pub fn image_source(&self, item: &Media, wide: bool) -> io::Result<(String, Vec<u8>)> {
         self.purge()?;
         let q = query(item, false).ok_or_else(|| io::Error::other("No metadata query"))?;
         let record = self
@@ -974,7 +975,8 @@ impl Engine {
                 params![now(), key],
             );
         }
-        fs::read(self.images.join(key))
+        let bytes = fs::read(self.images.join(&key))?;
+        Ok((key, bytes))
     }
     pub fn status(&self) -> Value {
         json!({"tmdbConfigured":self.http.token.is_some(),"tvmazeEnabled":self.http.tvmaze,"pending":self.pending.lock().expect("Metadata pending").len()})

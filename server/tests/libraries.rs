@@ -10,6 +10,14 @@ use shinema_server::{Library, router_with_admin_token};
 use std::path::Path;
 use tower::ServiceExt;
 
+/// Progress responses carry the server's `updatedAt`; compare the position only.
+fn without_timestamp(mut value: serde_json::Value) -> serde_json::Value {
+    if let Some(object) = value.as_object_mut() {
+        object.remove("updatedAt");
+    }
+    value
+}
+
 // A public synthetic fixture, never an installed operator credential.
 const TOKEN: &str = "synthetic-library-test-operator-token-000000";
 
@@ -188,7 +196,7 @@ async fn renamed_ordered_hidden_and_nested_libraries_preserve_media_progress_and
         "anime"
     );
     assert_eq!(
-        get(&router, &format!("/api/media/{anime_id}/progress")).await,
+        without_timestamp(get(&router, &format!("/api/media/{anime_id}/progress")).await),
         progress
     );
     assert_eq!(
@@ -224,7 +232,7 @@ async fn renamed_ordered_hidden_and_nested_libraries_preserve_media_progress_and
     assert_eq!(restored["items"][0]["id"], anime_id);
     assert_eq!(restored["items"][0]["seriesId"], new_series);
     assert_eq!(
-        get(&reopened, &format!("/api/media/{anime_id}/progress")).await,
+        without_timestamp(get(&reopened, &format!("/api/media/{anime_id}/progress")).await),
         progress
     );
 }
@@ -617,7 +625,7 @@ async fn unknown_content_type_survives_legacy_saves_restart_and_preserves_progre
     }
     assert_eq!(get(&router, "/api/series?library=tv").await["total"], 0);
     assert_eq!(
-        get(&router, &format!("/api/media/{id}/progress")).await,
+        without_timestamp(get(&router, &format!("/api/media/{id}/progress")).await),
         progress
     );
     // A removed source would normally produce404/409.422 demonstrates that
@@ -689,7 +697,7 @@ async fn unknown_content_type_survives_legacy_saves_restart_and_preserves_progre
         "Registry seam never expands indexed file formats"
     );
     assert_eq!(
-        get(&reopened, &format!("/api/media/{id}/progress")).await,
+        without_timestamp(get(&reopened, &format!("/api/media/{id}/progress")).await),
         progress
     );
     assert_eq!(get(&reopened, "/api/content-registry").await, registry);
@@ -709,7 +717,7 @@ async fn unknown_content_type_survives_legacy_saves_restart_and_preserves_progre
         StatusCode::OK
     );
     assert_eq!(
-        get(&reopened, &format!("/api/media/{id}/progress")).await,
+        without_timestamp(get(&reopened, &format!("/api/media/{id}/progress")).await),
         progress
     );
     assert_eq!(

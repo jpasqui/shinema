@@ -42,6 +42,24 @@ class ReaderTests(unittest.TestCase):
             self.assertEqual(result['linksSkipped'], 1)
             self.assertEqual(result['ignoredFiles'], 1)
 
+    @unittest.skipIf(hasattr(os, 'geteuid') and os.geteuid() == 0, 'root ignores directory permissions')
+    def test_unreadable_folders_are_skipped_and_counted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'movies'
+            readable = root / 'Readable'
+            locked = root / 'lost+found'
+            readable.mkdir(parents=True)
+            locked.mkdir()
+            (readable / 'film.mkv').write_bytes(b'fixture')
+            (locked / 'hidden.mkv').write_bytes(b'fixture')
+            locked.chmod(0)
+            try:
+                result = reader.scan({'movies': str(root)}, extensions)
+            finally:
+                locked.chmod(0o700)
+            self.assertEqual([item['relative'] for item in result['items']], ['movies/Readable/film.mkv'])
+            self.assertEqual(result['unreadable'], 1)
+
     def test_changed_identity_and_traversal_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

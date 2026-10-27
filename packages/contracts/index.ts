@@ -494,7 +494,7 @@ export function defaultSubtitle(
     dut: 'nl',
   };
   const base = (language: string) => {
-    const tag = language.toLowerCase().split('-')[0];
+    const tag = language.toLowerCase().split('-')[0] ?? '';
     return aliases[tag] ?? tag;
   };
   for (const language of languages) {

@@ -151,7 +151,8 @@ fn fixture() -> (tempfile::TempDir, Arc<Library>, String) {
     std::fs::create_dir(&root).unwrap();
     std::fs::write(root.join("Movie.mp4"), b"synthetic-byte-fixture").unwrap();
     let library = Library::open(&root, &temporary.path().join("state")).unwrap();
-    let entry = library.entries.values().next().unwrap();
+    let index = library.index();
+    let entry = index.entries.values().next().unwrap();
     let id = entry.media.id.clone();
     // Byte fixtures intentionally have no codecs. Seed the empty embedded
     // probe so these HTTP safety tests need no external tool or live listener.
@@ -337,7 +338,7 @@ fn sidecar_opens_refuse_paths_links_special_files_and_oversize() {
         }
     }
     assert!(
-        external(&library, library.entries.values().next().unwrap())
+        external(&library, library.index().entries.values().next().unwrap())
             .unwrap()
             .0
             .is_empty()
@@ -484,7 +485,7 @@ async fn generated_embedded_formats_preserve_media_time_and_report_styled_tracks
         axum::serve(listener, app).await.unwrap();
     });
     let client = reqwest::Client::new();
-    for entry in library.entries.values() {
+    for entry in library.index().entries.values() {
         let base = format!("http://{address}");
         let data: serde_json::Value = client
             .get(format!("{base}/api/media/{}/subtitles", entry.media.id))

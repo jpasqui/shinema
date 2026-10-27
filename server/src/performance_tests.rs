@@ -11,6 +11,8 @@ pub(super) fn fixture(movies: u32, shows: u32, episodes: u32) -> (tempfile::Temp
     let mut library = Library::open(&root, &temp.path().join("state")).unwrap();
     let owned = Arc::get_mut(&mut library).unwrap();
     owned.database = Mutex::new(Connection::open_in_memory().unwrap());
+    devices::initialize(owned.database.get_mut().unwrap()).unwrap();
+    let scanned = Arc::get_mut(owned.index.get_mut().unwrap()).unwrap();
     for index in 0..movies + shows * episodes {
         let movie = index < movies;
         let number = index.saturating_sub(movies);
@@ -24,7 +26,7 @@ pub(super) fn fixture(movies: u32, shows: u32, episodes: u32) -> (tempfile::Temp
             ))
         };
         let id = media_id(&relative);
-        owned.entries.insert(
+        scanned.entries.insert(
             id.clone(),
             Entry {
                 media: Media {
@@ -42,16 +44,18 @@ pub(super) fn fixture(movies: u32, shows: u32, episodes: u32) -> (tempfile::Temp
             },
         );
     }
-    owned.source_folders.extend(["movies".into(), "tv".into()]);
+    scanned
+        .source_folders
+        .extend(["movies".into(), "tv".into()]);
     let configuration = libraries::initialize(
         owned.database.get_mut().unwrap(),
-        &owned.entries,
-        &owned.source_folders,
+        &scanned.entries,
+        &scanned.source_folders,
     )
     .unwrap();
-    let assigned = libraries::assign(&owned.entries, &configuration);
+    let assigned = libraries::assign(&scanned.entries, &configuration);
     for media in &assigned {
-        owned.entries.get_mut(&media.id).unwrap().media = media.clone();
+        scanned.entries.get_mut(&media.id).unwrap().media = media.clone();
     }
     catalog::replace_index(owned.database.get_mut().unwrap(), assigned.into_iter()).unwrap();
     (temp, library)
@@ -87,6 +91,7 @@ fn browse_benchmark() {
     let _runtime = runtime.enter();
     let (_temp, library) = fixture(100_000, 1000, 20);
     let sid = library
+        .index()
         .entries
         .values()
         .find_map(|entry| entry.media.classification.series_id.clone())

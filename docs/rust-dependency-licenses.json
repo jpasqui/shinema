@@ -2,6 +2,12 @@
   "source": "Cargo metadata with Cargo.lock",
   "packages": [
     {
+      "name": "adler2",
+      "version": "2.0.1",
+      "license": "0BSD OR MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
       "name": "ambient-authority",
       "version": "0.0.2",
       "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
@@ -10,6 +16,12 @@
     {
       "name": "atomic-waker",
       "version": "1.1.2",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "name": "autocfg",
+      "version": "1.5.1",
       "license": "Apache-2.0 OR MIT",
       "source": "registry"
     },
@@ -53,6 +65,18 @@
       "name": "bumpalo",
       "version": "3.20.3",
       "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "name": "bytemuck",
+      "version": "1.25.2",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "name": "byteorder-lite",
+      "version": "0.1.0",
+      "license": "Unlicense OR MIT",
       "source": "registry"
     },
     {
@@ -110,6 +134,12 @@
       "source": "registry"
     },
     {
+      "name": "crc32fast",
+      "version": "1.5.3",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
       "name": "crypto-common",
       "version": "0.1.7",
       "license": "MIT OR Apache-2.0",
@@ -152,8 +182,20 @@
       "source": "registry"
     },
     {
+      "name": "fdeflate",
+      "version": "0.3.7",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
       "name": "find-msvc-tools",
       "version": "0.1.14",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "name": "flate2",
+      "version": "1.1.10",
       "license": "MIT OR Apache-2.0",
       "source": "registry"
     },
@@ -338,6 +380,12 @@
       "source": "registry"
     },
     {
+      "name": "image",
+      "version": "0.25.10",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
       "name": "io-extras",
       "version": "0.18.4",
       "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
@@ -428,9 +476,33 @@
       "source": "registry"
     },
     {
+      "name": "miniz_oxide",
+      "version": "0.8.9",
+      "license": "MIT OR Zlib OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "name": "miniz_oxide",
+      "version": "0.9.1",
+      "license": "MIT OR Zlib OR Apache-2.0",
+      "source": "registry"
+    },
+    {
       "name": "mio",
       "version": "1.2.4",
       "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "name": "moxcms",
+      "version": "0.8.1",
+      "license": "BSD-3-Clause OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "name": "num-traits",
+      "version": "0.2.19",
+      "license": "MIT OR Apache-2.0",
       "source": "registry"
     },
     {
@@ -458,6 +530,12 @@
       "source": "registry"
     },
     {
+      "name": "png",
+      "version": "0.18.1",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
       "name": "potential_utf",
       "version": "0.1.6",
       "license": "Unicode-3.0",
@@ -467,6 +545,12 @@
       "name": "proc-macro2",
       "version": "1.0.107",
       "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "name": "pxfm",
+      "version": "0.1.30",
+      "license": "BSD-3-Clause OR Apache-2.0",
       "source": "registry"
     },
     {
@@ -644,6 +728,12 @@
       "source": "registry"
     },
     {
+      "name": "simd-adler32",
+      "version": "0.3.10",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
       "name": "slab",
       "version": "0.4.12",
       "license": "MIT",
@@ -675,6 +765,12 @@
     },
     {
       "name": "syn",
+      "version": "2.0.119",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "name": "syn",
       "version": "3.0.9",
       "license": "MIT OR Apache-2.0",
       "source": "registry"
@@ -695,6 +791,12 @@
       "name": "tempfile",
       "version": "3.27.0",
       "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "name": "termcolor",
+      "version": "1.4.1",
+      "license": "Unlicense OR MIT",
       "source": "registry"
     },
     {
@@ -784,6 +886,18 @@
     {
       "name": "try-lock",
       "version": "0.2.5",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "name": "ts-rs",
+      "version": "12.0.1",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "name": "ts-rs-macros",
+      "version": "12.0.1",
       "license": "MIT",
       "source": "registry"
     },
@@ -887,6 +1001,12 @@
       "name": "webpki-roots",
       "version": "1.0.9",
       "license": "CDLA-Permissive-2.0",
+      "source": "registry"
+    },
+    {
+      "name": "winapi-util",
+      "version": "0.1.11",
+      "license": "Unlicense OR MIT",
       "source": "registry"
     },
     {
@@ -1028,9 +1148,27 @@
       "source": "registry"
     },
     {
+      "name": "zlib-rs",
+      "version": "0.6.8",
+      "license": "Zlib",
+      "source": "registry"
+    },
+    {
       "name": "zmij",
       "version": "1.0.23",
       "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "name": "zune-core",
+      "version": "0.5.3",
+      "license": "MIT OR Apache-2.0 OR Zlib",
+      "source": "registry"
+    },
+    {
+      "name": "zune-jpeg",
+      "version": "0.5.15",
+      "license": "MIT OR Apache-2.0 OR Zlib",
       "source": "registry"
     }
   ]

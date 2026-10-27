@@ -55,6 +55,7 @@ fn segment_length(duration: f64, index: u32) -> f64 {
     }
 }
 #[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct Playback {
     pub duration_seconds: f64,

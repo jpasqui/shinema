@@ -190,6 +190,7 @@ fn large_catalog_http_payload_and_query_work_stay_within_explicit_budgets() {
     let _runtime = runtime.enter();
     let (_temp, library) = performance_tests::fixture(100_000, 1000, 20);
     let series_id = library
+        .index()
         .entries
         .values()
         .find_map(|entry| entry.media.classification.series_id.as_ref())
@@ -261,6 +262,7 @@ fn large_catalog_http_payload_and_query_work_stay_within_explicit_budgets() {
         assert!(observed.replace(Work::default()).is_none());
     });
     let visited = library
+        .index()
         .entries
         .values()
         .filter(|entry| entry.media.classification.series_id.as_ref() == Some(&series_id))
@@ -352,8 +354,9 @@ fn series_representatives_preserve_the_first_media_id_without_full_page_scans() 
     let (_, representatives) =
         catalog::series_with_representatives(&db, catalog::CatalogQuery::default()).unwrap();
     assert_eq!(representatives.len(), 10);
+    let index = library.index();
     for (sid, representative) in &representatives {
-        let former = library
+        let former = index
             .entries
             .values()
             .find(|entry| entry.media.classification.series_id.as_ref() == Some(sid))
@@ -375,7 +378,7 @@ fn series_representatives_preserve_the_first_media_id_without_full_page_scans() 
         Some("Updated canonical presentation")
     );
     assert!(
-        library.entries[&canonical.id]
+        library.index().entries[&canonical.id]
             .media
             .presentation
             .summary

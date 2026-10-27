@@ -21,6 +21,7 @@ jobs:
           cache-dependency-path: package-lock.json
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run lint && npm run format:check
+      - run: npm run test:core && npm run typecheck:core
       - run: node --test scripts/libraries-diagnostics.test.mjs
       - run: python3 scripts/test_ci_artifacts.py
   web-preview:
@@ -170,6 +171,22 @@ jobs:
       - run: cargo +1.94.0 fmt --all --check
       - run: cargo +1.94.0 clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo +1.94.0 test --workspace --locked
+      # cargo test regenerates the client types from the Rust API structs.
+      - name: Save generated client types
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shinema-generated-types-${{ github.event.pull_request.head.sha || github.sha }}
+          path: packages/core/src/generated/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Generated client types match the server
+        run: |
+          if [ -n "$(git status --porcelain -- packages/core/src/generated)" ]; then
+            git status --porcelain -- packages/core/src/generated
+            echo "Client types are out of date. Commit packages/core/src/generated from this run's artifact (or run cargo test locally)."
+            exit 1
+          fi
       - name: Synthetic remote reader policy regressions
         run: python3 -m unittest discover -s server/tests -p 'test_remote_reader.py'
       - run: cargo +1.94.0 build --workspace --locked
@@ -218,4 +235,163 @@ jobs:
             docs/dependency-licenses.md
             LICENSE
           if-no-files-found: error
+          retention-days: 14
+  app:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.14.0'
+          cache: npm
+          cache-dependency-path: apps/shinema/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: apps/shinema
+      - run: npm run typecheck && npm test
+        working-directory: apps/shinema
+      - run: npx expo export --platform web --output-dir dist
+        working-directory: apps/shinema
+        env:
+          CI: 'true'
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Generate a synthetic test clip
+        run: ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=640x360:rate=24:duration=30 -f lavfi -i sine=frequency=440:duration=30 -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 30 -c:a aac -b:a 64k -movflags +faststart -shortest "$RUNNER_TEMP/fixture.mp4"
+      - run: npx playwright install --with-deps chromium
+        working-directory: apps/shinema
+      - name: Browser behaviour at TV and desktop sizes
+        run: npm run test:e2e
+        working-directory: apps/shinema
+        env:
+          SHINEMA_MOCK_VIDEO: ${{ runner.temp }}/fixture.mp4
+      - name: Save browser screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shinema-app-screens-${{ github.event.pull_request.head.sha || github.sha }}
+          path: apps/shinema/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Save web build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shinema-app-web-${{ github.event.pull_request.head.sha || github.sha }}
+          path: apps/shinema/dist/
+          if-no-files-found: error
+          retention-days: 14
+  app-android-tv:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.14.0'
+          cache: npm
+          cache-dependency-path: apps/shinema/package-lock.json
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: microsoft
+          java-version: '17'
+      - run: npm ci --no-audit --no-fund
+        working-directory: apps/shinema
+      # Generates the Android TV project (leanback launcher, TV banner) from app.json.
+      - run: npx expo prebuild --platform android --no-install --clean
+        working-directory: apps/shinema
+        env:
+          EXPO_TV: '1'
+          CI: 'true'
+      - run: ./gradlew --no-daemon assembleRelease -PreactNativeDevServerIp=127.0.0.1
+        working-directory: apps/shinema/android
+        env:
+          CI: 'true'
+          # Logs remote keys and seeks for the emulator check below.
+          EXPO_PUBLIC_SHINEMA_LOG_KEYS: '1'
+      - name: Save Android TV development APK
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shinema-app-android-tv-${{ github.event.pull_request.head.sha || github.sha }}
+          path: apps/shinema/android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14
+  app-android-phone:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.14.0'
+          cache: npm
+          cache-dependency-path: apps/shinema/package-lock.json
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: microsoft
+          java-version: '17'
+      - run: npm ci --no-audit --no-fund
+        working-directory: apps/shinema
+      # The same app without EXPO_TV: a touch-screen phone and tablet build.
+      - run: npx expo prebuild --platform android --no-install --clean
+        working-directory: apps/shinema
+        env:
+          CI: 'true'
+      - run: ./gradlew --no-daemon assembleRelease -PreactNativeDevServerIp=127.0.0.1
+        working-directory: apps/shinema/android
+        env:
+          CI: 'true'
+      - name: Save Android phone development APK
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shinema-app-android-phone-${{ github.event.pull_request.head.sha || github.sha }}
+          path: apps/shinema/android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14
+  app-android-tv-screens:
+    needs: app-android-tv
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.14.0'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: shinema-app-android-tv-${{ github.event.pull_request.head.sha || github.sha }}
+          path: apk
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Generate a synthetic test clip
+        run: ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=640x360:rate=24:duration=120 -f lavfi -i sine=frequency=440:duration=120 -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 30 -c:a aac -b:a 64k -movflags +faststart -shortest "$RUNNER_TEMP/fixture.mp4"
+      - name: Start the mock server
+        run: nohup node apps/shinema/tests/mock-server.mjs 8790 >"$RUNNER_TEMP/mock.log" 2>&1 &
+        env:
+          SHINEMA_MOCK_VIDEO: ${{ runner.temp }}/fixture.mp4
+          SHINEMA_MOCK_DURATION: '120'
+          SHINEMA_MOCK_ARTWORK: '1'
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Drive the Android TV build with a D-pad
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 34
+          target: android-tv
+          arch: x86
+          profile: tv_1080p
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          # The behaviour checks fail the job; emulator timings are
+          # indicative only, so the budget run never does.
+          script: bash apps/shinema/tests/android-tv-screens.sh "$(ls apk/*.apk | head -1)" apps/shinema/test-results/android-tv; result=$?; bash apps/shinema/tests/tv-budgets.sh apps/shinema/test-results/android-tv/budgets.json || true; exit $result
+      - name: Save Android TV screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shinema-app-android-tv-screens-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            apps/shinema/test-results/android-tv/
+            ${{ runner.temp }}/mock.log
+          if-no-files-found: ignore
           retention-days: 14

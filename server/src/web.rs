@@ -19,18 +19,19 @@ pub async fn response(root: Option<&Path>, uri: Uri) -> Result<Response, StatusC
     } else {
         raw.strip_prefix('/').ok_or(StatusCode::NOT_FOUND)?
     };
-    if relative != "index.html"
-        && (!relative.starts_with("assets/")
-            || !relative
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"/-_.".contains(&byte))
-            || relative
-                .split('/')
-                .any(|part| part.is_empty() || part.starts_with('.'))
-            || !relative.ends_with(".js")
-                && !relative.ends_with(".css")
-                && !relative.ends_with(".svg"))
-    {
+    // Generated build output only: Vite's assets/ and Expo's _expo/static/
+    // and assets/ (bundled fonts), plus the favicon. Never project files.
+    let generated = (relative.starts_with("assets/") || relative.starts_with("_expo/static/"))
+        && relative
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"/-_.@".contains(&byte))
+        && !relative
+            .split('/')
+            .any(|part| part.is_empty() || part.starts_with('.'))
+        && [".js", ".css", ".svg", ".ttf", ".png"]
+            .iter()
+            .any(|extension| relative.ends_with(extension));
+    if relative != "index.html" && relative != "favicon.ico" && !generated {
         return Err(StatusCode::NOT_FOUND);
     }
     let path = crate::checked_file(root, Path::new(relative)).map_err(|_| StatusCode::NOT_FOUND)?;
@@ -43,6 +44,12 @@ pub async fn response(root: Option<&Path>, uri: Uri) -> Result<Response, StatusC
         "text/css"
     } else if relative.ends_with(".svg") {
         "image/svg+xml"
+    } else if relative.ends_with(".ttf") {
+        "font/ttf"
+    } else if relative.ends_with(".png") {
+        "image/png"
+    } else if relative.ends_with(".ico") {
+        "image/x-icon"
     } else {
         "text/html; charset=utf-8"
     };
@@ -73,6 +80,30 @@ mod tests {
         std::fs::write(root.join("index.html"), "Generated UI").unwrap();
         std::fs::write(root.join("assets/app-test.js"), "Generated script").unwrap();
         std::fs::write(root.join("private.key"), "private").unwrap();
+        let fonts = root.join("assets/node_modules/@expo-google-fonts/figtree");
+        std::fs::create_dir_all(&fonts).unwrap();
+        std::fs::write(fonts.join("Figtree_400Regular.abc.ttf"), "font").unwrap();
+        std::fs::create_dir_all(root.join("_expo/static/js/web")).unwrap();
+        std::fs::write(root.join("_expo/static/js/web/index-abc.js"), "bundle").unwrap();
+        for path in [
+            "/assets/node_modules/@expo-google-fonts/figtree/Figtree_400Regular.abc.ttf",
+            "/_expo/static/js/web/index-abc.js",
+        ] {
+            assert!(
+                response(Some(root), path.parse().unwrap()).await.is_ok(),
+                "{path}"
+            );
+        }
+        for path in [
+            "/_expo/../private.key",
+            "/_expo/static/private.key",
+            "/metadata.json",
+        ] {
+            assert!(
+                response(Some(root), path.parse().unwrap()).await.is_err(),
+                "{path}"
+            );
+        }
         assert!(response(Some(root), "/".parse().unwrap()).await.is_ok());
         assert!(
             response(Some(root), "/assets/app-test.js".parse().unwrap())

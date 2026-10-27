@@ -1,0 +1,54 @@
+{
+  "name": "shinema-app",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start",
+    "web": "expo start --web",
+    "android:tv": "cross-env EXPO_TV=1 expo run:android",
+    "prebuild:tv": "cross-env EXPO_TV=1 expo prebuild --platform android --clean",
+    "export:web": "expo export --platform web",
+    "test": "node --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@expo-google-fonts/figtree": "0.4.1",
+    "@expo-google-fonts/source-serif-4": "0.4.2",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "expo": "~57.0.13",
+    "expo-build-properties": "~57.0.11",
+    "expo-file-system": "~57.0.3",
+    "expo-font": "~57.0.1",
+    "expo-image": "~57.0.3",
+    "expo-keep-awake": "~57.0.1",
+    "expo-linear-gradient": "~57.0.2",
+    "expo-splash-screen": "~57.0.6",
+    "expo-status-bar": "~57.0.1",
+    "expo-video": "~57.0.2",
+    "hls.js": "1.7.3",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "npm:react-native-tvos@0.86-stable",
+    "react-native-web": "~0.21.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.0",
+    "@react-native-tvos/config-tv": "^0.1.7",
+    "@types/react": "~19.2.2",
+    "cross-env": "^10.1.0",
+    "typescript": "~6.0.3"
+  },
+  "overrides": {
+    "react-native": "$react-native"
+  },
+  "expo": {
+    "install": {
+      "exclude": [
+        "react-native"
+      ]
+    }
+  }
+}

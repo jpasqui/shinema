@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Drives the Android TV build in an emulator with D-pad key events against
+# the mock server (reached from the emulator as 10.0.2.2) and saves
+# screenshots of each screen, for side-by-side review with the web ones.
+#   tests/android-tv-screens.sh <apk> <output-dir>
+set -euo pipefail
+apk="$1"
+out="$2"
+mkdir -p "$out"
+
+shot() {
+  sleep "${2:-2}"
+  adb exec-out screencap -p >"$out/$1.png"
+}
+key() { adb shell input keyevent "$1"; }
+
+adb install -r "$apk"
+# Records the walkthrough for PR evidence; a recording failure is not a test
+# failure.
+adb shell screenrecord --size 1280x720 --bit-rate 4000000 /sdcard/walkthrough.mp4 &
+recorder=$!
+adb shell am start -W -n io.shinema.tv/.MainActivity
+shot connect 15
+# The address field has focus on the first screen.
+adb shell input text "10.0.2.2:8790"
+key KEYCODE_ENTER
+# Home opens with the featured title's Play button focused; Down reaches the
+# Movies row, whose second title is Northern Lines.
+shot home 10
+key KEYCODE_DPAD_DOWN
+shot home-rail 2
+key KEYCODE_DPAD_RIGHT
+shot home-rail-focus 2
+key KEYCODE_DPAD_CENTER
+shot detail 4
+key KEYCODE_DPAD_CENTER
+shot player 8
+adb shell dumpsys window | grep -E "mCurrentFocus|mFocusedApp" >"$out/focus-in-player.txt" || true
+key KEYCODE_DPAD_RIGHT
+key KEYCODE_DPAD_RIGHT
+shot player-seek 2
+key KEYCODE_BACK
+shot back-to-detail 3
+key KEYCODE_BACK
+shot back-to-home 4
+# What Home shows and which control has focus; Back should return to the
+# poster we opened.
+adb exec-out uiautomator dump /dev/tty >"$out/back-to-home.xml" 2>/dev/null || true
+adb shell pkill -INT screenrecord || true
+wait "$recorder" || true
+sleep 2
+adb pull /sdcard/walkthrough.mp4 "$out/walkthrough.mp4" || true
+adb logcat -d -s ReactNativeJS:V >"$out/react-native.log" || true
+adb logcat -d >"$out/logcat.txt" || true
+
+# Behaviour checks, so a regression fails the job instead of hiding in a
+# screenshot.
+fail=0
+if ! adb shell dumpsys activity activities | grep -q "ResumedActivity.*io.shinema.tv"; then
+  echo "FAIL: the app is no longer in the foreground after Back"
+  fail=1
+fi
+if grep -q " E ReactNativeJS" "$out/react-native.log"; then
+  echo "FAIL: JavaScript errors in the log"
+  grep " E ReactNativeJS" "$out/react-native.log" | head -5
+  fail=1
+fi
+focused=$(grep -o '<node[^>]*focused="true"[^>]*>' "$out/back-to-home.xml" | grep -o 'content-desc="[^"]*"' | head -1 || true)
+echo "Focused after Back: ${focused:-unknown}"
+if [ -z "$focused" ]; then
+  echo "WARN: could not read focus after Back"
+elif ! echo "$focused" | grep -q "Northern Lines"; then
+  echo "FAIL: Back did not return focus to the poster that was opened"
+  fail=1
+fi
+if [ -s "$out/back-to-home.xml" ] && ! grep -q 'text="Continue watching"' "$out/back-to-home.xml"; then
+  echo "FAIL: Home does not show Continue watching after watching part of a title"
+  fail=1
+fi
+# Northern Lines was played from about 8 s and moved 20 s forward with two
+# Right presses; leaving the player saved that position to the server, and
+# the 2-minute clip is still in progress, so the server lists it.
+id=$(node -e 'console.log(require("crypto").createHash("sha256").update("movies/Northern Lines.mkv").digest("hex"))')
+position=$(curl -fsS "http://127.0.0.1:8790/api/media/$id/progress" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s)?.positionSeconds ?? 0))')
+echo "Saved position after seeking: ${position}s"
+if ! node -e "process.exit(Number('$position') >= 20 ? 0 : 1)"; then
+  echo "FAIL: D-pad seeking did not move playback (saved ${position}s, expected at least 20s)"
+  fail=1
+fi
+if ! curl -fsS "http://127.0.0.1:8790/api/continue" | grep -q "$id"; then
+  echo "FAIL: the server's continue-watching list does not include Northern Lines"
+  fail=1
+fi
+exit "$fail"

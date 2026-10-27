@@ -374,10 +374,10 @@ async fn an_existing_catalog_schema_is_rebuilt_without_losing_progress() {
         let app = router(Library::open(&root, &state).unwrap());
         let (status, progress) = get(&app, &format!("/api/media/{id}/progress")).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(
-            progress,
-            serde_json::json!({"positionSeconds":42.0,"durationSeconds":120.0})
-        );
+        assert_eq!(progress["positionSeconds"], 42.0);
+        assert_eq!(progress["durationSeconds"], 120.0);
+        // Rows saved before progress ordering existed carry no timestamp.
+        assert!(progress.get("updatedAt").is_none());
         let (status, catalog) = get(&app, &search_path("/api/catalog", "éclair")).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(catalog["total"], 1);
@@ -390,4 +390,88 @@ async fn an_existing_catalog_schema_is_rebuilt_without_losing_progress() {
         let (_, series) = get(&app, "/api/series").await;
         assert_eq!(series["total"], 0);
     }
+}
+
+#[tokio::test]
+async fn continue_watching_lists_started_titles_newest_first() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("media");
+    for title in ["Alpha", "Bravo", "Charlie", "Delta", "Echo"] {
+        video(&root, &format!("movies/{title}.mkv"));
+    }
+    let state = temp.path().join("state");
+    let app = router(Library::open(&root, &state).unwrap());
+    let (_, catalog) = get(&app, "/api/catalog").await;
+    let id = |title: &str| {
+        catalog["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["title"] == title)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let save = |title: &str, position: u32, updated_at: u64| {
+        let request = Request::builder()
+            .header("host", "127.0.0.1:8787")
+            .method("PUT")
+            .uri(format!("/api/media/{}/progress", id(title)))
+            .header("content-type", "application/json")
+            .body(Body::from(format!(
+                r#"{{"positionSeconds":{position},"durationSeconds":6000,"updatedAt":{updated_at}}}"#
+            )))
+            .unwrap();
+        let app = app.clone();
+        async move { app.oneshot(request).await.unwrap().status() }
+    };
+    // In progress, finished, barely started, and in progress more recently.
+    assert_eq!(save("Alpha", 600, 1_000).await, StatusCode::NO_CONTENT);
+    assert_eq!(save("Bravo", 5_900, 3_000).await, StatusCode::NO_CONTENT);
+    assert_eq!(save("Charlie", 5, 4_000).await, StatusCode::NO_CONTENT);
+    assert_eq!(save("Delta", 3_000, 2_000).await, StatusCode::NO_CONTENT);
+    // Echo's file disappears: its progress stays but it is not offered.
+    assert_eq!(save("Echo", 900, 5_000).await, StatusCode::NO_CONTENT);
+    drop(app);
+    std::fs::remove_file(root.join("movies/Echo.mkv")).unwrap();
+    let app = router(Library::open(&root, &state).unwrap());
+
+    let (status, list) = get(&app, "/api/continue").await;
+    assert_eq!(status, StatusCode::OK);
+    let titles: Vec<&str> = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["media"]["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, ["Delta", "Alpha"]);
+    assert_eq!(list["items"][0]["progress"]["positionSeconds"], 3000.0);
+    assert_eq!(list["items"][0]["progress"]["updatedAt"], 2000);
+
+    let (_, one) = get(&app, "/api/continue?limit=1").await;
+    assert_eq!(one["items"].as_array().unwrap().len(), 1);
+    for bad in ["0", "101", "x"] {
+        let (status, _) = get(&app, &format!("/api/continue?limit={bad}")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "limit={bad}");
+    }
+}
+
+#[test]
+fn in_progress_matches_the_clients_watch_state_thresholds() {
+    let at = |position: f64, duration: f64| shinema_server::Progress {
+        position_seconds: position,
+        duration_seconds: duration,
+        updated_at: None,
+    };
+    // Not started: under ten seconds in.
+    assert!(!at(9.9, 6000.0).in_progress());
+    assert!(at(10.0, 6000.0).in_progress());
+    // Watched: 95% through, the last 30 s of anything over two minutes, or
+    // the last 3 s of a short clip.
+    assert!(!at(5700.0, 6000.0).in_progress());
+    assert!(!at(5970.0, 6000.0).in_progress());
+    assert!(at(5960.0, 7000.0).in_progress());
+    assert!(at(60.0, 100.0).in_progress());
+    assert!(!at(97.0, 100.0).in_progress());
 }

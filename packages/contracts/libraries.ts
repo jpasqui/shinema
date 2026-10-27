@@ -123,7 +123,7 @@ export function parseLibraryConfiguration(
     throw new Error('Invalid source choices');
   const libraries = parsed.libraries.map((item, index) => {
     const sourceFolders = (raw.libraries as Record<string, unknown>[])[index]
-      .sourceFolders;
+      ?.sourceFolders;
     if (
       !Array.isArray(sourceFolders) ||
       sourceFolders.length > 64 ||

@@ -61,21 +61,39 @@ def opened(root, relative):
 
 def scan(roots, extensions):
     extensions = approved_extensions(extensions)
-    report = {'items': [], 'filesSeen': 0, 'ignoredFiles': 0, 'linksSkipped': 0}
+    report = {'items': [], 'filesSeen': 0, 'ignoredFiles': 0, 'linksSkipped': 0, 'unreadable': 0}
 
+    # Below each root, a folder or file that cannot be read (permissions,
+    # removed mid-scan, a non-UTF-8 name) is skipped and counted so one bad
+    # entry never stops the whole library from loading.
     def walk(fd, prefix):
-        with os.scandir(fd) as iterator:
+        try:
+            iterator = os.scandir(fd)
+        except OSError:
+            report['unreadable'] += 1
+            return
+        with iterator:
             for entry in iterator:
-                name = entry.name
-                name.encode('utf-8', 'strict')  # fail visibly rather than lose path identity
-                info = entry.stat(follow_symlinks=False)
+                try:
+                    name = entry.name
+                    name.encode('utf-8', 'strict')  # skip rather than lose path identity
+                    info = entry.stat(follow_symlinks=False)
+                except (OSError, UnicodeError):
+                    report['unreadable'] += 1
+                    continue
                 relative = prefix + '/' + name
                 if stat.S_ISLNK(info.st_mode):
                     report['linksSkipped'] += 1
                 elif stat.S_ISDIR(info.st_mode):
-                    child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                    try:
+                        child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                    except OSError:
+                        report['unreadable'] += 1
+                        continue
                     try:
                         walk(child, relative)
+                    except RecursionError:
+                        report['unreadable'] += 1
                     finally:
                         os.close(child)
                 elif stat.S_ISREG(info.st_mode):

@@ -2,11 +2,30 @@
 
 The Rust server and TypeScript client share the field definitions in `packages/contracts/api.schema.json` and the runtime parsers in `packages/contracts/index.ts`. Unknown API versions are rejected. Client stream paths must correspond exactly to the returned opaque media ID; catalog data cannot introduce arbitrary local or remote URLs.
 
-The unauthenticated development server accepts only `localhost` or literal loopback IP request authorities, with an optional valid port. Requests must supply one `Host` or a URI authority; conflicting or duplicate authorities are rejected. Browser `Origin`, when present, must be an HTTP(S) loopback origin, and cross-site Fetch Metadata requests are rejected. These checks run before API and static-file handlers and return 403. Loopback development proxies may forward their own host/port; clients such as FFmpeg may omit `Origin`. This boundary does not provide authentication against other local applications.
+The server runs in one of two modes, chosen by `SHINEMA_BIND`:
+
+- **This computer only** (a loopback address, the default `127.0.0.1:8787`): no token is required and the loopback request checks below apply.
+- **Home network** (any other address, for example `0.0.0.0:8787`): every API route except `/health` and `/api/pairing/claim` requires a paired device token, sent as `Authorization: Bearer <token>`. Read-only media routes (`stream`, `hls`, `poster`, `backdrop`, subtitle files) also accept `?access_token=<token>`, because video, image and track elements cannot send headers. Any well-formed `Host` is accepted; a browser `Origin`, when present, must match the `Host` or be loopback, and cross-site Fetch Metadata requests are rejected. The server speaks plain HTTP; put a reverse proxy such as Caddy or Tailscale in front of it for HTTPS outside the home. See [ADR 0001](decisions/0001-client-rebuild.md).
+
+### Pairing devices
+
+1. A code is created by `POST /api/pairing/codes` from the server machine itself (loopback peer and loopback `Host`) or with the operator token in `SHINEMA_ADMIN_TOKEN`. While no device is paired, the server also prints a code at startup. Codes are six digits, shown as `482-913`, and expire after ten minutes.
+2. The device sends `POST /api/pairing/claim` with `{"code":"482-913","deviceName":"Living room Shield"}` and receives `{"deviceId","name","token"}` once. Each code works once. Wrong guesses invalidate outstanding codes after five attempts, and more than twenty failures a minute return 429.
+3. `GET /api/session` tells a client whether a token is required and which device it is. `GET /api/devices` lists devices and `DELETE /api/devices/{id}` revokes one; both use the same authority as creating codes.
+
+Tokens are 64 hexadecimal characters and are stored only as SHA-256 hashes.
+
+In loopback mode, the server accepts only `localhost` or literal loopback IP request authorities, with an optional valid port. Requests must supply one `Host` or a URI authority; conflicting or duplicate authorities are rejected. Browser `Origin`, when present, must be an HTTP(S) loopback origin, and cross-site Fetch Metadata requests are rejected. These checks run before API and static-file handlers and return 403. Loopback development proxies may forward their own host/port; clients such as FFmpeg may omit `Origin`. This boundary does not provide authentication against other local applications.
 
 | Method and path | Response |
 | --- | --- |
-| `GET /health` | Status, API version, active codec jobs and bounded-cache statistics |
+| `GET /health` | Status, API version, `authRequired`, active codec jobs and bounded-cache statistics |
+| `GET /api/session` | Whether a token is required and the calling device |
+| `POST /api/pairing/codes` | A new pairing code (server machine or operator only) |
+| `POST /api/pairing/claim` | Exchanges a code and device name for a device token |
+| `GET /api/devices` | Paired devices (server machine or operator only) |
+| `DELETE /api/devices/{id}` | Revokes a device token (server machine or operator only) |
+| `POST /api/admin/rescan` | Scans the media again and returns `{media, unreadable}` (server machine or operator only) |
 | `GET /api/catalog` | A bounded page: API version, items, total, offset, limit and nextOffset |
 | `GET /api/library` | Total media, TV, Movies and series counts |
 | `GET /api/libraries` | Versioned library descriptors: stable ID, display name, content type policy, order, visibility and registry snapshot |
@@ -20,14 +39,18 @@ The unauthenticated development server accepts only `localhost` or literal loopb
 | `GET /api/media/{id}/hls/{index}.ts` | Requested on-demand compatibility segment |
 | `GET /api/media/{id}/stream` | Direct file bytes; a single valid byte range receives 206 |
 | `HEAD /api/media/{id}/stream` | The same length/type/range headers, without a body |
+| `GET /api/media/{id}/poster`, `/backdrop` | Cached artwork; `?w=` returns a JPEG no wider than the next supported width (160, 240, 320, 480, 640, 960, 1280 or 1920) |
 | `GET /api/media/{id}/progress` | `Progress` or `null` |
-| `PUT /api/media/{id}/progress` | Validated `Progress`; successful save returns 204 |
+| `PUT /api/media/{id}/progress` | Validated `Progress`; a save returns 204, or 409 with the stored `Progress` when that is newer |
+| `GET /api/continue?limit=` | `{ items: ContinueItem[] }`: titles started but not finished, most recently saved first; `limit` 1–100, default 20 |
 
 Media has `id`, `title`, `container`, `sizeBytes`, and `streamPath`. No server filesystem path is returned. IDs hash the media-relative path, remain stable through server restarts, and change when a file is renamed. This first slice lists filename-derived titles and format/size metadata; it does not scrape posters or private metadata.
 
 Ordinary Unicode path components are joined with `/` for portable stable IDs; actual filename characters are preserved. Non-Unicode names use a versioned, length-framed encoding of raw platform units, so lossy display replacements cannot merge distinct entries. Ordinary existing path IDs remain unchanged. Titles are limited to 200 Unicode scalar values in both Rust and TypeScript, rather than 200 JavaScript UTF-16 units.
 
-Progress has finite `positionSeconds` and `durationSeconds`; position must be between zero and duration, and duration must be positive and no greater than one week. This is one shared development profile, not an authentication or multi-user system. A position within three seconds of the end starts playback from the beginning.
+Progress has finite `positionSeconds` and `durationSeconds`; position must be between zero and duration, and duration must be positive and no greater than one week. This is one shared development profile, not an authentication or multi-user system. Optional `updatedAt` is the time in Unix milliseconds when the client observed the position. The server keeps the newest write and answers an older one with 409 and the stored progress, so an offline device catching up cannot move another device's progress backwards. A missing `updatedAt` counts as the server's current time, and times ahead of the server's clock are clamped to it. A position within three seconds of the end starts playback from the beginning.
+
+`ContinueItem` is `{ media: Media, progress: Progress }`, with the same media fields and artwork paths as the catalog. A title is listed while it is in progress by the clients' rule: at least 10 seconds in, and not watched (95% through, within the last 30 seconds of anything over two minutes, or within the last 3 seconds). Progress for files no longer in the library is kept but not listed.
 
 Supported range forms are `bytes=start-end`, `bytes=start-`, and `bytes=-suffix`. Invalid, multiple and unsatisfiable ranges receive 416 and `Content-Range: bytes */size`. The original range endpoint does not implement multipart ranges or conditional `If-Range` validation. Compatibility playback is a separate full-duration HLS path. Files are opened for reading relative to a directory capability and streamed in chunks; they are not loaded entirely into memory.
 
@@ -72,7 +95,7 @@ Registry capabilities describe implemented metadata/play/view/launch actions, no
 
 ## Playback and metadata
 
-`Playback` has finite positive `durationSeconds`, `mode` (`direct` or `transcode`) and `streamPath`. The client validates that this path belongs to the selected media ID. HLS covers the complete original source timeline, so progress and seeks use source seconds. Compatibility output and cache limits are documented in [full-library development](full-library.md). A source that changed since indexing receives 409; unsupported playback preparation receives 422. Refreshing a browser page does not rescan storage; restart the development server to rescan.
+`Playback` has finite positive `durationSeconds`, `mode` (`direct` or `transcode`) and `streamPath`. The client validates that this path belongs to the selected media ID. HLS covers the complete original source timeline, so progress and seeks use source seconds. Compatibility output and cache limits are documented in [full-library development](full-library.md). A source that changed since indexing receives 409; unsupported playback preparation receives 422. The server rescans storage every 15 minutes (`SHINEMA_RESCAN_MINUTES`, 0 disables) and on `POST /api/admin/rescan`. Folders or files that cannot be read are skipped and counted rather than stopping startup; only an unreadable media root is fatal.
 
 Optional presentation fields are `posterPath`, `backdropPath`, `summary`, `year` and `genres`. Artwork paths remain opaque same-origin media routes; no source filesystem path is returned. Series pages may reference the associated media poster. Direct provider fetching, provenance, expiry and configuration are described in [full-library setup](full-library.md#independent-metadata-and-artwork).
 
